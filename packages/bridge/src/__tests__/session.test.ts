@@ -257,4 +257,29 @@ describe('SessionManager', () => {
     await new Promise((r) => setImmediate(r));
     expect(closed).toEqual([s.sessionId]);
   });
+
+  it('records user prompts in the PromptStore on sendInput', async () => {
+    const procs: FakeProc[] = [];
+    const added: Array<{ text: string; projectPath: string; agent: string }> = [];
+    const fakePromptStore = {
+      add: (args: { text: string; projectPath: string; agent: string }) => added.push(args),
+      list: () => [],
+    };
+    const mgr = new SessionManager({
+      allowedDirs: ['/Users/test'],
+      bufferCap: 100,
+      driverFactory: () => {
+        const p = new FakeProc();
+        procs.push(p);
+        return p as unknown as import('../session.js').AgentDriver;
+      },
+      realpath: async (p) => p,
+      promptStore: fakePromptStore as unknown as import('../prompt-store.js').PromptStore,
+    });
+    const s = await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });
+    mgr.sendInput(s.sessionId, 'remember me');
+    expect(added).toEqual([
+      { text: 'remember me', projectPath: '/Users/test/proj', agent: 'claude' },
+    ]);
+  });
 });

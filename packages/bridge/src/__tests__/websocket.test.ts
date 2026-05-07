@@ -304,26 +304,44 @@ describe('websocket', () => {
     await close();
   });
 
-  it('list_prompts replies with prompts_result (placeholder empty)', async () => {
-    const { port, close } = await startServer();
-    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+  it('list_prompts replies with the PromptStore contents', async () => {
+    // Spin up a manager with a fake promptStore that returns 1 entry.
+    const fakePromptStore = {
+      add: () => {},
+      list: () => [
+        { hash: 'h', text: 'hi', lastUsedAt: 100, projectPaths: ['/p'], agents: ['claude'] as const },
+      ],
+    } as unknown as import('../prompt-store.js').PromptStore;
+    const mgr = new SessionManager({
+      allowedDirs: ['/Users/test'],
+      bufferCap: 100,
+      driverFactory: () => new FakeProc() as unknown as import('../session.js').AgentDriver,
+      realpath: async (p) => p,
+      promptStore: fakePromptStore,
+    });
+    const server = createServer();
+    attachWebSocket({ server, token: TOKEN, sessionManager: mgr, accounts: new Map(), promptStore: fakePromptStore });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('no addr');
+
+    const sock = ws(`ws://127.0.0.1:${addr.port}/ws`, {
       cookie: `bridge_session=${TOKEN}`,
-      origin: `http://127.0.0.1:${port}`,
+      origin: `http://127.0.0.1:${addr.port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
     await once(sock as unknown as EventEmitter, 'message');
-    const got = new Promise<{ type: string; prompts: unknown[]; correlationId?: string }>((r) => {
+    const got = new Promise<{ type: string; prompts: Array<{ text: string }> }>((r) => {
       sock.on('message', (raw) => {
         const m = JSON.parse(raw.toString());
         if (m.type === 'prompts_result') r(m);
       });
     });
-    sock.send(JSON.stringify({ type: 'list_prompts', correlationId: 'c-prompts' }));
+    sock.send(JSON.stringify({ type: 'list_prompts', limit: 5 }));
     const msg = await got;
-    expect(msg.type).toBe('prompts_result');
-    expect(msg.prompts).toHaveLength(0);
-    expect(msg.correlationId).toBe('c-prompts');
+    expect(msg.prompts).toHaveLength(1);
+    expect(msg.prompts[0]!.text).toBe('hi');
     sock.close();
-    await close();
+    await new Promise<void>((r) => server.close(() => r()));
   });
 });

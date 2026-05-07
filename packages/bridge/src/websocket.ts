@@ -8,6 +8,7 @@ import {
 } from './auth.js';
 import type { SessionManager } from './session.js';
 import type { CodexAccount } from './accounts.js';
+import type { PromptStore } from './prompt-store.js';
 import type {
   ClientMsg,
   ServerErrorMsg,
@@ -21,6 +22,7 @@ export interface AttachWsOpts {
   token: string;
   sessionManager: SessionManager;
   accounts: Map<string, CodexAccount>;
+  promptStore?: PromptStore;
 }
 
 export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
@@ -64,7 +66,7 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
     send({ type: 'system', event: 'init' });
 
     ws.on('message', (raw) => {
-      void handleMessage(ws, raw, opts.sessionManager, send, opts.accounts);
+      void handleMessage(ws, raw, opts.sessionManager, send, opts.accounts, opts.promptStore);
     });
   });
 
@@ -77,6 +79,7 @@ async function handleMessage(
   mgr: SessionManager,
   send: (m: ServerMsg) => void,
   accounts: Map<string, CodexAccount>,
+  promptStore?: PromptStore,
 ): Promise<void> {
   let msg: ClientMsg;
   try {
@@ -154,10 +157,17 @@ async function handleMessage(
         return;
       }
       case 'list_prompts': {
-        // Wired in Task 12 once PromptStore exists. For now, reply empty.
+        const prompts = promptStore
+          ? promptStore.list(msg.query, msg.limit ?? 200).map((e) => ({
+              text: e.text,
+              lastUsedAt: e.lastUsedAt,
+              projectPaths: e.projectPaths,
+              agents: e.agents,
+            }))
+          : [];
         send({
           type: 'prompts_result',
-          prompts: [],
+          prompts,
           ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
         });
         return;

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { ClaudeProcess } from './claude-process.js';
 import type { TranscriptStore } from './transcript-store.js';
 import type { CodexAccount } from './accounts.js';
+import type { PromptStore } from './prompt-store.js';
 import type {
   AgentEvent,
   AgentKind,
@@ -47,6 +48,7 @@ export interface SessionManagerOpts {
   realpath?: (p: string) => Promise<string>;
   transcriptStore?: TranscriptStore;
   accounts?: Map<string, CodexAccount>;
+  promptStore?: PromptStore;
 }
 
 export class PathOutsideAllowlistError extends Error {
@@ -78,6 +80,7 @@ export class SessionManager extends EventEmitter {
   private readonly realpath: (p: string) => Promise<string>;
   private readonly transcriptStore: TranscriptStore | undefined;
   private readonly accounts: Map<string, CodexAccount>;
+  private readonly promptStore: PromptStore | undefined;
 
   constructor(opts: SessionManagerOpts) {
     super();
@@ -86,6 +89,7 @@ export class SessionManager extends EventEmitter {
     this.realpath = opts.realpath ?? fsRealpath;
     this.transcriptStore = opts.transcriptStore;
     this.accounts = opts.accounts ?? new Map();
+    this.promptStore = opts.promptStore;
     if (opts.driverFactory) {
       this.driverFactory = opts.driverFactory;
     } else if (opts.spawnClaude) {
@@ -284,6 +288,7 @@ export class SessionManager extends EventEmitter {
       seq: s.nextSeq++,
       payload: { text },
     });
+    this.promptStore?.add({ text, projectPath: s.projectPath, agent: s.agent });
     s.proc.sendUserText(text);
   }
 
