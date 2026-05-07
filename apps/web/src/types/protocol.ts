@@ -14,6 +14,7 @@ export interface ClientInputMsg {
   type: 'input';
   sessionId: string;
   text: string;
+  images?: Array<{ mime: string; base64: string }>;
   correlationId?: string;
 }
 
@@ -47,6 +48,18 @@ export interface ClientListPromptsMsg {
   correlationId?: string;
 }
 
+export interface ClientListDirsMsg {
+  type: 'list_dirs';
+  path: string;
+  correlationId?: string;
+}
+
+export interface ClientReadFileMsg {
+  type: 'read_file';
+  path: string;
+  correlationId?: string;
+}
+
 export type ClientMsg =
   | ClientStartMsg
   | ClientInputMsg
@@ -54,7 +67,9 @@ export type ClientMsg =
   | ClientListSessionsMsg
   | ClientGetHistoryMsg
   | ClientListAccountsMsg
-  | ClientListPromptsMsg;
+  | ClientListPromptsMsg
+  | ClientListDirsMsg
+  | ClientReadFileMsg;
 
 export type AgentEvent =
   | { kind: 'assistant_text'; text: string }
@@ -73,15 +88,11 @@ export interface ServerLifecycleMsg {
   event: 'session_created' | 'session_ended';
   sessionId: string;
   seq: number;
-  // Populated only on session_created:
   agent?: AgentKind;
   projectPath?: string;
   createdAt?: number;
-  // Populated for codex sessions only, on session_created:
   account?: string;
-  // Echoed only on session_created when start carried a correlationId:
   correlationId?: string;
-  // Populated only on session_ended:
   reason?: string;
   exitCode?: number;
 }
@@ -130,25 +141,66 @@ export interface ServerPromptsResultMsg {
   correlationId?: string;
 }
 
+export interface ServerDirsResultMsg {
+  type: 'dirs_result';
+  path: string;
+  entries: Array<{ name: string; kind: 'dir' | 'file'; size?: number }>;
+  correlationId?: string;
+}
+
+export interface ServerFileResultText {
+  type: 'file_result';
+  kind: 'text';
+  path: string;
+  content: string;
+  bytesRead: number;
+  truncated: boolean;
+  correlationId?: string;
+}
+
+export interface ServerFileResultBinary {
+  type: 'file_result';
+  kind: 'binary';
+  path: string;
+  mime?: string;
+  size: number;
+  correlationId?: string;
+}
+
+export interface ServerFileResultTooLarge {
+  type: 'file_result';
+  kind: 'too_large';
+  path: string;
+  size: number;
+  correlationId?: string;
+}
+
+export type ServerFileResultMsg =
+  | ServerFileResultText
+  | ServerFileResultBinary
+  | ServerFileResultTooLarge;
+
 export type ServerErrorCode =
   | 'not_authorized'
   | 'origin_mismatch'
   | 'path_outside_allowlist'
+  | 'path_denied'
   | 'session_dead'
   | 'agent_not_installed'
   | 'unknown_account'
   | 'codex_session_id_missing'
   | 'message_too_large'
   | 'history_truncated'
-  | 'unsupported_message';
+  | 'unsupported_message'
+  | 'images_not_supported_for_agent'
+  | 'image_too_large'
+  | 'image_invalid_mime'
+  | 'too_many_images';
 
 export interface ServerErrorMsg {
   type: 'error';
   code: ServerErrorCode;
   message: string;
-  // Set only for errors emitted on behalf of an existing session
-  // (session_dead, codex_session_id_missing). Start-time errors carry
-  // correlationId instead.
   sessionId?: string;
   correlationId?: string;
 }
@@ -161,4 +213,6 @@ export type ServerMsg =
   | ServerHistoryMsg
   | ServerAccountListMsg
   | ServerPromptsResultMsg
+  | ServerDirsResultMsg
+  | ServerFileResultMsg
   | ServerErrorMsg;
