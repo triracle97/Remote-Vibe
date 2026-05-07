@@ -1,11 +1,17 @@
+import { join } from 'node:path';
+
 export interface BridgeConfig {
   token: string;
   port: number;
   bindHost?: string;
   allowedDirs: string[];
+  dataDir: string;
+  transcriptRetentionDays: number;
 }
 
 const MIN_TOKEN_LEN = 24;
+const DEFAULT_DATA_SUBDIR = '.config/mac-remote-terminal';
+const DEFAULT_RETENTION_DAYS = 30;
 
 export function loadEnv(env: Record<string, string | undefined>): BridgeConfig {
   const token = env.BRIDGE_TOKEN;
@@ -33,7 +39,31 @@ export function loadEnv(env: Record<string, string | undefined>): BridgeConfig {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
+  const home = env.HOME;
+  const dataDir =
+    env.BRIDGE_DATA_DIR ??
+    (home ? join(home, DEFAULT_DATA_SUBDIR) : (() => {
+      throw new Error('BRIDGE_DATA_DIR or HOME must be set');
+    })());
+
+  const retentionRaw = env.BRIDGE_TRANSCRIPT_RETENTION_DAYS;
+  let transcriptRetentionDays = DEFAULT_RETENTION_DAYS;
+  if (retentionRaw !== undefined) {
+    const parsed = Number(retentionRaw);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new Error('BRIDGE_TRANSCRIPT_RETENTION_DAYS must be a non-negative integer');
+    }
+    transcriptRetentionDays = parsed;
+  }
+
   const bindHost = env.BRIDGE_BIND_HOST;
 
-  return { token, port, allowedDirs, ...(bindHost ? { bindHost } : {}) };
+  return {
+    token,
+    port,
+    allowedDirs,
+    dataDir,
+    transcriptRetentionDays,
+    ...(bindHost ? { bindHost } : {}),
+  };
 }
