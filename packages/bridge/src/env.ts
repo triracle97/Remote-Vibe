@@ -24,7 +24,10 @@ export function loadEnv(env: Record<string, string | undefined>): BridgeConfig {
     throw new Error('BRIDGE_PORT must be a positive integer');
   }
 
-  const allowedDirsRaw = env.BRIDGE_ALLOWED_DIRS ?? env.HOME ?? '';
+  const allowedDirsRaw = env.BRIDGE_ALLOWED_DIRS ?? env.HOME;
+  if (!allowedDirsRaw) {
+    throw new Error('BRIDGE_ALLOWED_DIRS or HOME must be set');
+  }
   const allowedDirs = allowedDirsRaw
     .split(',')
     .map((s) => s.trim())

@@ -23,7 +23,7 @@ describe('loadEnv', () => {
   });
 
   it('defaults port to 8765', () => {
-    const cfg = loadEnv({ BRIDGE_TOKEN: 'a'.repeat(24) });
+    const cfg = loadEnv({ BRIDGE_TOKEN: 'a'.repeat(24), HOME: '/Users/test' });
     expect(cfg.port).toBe(8765);
   });
 
@@ -47,7 +47,12 @@ describe('loadEnv', () => {
     const cfg = loadEnv({
       BRIDGE_TOKEN: 'a'.repeat(24),
       BRIDGE_BIND_HOST: '127.0.0.1',
+      HOME: '/Users/test',
     });
     expect(cfg.bindHost).toBe('127.0.0.1');
+  });
+
+  it('throws when neither BRIDGE_ALLOWED_DIRS nor HOME is set', () => {
+    expect(() => loadEnv({ BRIDGE_TOKEN: 'a'.repeat(24) })).toThrow(/BRIDGE_ALLOWED_DIRS or HOME/);
   });
 });
