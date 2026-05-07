@@ -1,12 +1,14 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useSessionsStore } from '../store/sessions';
 import { useConnectionStore } from '../store/connection';
+import { useFileExplorerStore } from '../store/file-explorer';
 import type { BridgeClient } from '../services/bridge-client';
 import { SessionList } from '../features/session-list/SessionList';
 import { Chat } from '../features/chat/Chat';
 import { useNewSession } from '../features/project-picker/useNewSession';
 import { streamTranscript } from '../services/transcript-fetcher';
+import { FileExplorer } from '../features/file-explorer/FileExplorer';
 
 interface SessionProps {
   client: BridgeClient;
@@ -22,18 +24,20 @@ export function Session({ client }: SessionProps): JSX.Element {
   const transcriptOnly = useSessionsStore((s) => (id ? Boolean(s.transcriptOnly[id]) : false));
   const session = id ? sessionsMap[id] : undefined;
   const newSession = useNewSession(client);
+  const resetExplorer = useFileExplorerStore((s) => s.reset);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
     if (id) setActive(id);
   }, [id, setActive]);
 
+  // Reset file-explorer state when switching sessions.
+  useEffect(() => {
+    resetExplorer();
+    setDrawerOpen(false);
+  }, [id, resetExplorer]);
+
   const connStatus = useConnectionStore((s) => s.status);
-  // Send `get_history` exactly once per (id, connection-open) edge. We do
-  // NOT gate on `sessions[id]` existing, because deep-linking after a bridge
-  // restart hits this page with the session NOT in the store; the bridge
-  // replies with `error: session_dead` (carrying sessionId), which App.tsx
-  // routes to `markTranscriptOnly`, which flips `transcriptOnly[id]` and
-  // triggers the transcript-fetcher effect below.
   const askedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!id || connStatus !== 'open' || transcriptOnly) {
@@ -47,8 +51,6 @@ export function Session({ client }: SessionProps): JSX.Element {
     client.send({ type: 'get_history', sessionId: id, since });
   }, [client, id, connStatus, transcriptOnly]);
 
-  // Transcript-only fallback: stream the disk transcript and dispatch each line
-  // through applyServerMsg. Keep a guard ref so we only do it once per session id.
   const fallbackStartedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!id || !transcriptOnly || fallbackStartedRef.current === id) return;
@@ -94,18 +96,24 @@ export function Session({ client }: SessionProps): JSX.Element {
           onSend={
             transcriptOnly
               ? () => {}
-              : (text) => client.send({ type: 'input', sessionId: session.sessionId, text })
+              : (text, images) =>
+                  client.send({
+                    type: 'input',
+                    sessionId: session.sessionId,
+                    text,
+                    ...(images && images.length > 0
+                      ? { images: images.slice(), correlationId: newCorrelationId() }
+                      : {}),
+                  })
           }
           onStop={
             transcriptOnly
               ? () => {}
               : () => client.send({ type: 'stop_session', sessionId: session.sessionId })
           }
-          banner={
-            transcriptOnly
-              ? 'transcript-only view (session no longer live)'
-              : null
-          }
+          onToggleDrawer={() => setDrawerOpen((o) => !o)}
+          drawerOpen={drawerOpen}
+          banner={transcriptOnly ? 'transcript-only view (session no longer live)' : null}
           inputDisabled={transcriptOnly}
         />
       )}
@@ -114,7 +122,20 @@ export function Session({ client }: SessionProps): JSX.Element {
           <p>Loading transcript…</p>
         </main>
       )}
+      {drawerOpen && session && (
+        <FileExplorer
+          client={client}
+          rootPath={session.projectPath}
+          onClose={() => setDrawerOpen(false)}
+        />
+      )}
       {newSession.pickerNode}
     </>
   );
+}
+
+function newCorrelationId(): string {
+  const buf = new Uint8Array(8);
+  crypto.getRandomValues(buf);
+  return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
 }

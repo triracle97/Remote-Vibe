@@ -6,13 +6,23 @@ import './Chat.css';
 
 interface ChatProps {
   session: SessionView;
-  onSend(text: string): void;
+  onSend(text: string, images?: ReadonlyArray<{ mime: string; base64: string }>): void;
   onStop(): void;
+  onToggleDrawer?(): void;
+  drawerOpen?: boolean;
   banner?: string | null;
   inputDisabled?: boolean;
 }
 
-export function Chat({ session, onSend, onStop, banner, inputDisabled }: ChatProps): JSX.Element {
+export function Chat({
+  session,
+  onSend,
+  onStop,
+  onToggleDrawer,
+  drawerOpen,
+  banner,
+  inputDisabled,
+}: ChatProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -22,7 +32,17 @@ export function Chat({ session, onSend, onStop, banner, inputDisabled }: ChatPro
     <div className="chat">
       <div className="chat-header">
         <code>{session.projectPath}</code>
-        <span>session {session.sessionId.slice(0, 8)}</span>
+        <span className="chat-header-spacer">session {session.sessionId.slice(0, 8)}</span>
+        {onToggleDrawer && (
+          <button
+            type="button"
+            className="chat-drawer-toggle"
+            onClick={onToggleDrawer}
+            aria-label="Toggle file explorer"
+          >
+            {drawerOpen ? '📂' : '📁'}
+          </button>
+        )}
       </div>
       {banner && <div className="chat-banner">{banner}</div>}
       <div className="chat-scroll" ref={scrollRef}>
@@ -34,7 +54,7 @@ export function Chat({ session, onSend, onStop, banner, inputDisabled }: ChatPro
         ))}
       </div>
       <InputBox
-        onSend={onSend}
+        onSend={(text) => onSend(text)}
         onStop={onStop}
         disabled={(!session.alive) || Boolean(inputDisabled)}
         currentProjectPath={session.projectPath}

@@ -5,6 +5,7 @@ import { useConnectionStore } from './store/connection';
 import { useSessionsStore } from './store/sessions';
 import { useAccountsStore } from './store/accounts';
 import { usePromptHistoryStore } from './store/prompt-history';
+import { useFileExplorerStore } from './store/file-explorer';
 import { Home } from './pages/Home';
 import { Session } from './pages/Session';
 
@@ -43,6 +44,14 @@ export function App(): JSX.Element {
       }
       if (m.type === 'prompts_result') {
         usePromptHistoryStore.getState().applyPromptsResult(m.prompts);
+        return;
+      }
+      if (m.type === 'dirs_result') {
+        useFileExplorerStore.getState().applyDirsResult(m);
+        return;
+      }
+      if (m.type === 'file_result') {
+        useFileExplorerStore.getState().applyFileResult(m);
         return;
       }
       if (m.type === 'error') {
