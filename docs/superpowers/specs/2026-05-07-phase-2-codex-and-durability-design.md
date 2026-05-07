@@ -83,8 +83,8 @@ The Phase 1 plumbing for Claude (long-lived `claude -p` process with stdin NDJSO
 |---|---|
 | `system { event: 'session_created' }` | Adds `account?: string` (only on codex sessions). |
 | `session_list[]` | Each entry adds `account?: string`. |
-| `error.code` | Adds `unknown_account`, `no_codex_accounts_configured`, `codex_session_id_missing`. |
-| `error` shape | Adds optional `sessionId?: string`. Populated for session-scoped errors so the web client can route them per session instead of per connection. |
+| `error.code` | Adds `unknown_account`, `codex_session_id_missing`. (`no_codex_accounts_configured` is intentionally NOT added — the loader's default-fallback in §5 makes that state unreachable.) |
+| `error` shape | Adds optional `sessionId?: string`. Populated only for errors emitted on behalf of an already-created session (`session_dead`, `codex_session_id_missing`, future per-session signals). Errors from a failing `start` (`unknown_account`, `path_outside_allowlist`) carry the request's `correlationId` instead — there is no session id yet for those. |
 
 ### `AgentKind`
 
@@ -181,12 +181,19 @@ Filtering: `query` is plain substring match (case-insensitive). Project filter i
 
 The Phase 1 `App.tsx` stringifies error messages into `connection.lastError` for the global banner, which is too lossy for a fallback decision. Phase 2 introduces a typed session-scoped error path so `Session.tsx` can react reliably.
 
-1. The web `sessions.ts` store gains a `transcriptOnly: Record<sessionId, boolean>` field. Setter `markTranscriptOnly(sessionId)`.
-2. `App.tsx`'s message handler is extended: when an `error` message arrives with `code: 'session_dead'` AND a session-scoped sessionId is recoverable (we add an optional `sessionId?: string` field on `ServerErrorMsg` and have the bridge populate it for session-scoped errors), call `useSessionsStore.getState().markTranscriptOnly(sessionId)` before falling through to the global error setter.
-3. `Session.tsx` watches `transcriptOnly[id]`. When true, calls `streamTranscript(id)` once. Each yielded event dispatches `applyServerMsg` into the sessions store as if it were live history. A synthetic header is prepended client-side: `transcript-only view (session no longer live)`. `InputBox` disabled when `transcriptOnly[id] === true`.
-4. The bridge populates `ServerErrorMsg.sessionId` for `session_dead`, `path_outside_allowlist`, `unknown_account`, and `codex_session_id_missing`. Client-only / connection-level errors leave it unset.
+**Transcript line shape.** Each line in `<sessionId>.jsonl` is a single JSON-encoded `ServerLifecycleMsg | ServerStreamMsg` — the exact same value that `SessionManager.appendAndBroadcast` already pushes through the ring buffer and the broadcast pipe. Both are members of the `ServerMsg` discriminated union, so they pass through the web's `applyServerMsg` reducer without translation.
 
-Schema update: `ServerErrorMsg` adds optional `sessionId?: string`. Mirrored to web protocol.
+**Fallback flow:**
+
+1. The web `sessions.ts` store gains a `transcriptOnly: Record<sessionId, boolean>` field. Setter `markTranscriptOnly(sessionId)`.
+2. `App.tsx`'s message handler routes `error` messages by their new `sessionId` field: when present and `code === 'session_dead'`, call `useSessionsStore.getState().markTranscriptOnly(sessionId)` before falling through to the global error setter. When absent (correlationId-routed errors like `unknown_account`), keep Phase 1's global-banner behavior.
+3. `Session.tsx` watches `transcriptOnly[id]`. When it flips true, call `streamTranscript(id)` once. Each yielded `ServerLifecycleMsg | ServerStreamMsg` is fed to `applyServerMsg` (the same reducer that handles live frames). A synthetic header bubble is prepended client-side: `transcript-only view (session no longer live)`. `InputBox` is disabled when `transcriptOnly[id] === true`.
+
+**Bridge-side `ServerErrorMsg.sessionId` policy** (also restated in §4):
+- Set: `session_dead`, `codex_session_id_missing`. These come from a known live (or recently-live) session.
+- Not set: `unknown_account`, `path_outside_allowlist`, `not_authorized`, `origin_mismatch`, `unsupported_message`, `message_too_large`, `agent_not_installed` *during* a `start`. These respond to a request that did not produce a session, so they carry the request's `correlationId` instead.
+
+Schema update: `ServerErrorMsg` adds optional `sessionId?: string`. Mirrored byte-for-byte to web protocol.
 
 ### Prune
 
@@ -238,10 +245,11 @@ Schema update: `ServerErrorMsg` adds optional `sessionId?: string`. Mirrored to 
 
 - `accountsRegistry` keeps `codexHome` paths server-side only. Wire protocol exposes only account names + `isDefault`.
 - `codexHome` not allowlisted against `BRIDGE_ALLOWED_DIRS` — they're agent config dirs (`~/.codex-*`), not project dirs. Operator owns the JSON file.
+- **SessionId shape contract.** Phase 1's `SessionManager.create` already generates session ids via `crypto.randomUUID()`, which produces lowercase RFC-4122 v4 UUIDs (`8-4-4-4-12` hex with dashes, total length 36). Phase 2 codifies that contract: the regex below depends on it, the transcript filename depends on it, and any future change to `SessionManager` must keep this format.
 - `GET /transcripts/<sessionId>`:
   - Cookie auth (same as static bundle).
   - Origin/Host validation when an `Origin` header is present (existing `isOriginAllowed`).
-  - sessionId path segment must match `^[0-9a-f-]{36}$`. Reject otherwise (400).
+  - sessionId path segment must match `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` (i.e. exactly the `randomUUID()` output shape). Reject otherwise (400).
   - Resolved file path realpath'd; reject if not under `${BRIDGE_DATA_DIR}/transcripts/`. Defends against future symlinks-in-data-dir mistakes.
   - Content-Type `application/x-ndjson`; `X-Content-Type-Options: nosniff` to prevent browser sniff.
 - `prompts.json` plaintext on disk. Operator is single user. Documented; no encryption at rest.
