@@ -12,20 +12,23 @@ class FakeProc extends EventEmitter {
   kill = vi.fn();
 }
 
-async function startServer() {
+async function startServer(opts: {
+  accounts?: Map<string, import('../accounts.js').CodexAccount>;
+} = {}) {
   const procs: FakeProc[] = [];
   const mgr = new SessionManager({
     allowedDirs: ['/Users/test'],
     bufferCap: 100,
-    spawnClaude: () => {
+    driverFactory: () => {
       const p = new FakeProc();
       procs.push(p);
-      return p as unknown as import('../claude-process.js').ClaudeProcess;
+      return p as unknown as import('../session.js').AgentDriver;
     },
     realpath: async (p) => p,
+    accounts: opts.accounts ?? new Map(),
   });
   const server = createServer();
-  attachWebSocket({ server, token: TOKEN, sessionManager: mgr });
+  attachWebSocket({ server, token: TOKEN, sessionManager: mgr, accounts: opts.accounts ?? new Map() });
 
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   const addr = server.address();
@@ -181,6 +184,145 @@ describe('websocket', () => {
     const m = await got;
     expect(m.type).toBe('error');
     expect(m.code).toBe('unsupported_message');
+    sock.close();
+    await close();
+  });
+
+  it('list_accounts replies with name + isDefault, hides codexHome', async () => {
+    const accounts = new Map([
+      ['default', { name: 'default', codexHome: '/secret/path', isDefault: true }],
+      ['work', { name: 'work', codexHome: '/another/secret', isDefault: false }],
+    ]);
+    const { port, close } = await startServer({ accounts });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+    const got = new Promise<{ type: string; accounts: Array<{ name: string; agent: string; isDefault: boolean }>; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'account_list') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'list_accounts', correlationId: 'c' }));
+    const msg = await got;
+    expect(msg.accounts).toHaveLength(2);
+    const first = msg.accounts.find((a) => a.name === 'default')!;
+    expect(first.isDefault).toBe(true);
+    expect((first as unknown as { codexHome?: string }).codexHome).toBeUndefined();
+    expect(msg.correlationId).toBe('c');
+    sock.close();
+    await close();
+  });
+
+  it('start { agent: "codex", account: "<bogus>" } returns unknown_account', async () => {
+    const accounts = new Map([
+      ['default', { name: 'default', codexHome: '/Users/test/.codex', isDefault: true }],
+    ]);
+    const { port, close } = await startServer({ accounts });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+    const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'error') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'start',
+        agent: 'codex',
+        projectPath: '/Users/test/proj',
+        account: 'nope',
+        correlationId: 'cid-bogus',
+      }),
+    );
+    const msg = await got;
+    expect(msg.code).toBe('unknown_account');
+    expect(msg.correlationId).toBe('cid-bogus');
+    sock.close();
+    await close();
+  });
+
+  it('start with single account uses default and echoes account name on session_created', async () => {
+    const accounts = new Map([
+      ['default', { name: 'default', codexHome: '/Users/test/.codex', isDefault: true }],
+    ]);
+    const { port, close } = await startServer({ accounts });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+    const got = new Promise<{ type: string; event?: string; account?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'system' && m.event === 'session_created') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'start',
+        agent: 'codex',
+        projectPath: '/Users/test/proj',
+        correlationId: 'cid-default',
+      }),
+    );
+    const msg = await got;
+    expect(msg.account).toBe('default');
+    sock.close();
+    await close();
+  });
+
+  it('get_history for unknown session replies with session_dead error carrying sessionId', async () => {
+    const { port, close } = await startServer();
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+    const got = new Promise<{ type: string; code?: string; sessionId?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'error') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'get_history', sessionId: 'dead-session-id', correlationId: 'cid-hist' }));
+    const msg = await got;
+    expect(msg.code).toBe('session_dead');
+    expect(msg.sessionId).toBe('dead-session-id');
+    expect(msg.correlationId).toBe('cid-hist');
+    sock.close();
+    await close();
+  });
+
+  it('list_prompts replies with prompts_result (placeholder empty)', async () => {
+    const { port, close } = await startServer();
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+    const got = new Promise<{ type: string; prompts: unknown[]; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'prompts_result') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'list_prompts', correlationId: 'c-prompts' }));
+    const msg = await got;
+    expect(msg.type).toBe('prompts_result');
+    expect(msg.prompts).toHaveLength(0);
+    expect(msg.correlationId).toBe('c-prompts');
     sock.close();
     await close();
   });

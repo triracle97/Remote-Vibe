@@ -8,6 +8,7 @@ import { resolveTailscaleIPv4 } from './tailscale.js';
 import { createHttpHandler } from './http-server.js';
 import { attachWebSocket } from './websocket.js';
 import { SessionManager } from './session.js';
+import { loadCodexAccounts } from './accounts.js';
 
 async function main(): Promise<void> {
   const cfg = loadEnv(process.env);
@@ -26,15 +27,18 @@ async function main(): Promise<void> {
   }
   console.log(`[bridge] serving static bundle from ${staticDir}`);
 
+  const accounts = loadCodexAccounts({ dataDir: cfg.dataDir, env: process.env });
+
   const sessionManager = new SessionManager({
     allowedDirs: cfg.allowedDirs,
     bufferCap: 1000,
     spawnClaude: (path) => new ClaudeProcess(path),
+    accounts,
   });
 
   const handler = createHttpHandler({ token: cfg.token, staticDir, dataDir: cfg.dataDir });
   const server = createServer(handler);
-  attachWebSocket({ server, token: cfg.token, sessionManager });
+  attachWebSocket({ server, token: cfg.token, sessionManager, accounts });
 
   await new Promise<void>((res, rej) => {
     server.once('error', rej);
