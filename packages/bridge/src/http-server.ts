@@ -87,12 +87,6 @@ export function createHttpHandler(opts: HttpHandlerOpts) {
     }
 
     const urlPath = parsed.pathname === '/' ? '/index.html' : parsed.pathname;
-    // Detect likely traversal attempts that bypass ../ detection
-    const suspiciousSystemPaths = /^\/(etc|var|usr|home|root|bin|sbin|lib|opt|sys|proc|dev|boot|tmp|run)\//i;
-    if (suspiciousSystemPaths.test(urlPath)) {
-      send(res, 400, 'Bad path');
-      return;
-    }
     let filePath = safeResolveStaticPath(opts.staticDir, urlPath);
     if (!filePath) {
       send(res, 400, 'Bad path');

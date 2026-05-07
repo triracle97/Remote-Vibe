@@ -128,7 +128,13 @@ describe('http-server', () => {
     const res = await fetch(`${baseUrl}/../../etc/passwd`, {
       headers: { cookie: `bridge_session=${TOKEN}` },
     });
-    expect([400, 403, 404]).toContain(res.status);
+    // Path traversal is prevented by URL normalization and safeResolveStaticPath.
+    // /../../etc/passwd gets normalized to /etc/passwd by the URL parser,
+    // then safeResolveStaticPath returns <staticDir>/etc/passwd (inside staticDir).
+    // Since the file doesn't exist and doesn't look like an asset, it falls back to index.html.
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('<body>app</body>');
     await close();
   });
 });
