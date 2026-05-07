@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","session_id":"sess-1","model":"claude-sonnet"}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":", world"}}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Hello, world"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":"file.txt\n"}]}}
+{"type":"result","subtype":"success","total_cost_usd":0.0042,"duration_ms":1234}
