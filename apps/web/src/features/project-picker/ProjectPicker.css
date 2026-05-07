@@ -1,0 +1,17 @@
+.picker-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 10;
+}
+.picker {
+  background: #1f1f1f; color: #eee;
+  padding: 1.5rem; border-radius: 8px;
+  width: min(560px, 90vw);
+}
+.picker h2, .picker h3 { margin: 0 0 0.5rem; }
+.picker input { width: 100%; padding: 0.5rem; box-sizing: border-box; }
+.picker-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.75rem; }
+.picker-recents { list-style: none; padding: 0; max-height: 200px; overflow-y: auto; }
+.picker-recents button { background: none; border: 1px solid #333; color: #ccc; width: 100%; text-align: left; padding: 0.4rem; margin-bottom: 0.2rem; cursor: pointer; }
+.picker-recents button:hover { background: #2a2a2a; }
