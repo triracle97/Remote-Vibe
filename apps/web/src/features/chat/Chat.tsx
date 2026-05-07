@@ -8,9 +8,11 @@ interface ChatProps {
   session: SessionView;
   onSend(text: string): void;
   onStop(): void;
+  banner?: string | null;
+  inputDisabled?: boolean;
 }
 
-export function Chat({ session, onSend, onStop }: ChatProps): JSX.Element {
+export function Chat({ session, onSend, onStop, banner, inputDisabled }: ChatProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -22,12 +24,16 @@ export function Chat({ session, onSend, onStop }: ChatProps): JSX.Element {
         <code>{session.projectPath}</code>
         <span>session {session.sessionId.slice(0, 8)}</span>
       </div>
+      {banner && <div className="chat-banner">{banner}</div>}
       <div className="chat-scroll" ref={scrollRef}>
         {session.events.map((e, i) => (
-          <MessageBubble key={`${i}-${e.type}-${e.type === 'system' ? e.event : (e as { seq: number }).seq}`} event={e} />
+          <MessageBubble
+            key={`${i}-${e.type}-${e.type === 'system' ? e.event : (e as { seq: number }).seq}`}
+            event={e}
+          />
         ))}
       </div>
-      <InputBox onSend={onSend} onStop={onStop} disabled={!session.alive} />
+      <InputBox onSend={onSend} onStop={onStop} disabled={(!session.alive) || Boolean(inputDisabled)} />
     </div>
   );
 }

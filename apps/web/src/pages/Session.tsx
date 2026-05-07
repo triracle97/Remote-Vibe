@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useSessionsStore } from '../store/sessions';
 import { useConnectionStore } from '../store/connection';
@@ -6,6 +6,7 @@ import type { BridgeClient } from '../services/bridge-client';
 import { SessionList } from '../features/session-list/SessionList';
 import { Chat } from '../features/chat/Chat';
 import { useNewSession } from '../features/project-picker/useNewSession';
+import { streamTranscript } from '../services/transcript-fetcher';
 
 interface SessionProps {
   client: BridgeClient;
@@ -17,6 +18,8 @@ export function Session({ client }: SessionProps): JSX.Element {
   const order = useSessionsStore((s) => s.order);
   const sessionsMap = useSessionsStore((s) => s.sessions);
   const setActive = useSessionsStore((s) => s.setActive);
+  const apply = useSessionsStore((s) => s.applyServerMsg);
+  const transcriptOnly = useSessionsStore((s) => (id ? Boolean(s.transcriptOnly[id]) : false));
   const session = id ? sessionsMap[id] : undefined;
   const newSession = useNewSession(client);
 
@@ -25,20 +28,48 @@ export function Session({ client }: SessionProps): JSX.Element {
   }, [id, setActive]);
 
   const connStatus = useConnectionStore((s) => s.status);
-  // sessionExists flips false → true exactly once when the session
-  // appears in the store (either from session_list after a reload or
-  // from session_created on a fresh start). Using a boolean here, not
-  // the whole session object, prevents history-request loops while
-  // still firing the effect when the session first becomes known.
-  const sessionExists = useSessionsStore((s) => (id ? Boolean(s.sessions[id]) : false));
+  // Send `get_history` exactly once per (id, connection-open) edge. We do
+  // NOT gate on `sessions[id]` existing, because deep-linking after a bridge
+  // restart hits this page with the session NOT in the store; the bridge
+  // replies with `error: session_dead` (carrying sessionId), which App.tsx
+  // routes to `markTranscriptOnly`, which flips `transcriptOnly[id]` and
+  // triggers the transcript-fetcher effect below.
+  const askedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!id || connStatus !== 'open' || !sessionExists) return;
+    if (!id || connStatus !== 'open' || transcriptOnly) {
+      askedRef.current = null;
+      return;
+    }
+    if (askedRef.current === id) return;
+    askedRef.current = id;
     const snapshot = useSessionsStore.getState().sessions[id];
-    if (!snapshot) return;
-    client.send({ type: 'get_history', sessionId: id, since: snapshot.lastSeq });
-  }, [client, id, connStatus, sessionExists]);
+    const since = snapshot?.lastSeq ?? 0;
+    client.send({ type: 'get_history', sessionId: id, since });
+  }, [client, id, connStatus, transcriptOnly]);
 
-  if (!session) {
+  // Transcript-only fallback: stream the disk transcript and dispatch each line
+  // through applyServerMsg. Keep a guard ref so we only do it once per session id.
+  const fallbackStartedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!id || !transcriptOnly || fallbackStartedRef.current === id) return;
+    fallbackStartedRef.current = id;
+    let cancelled = false;
+    (async () => {
+      try {
+        for await (const ev of streamTranscript(id)) {
+          if (cancelled) return;
+          apply(ev);
+        }
+      } catch (err) {
+        console.warn('[transcript fallback]', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, transcriptOnly, apply]);
+
+  if (!session && !transcriptOnly) {
     return (
       <main className="home-main">
         <p>Session not found.</p>
@@ -57,11 +88,32 @@ export function Session({ client }: SessionProps): JSX.Element {
         onSelect={(nid) => navigate(`/session/${nid}`)}
         onNewSession={newSession.open}
       />
-      <Chat
-        session={session}
-        onSend={(text) => client.send({ type: 'input', sessionId: session.sessionId, text })}
-        onStop={() => client.send({ type: 'stop_session', sessionId: session.sessionId })}
-      />
+      {session && (
+        <Chat
+          session={session}
+          onSend={
+            transcriptOnly
+              ? () => {}
+              : (text) => client.send({ type: 'input', sessionId: session.sessionId, text })
+          }
+          onStop={
+            transcriptOnly
+              ? () => {}
+              : () => client.send({ type: 'stop_session', sessionId: session.sessionId })
+          }
+          banner={
+            transcriptOnly
+              ? 'transcript-only view (session no longer live)'
+              : null
+          }
+          inputDisabled={transcriptOnly}
+        />
+      )}
+      {!session && transcriptOnly && (
+        <main className="home-main">
+          <p>Loading transcript…</p>
+        </main>
+      )}
       {newSession.pickerNode}
     </>
   );
