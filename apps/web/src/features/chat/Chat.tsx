@@ -33,7 +33,12 @@ export function Chat({ session, onSend, onStop, banner, inputDisabled }: ChatPro
           />
         ))}
       </div>
-      <InputBox onSend={onSend} onStop={onStop} disabled={(!session.alive) || Boolean(inputDisabled)} />
+      <InputBox
+        onSend={onSend}
+        onStop={onStop}
+        disabled={(!session.alive) || Boolean(inputDisabled)}
+        currentProjectPath={session.projectPath}
+      />
     </div>
   );
 }
