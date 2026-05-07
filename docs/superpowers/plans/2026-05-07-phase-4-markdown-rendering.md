@@ -501,7 +501,7 @@ import { CodeBlock } from './CodeBlock';
 
 vi.mock('./MermaidBlock', () => ({
   MermaidBlock: ({ source }: { source: string }) => (
-    <div data-test="mermaid-mock">{source}</div>
+    <div data-testid="mermaid-mock">{source}</div>
   ),
 }));
 
@@ -1130,7 +1130,7 @@ Append inside the existing `describe('sessions store', ...)` block:
       type: 'session_list',
       sessions: [{ sessionId: 's1', agent: 'claude', projectPath: '/p', createdAt: 1 }],
     });
-    store2.applyServerMsg({ type: 'history', sessionId: 's1', events: replay });
+    store2.applyServerMsg({ type: 'history', sessionId: 's1', events: replay, hasMore: false });
     const replayDeltas = useSessionsStore
       .getState()
       .sessions['s1']!.events.filter((e) => e.type === 'stream_delta');
@@ -1396,6 +1396,8 @@ describe('MessageBubble', () => {
   });
 
   it('returns null for events flagged superseded', () => {
+    // Task 8 augments `SessionEvent` with `superseded?: true`, so this is a
+    // first-class typed field — no @ts-expect-error needed.
     const { container } = render(
       <MessageBubble
         event={ev({
@@ -1403,7 +1405,6 @@ describe('MessageBubble', () => {
           sessionId: 's1',
           seq: 4,
           payload: { delta: 'hel' },
-          // @ts-expect-error — superseded is a web-store-only flag added via intersection
           superseded: true,
         })}
       />,
