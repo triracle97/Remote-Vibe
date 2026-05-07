@@ -145,7 +145,7 @@ export type AgentEvent =
   | { kind: 'stream_delta'; delta: string }
   | { kind: 'tool_use'; toolUseId: string; toolName: string; input: unknown }
   | { kind: 'tool_result'; toolUseId: string; output: unknown }
-  | { kind: 'result'; cost?: number; durationMs?: number };
+  | { kind: 'result'; cost?: number; durationMs?: number; error?: string };
 
 export interface ServerInitMsg {
   type: 'system';
@@ -1154,16 +1154,25 @@ export class SessionManager extends EventEmitter {
     }));
   }
 
-  getHistory(sessionId: string, since: number): {
-    events: Array<ServerLifecycleMsg | ServerStreamMsg>;
-    hasMore: boolean;
-  } {
+  getHistory(
+    sessionId: string,
+    since: number,
+  ):
+    | {
+        events: Array<ServerLifecycleMsg | ServerStreamMsg>;
+        hasMore: boolean;
+      }
+    | null {
     const s = this.sessions.get(sessionId);
-    if (!s) return { events: [], hasMore: false };
+    if (!s) return null;
     const minSeqInBuffer = s.buffer.length > 0 ? s.buffer[0]!.seq : s.nextSeq;
     const events = s.buffer.filter((e) => e.seq > since);
     const hasMore = since + 1 < minSeqInBuffer;
     return { events, hasMore };
+  }
+
+  knowsSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
   }
 
   sendInput(sessionId: string, text: string): void {
@@ -1752,6 +1761,10 @@ describe('CodexProcess', () => {
       'first',
     ]);
     expect(opts1.env.CODEX_HOME).toBe('/Users/test/.codex-work');
+    // Critical: stdin must be 'ignore', not 'pipe'. With a piped stdin codex
+    // waits for additional input on stdin even though the prompt is in argv,
+    // and the child never exits.
+    expect(opts1.stdio).toEqual(['ignore', 'pipe', 'pipe']);
 
     // Simulate session_init then exit
     fakes1.pushStdout('{"type":"session_init","session_id":"sess-1"}\n');
@@ -1793,19 +1806,37 @@ describe('CodexProcess', () => {
     expect(events).toEqual([{ kind: 'assistant_text', text: 'hello' }]);
   });
 
-  it('emits codex_session_id_missing on exit if session_init never seen', async () => {
+  it('emits a result event with error: "codex_session_id_missing" if session_init never seen', async () => {
     const fakes = makeFakeChild();
     const spawn = vi.fn().mockReturnValue(fakes.child);
     const proc = new CodexProcess({ projectPath: '/p', codexHome: '/c', spawn });
-    const errors: string[] = [];
-    proc.on('error', (code: string) => errors.push(code));
+    const events: Array<{ kind: string; error?: string }> = [];
+    proc.on('event', (e) => events.push(e));
 
     proc.sendUserText('hi');
     fakes.pushStdout('{"type":"agent_message","content":"hi back"}\n');
     fakes.exit(0);
     await new Promise((r) => setImmediate(r));
 
-    expect(errors).toContain('codex_session_id_missing');
+    const result = events.find((e) => e.kind === 'result');
+    expect(result?.error).toBe('codex_session_id_missing');
+  });
+
+  it('emits a result event with error: <stderr tail> on non-zero exit', async () => {
+    const fakes = makeFakeChild();
+    const spawn = vi.fn().mockReturnValue(fakes.child);
+    const proc = new CodexProcess({ projectPath: '/p', codexHome: '/c', spawn });
+    const events: Array<{ kind: string; error?: string }> = [];
+    proc.on('event', (e) => events.push(e));
+
+    proc.sendUserText('hi');
+    fakes.pushStdout('{"type":"session_init","session_id":"sess-1"}\n');
+    fakes.child.stderr.push(Buffer.from('codex: usage error'));
+    fakes.exit(2);
+    await new Promise((r) => setImmediate(r));
+
+    const result = events.find((e) => e.kind === 'result');
+    expect(result?.error).toMatch(/usage error/);
   });
 
   it('translates ENOENT into exit(null, "agent_not_installed")', async () => {
@@ -1822,18 +1853,36 @@ describe('CodexProcess', () => {
     expect(exits).toEqual([[null, 'agent_not_installed']]);
   });
 
-  it('kill() sends SIGTERM and SIGKILL after grace if a turn is in flight', async () => {
+  it('kill() sends SIGTERM and SIGKILL after grace and emits exit when a turn is in flight', async () => {
     vi.useFakeTimers();
     const fakes = makeFakeChild();
     const spawn = vi.fn().mockReturnValue(fakes.child);
     const proc = new CodexProcess({ projectPath: '/p', codexHome: '/c', spawn });
+    const exits: Array<[number | null, string?]> = [];
+    proc.on('exit', (code, reason) => exits.push([code, reason]));
 
     proc.sendUserText('hi');
     proc.kill();
     expect(fakes.child.kill).toHaveBeenCalledWith('SIGTERM');
     vi.advanceTimersByTime(5000);
     expect(fakes.child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(exits).toEqual([[null, 'stopped']]);
     vi.useRealTimers();
+  });
+
+  it('kill() emits a single exit even when no turn is in flight', () => {
+    const fakes = makeFakeChild();
+    const spawn = vi.fn().mockReturnValue(fakes.child);
+    const proc = new CodexProcess({ projectPath: '/p', codexHome: '/c', spawn });
+    const exits: Array<[number | null, string?]> = [];
+    proc.on('exit', (code, reason) => exits.push([code, reason]));
+
+    proc.kill();
+    expect(exits).toEqual([[null, 'idle_stop']]);
+
+    // Idempotent — second kill must not double-emit.
+    proc.kill();
+    expect(exits).toEqual([[null, 'idle_stop']]);
   });
 });
 ```
@@ -1875,6 +1924,7 @@ export class CodexProcess extends EventEmitter {
   private codexSessionId: string | null = null;
   private currentTurnProc: ChildProcessByStdio<Writable, Readable, Readable> | null = null;
   private currentTurnSawSessionId = false;
+  private currentTurnSawResult = false;
   private stdoutBuf = '';
   private stderrBuf = Buffer.alloc(0);
   private killed = false;
@@ -1903,10 +1953,16 @@ export class CodexProcess extends EventEmitter {
     const child = this.spawnFn('codex', args, {
       cwd: this.projectPath,
       env: { ...process.env, CODEX_HOME: this.codexHome },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      // stdin MUST be ignored. Codex's `exec` reads piped stdin as
+      // additional prompt input ("Reading additional input from stdin...")
+      // and won't run until EOF. Since we pass the prompt as argv, leaving
+      // stdin as 'pipe' without writing/closing it makes the child hang
+      // forever — observed against codex-cli 0.128.0 in development.
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
     this.currentTurnProc = child;
     this.currentTurnSawSessionId = false;
+    this.currentTurnSawResult = false;
     this.stdoutBuf = '';
     this.stderrBuf = Buffer.alloc(0);
 
@@ -1936,7 +1992,11 @@ export class CodexProcess extends EventEmitter {
         this.currentTurnSawSessionId = true;
         continue;
       }
-      this.emit('event', parsed as AgentEvent);
+      const ev = parsed as AgentEvent;
+      if (ev.kind === 'result') {
+        this.currentTurnSawResult = true;
+      }
+      this.emit('event', ev);
     }
   }
 
@@ -1951,22 +2011,46 @@ export class CodexProcess extends EventEmitter {
     const proc = this.currentTurnProc;
     this.currentTurnProc = null;
     if (proc === null) return;
-    if (this.codexSessionId === null && !this.currentTurnSawSessionId) {
-      this.emit('error', 'codex_session_id_missing');
-    }
     // Flush any tail line that lacked a trailing newline.
     if (this.stdoutBuf.length > 0) {
       const parsed = parseCodexLine(this.stdoutBuf);
       this.stdoutBuf = '';
-      if (parsed && !('id' in parsed)) this.emit('event', parsed);
+      if (parsed && !('id' in parsed)) {
+        if ((parsed as AgentEvent).kind === 'result') {
+          this.currentTurnSawResult = true;
+        }
+        this.emit('event', parsed);
+      }
     }
-    // Emit a synthesized result event terminating the turn so the UI sees
-    // turn-complete even if the codex output didn't carry one.
-    this.emit('event', { kind: 'result' } satisfies AgentEvent);
-    if (code !== 0 && code !== null) {
-      const tail = this.stderrBuf.toString('utf8');
-      console.warn(`[codex-process] turn exited with code ${code}: ${tail.slice(-512)}`);
+
+    // Decide whether to synthesize a terminating result. If the parser
+    // already produced one (task_completed), don't emit a duplicate — that
+    // would render two "turn complete" bubbles. Only synthesize for the
+    // exceptional cases: codex_session_id_missing, non-zero exit, or a
+    // turn that ended without ever emitting a result.
+    const sessionIdMissing =
+      this.codexSessionId === null && !this.currentTurnSawSessionId;
+    const nonZeroExit = code !== 0 && code !== null;
+
+    if (sessionIdMissing || nonZeroExit) {
+      const result: AgentEvent = { kind: 'result' };
+      if (sessionIdMissing) {
+        result.error = 'codex_session_id_missing';
+      } else if (nonZeroExit) {
+        const tail = this.stderrBuf.toString('utf8').trim();
+        if (tail.length > 0) {
+          result.error = tail.length > 1024 ? tail.slice(-1024) : tail;
+        } else {
+          result.error = `codex exec exited with code ${code}`;
+        }
+      }
+      this.emit('event', result);
+    } else if (!this.currentTurnSawResult) {
+      // Clean exit but no task_completed event ever came through — emit a
+      // bare result so the UI's "turn complete" bubble shows.
+      this.emit('event', { kind: 'result' } satisfies AgentEvent);
     }
+    // Successful turn that already emitted a parsed result: emit nothing.
   }
 
   stderrTail(): string {
@@ -1977,15 +2061,22 @@ export class CodexProcess extends EventEmitter {
     if (this.killed) return;
     this.killed = true;
     const proc = this.currentTurnProc;
-    if (!proc) return;
-    proc.kill('SIGTERM');
-    setTimeout(() => {
-      try {
-        proc.kill('SIGKILL');
-      } catch {
-        /* already dead */
-      }
-    }, KILL_GRACE_MS).unref();
+    this.currentTurnProc = null; // ensure handleExit's natural-exit path no-ops
+    if (proc) {
+      proc.kill('SIGTERM');
+      setTimeout(() => {
+        try {
+          proc.kill('SIGKILL');
+        } catch {
+          /* already dead */
+        }
+      }, KILL_GRACE_MS).unref();
+    }
+    // Always emit a terminal 'exit' so SessionManager fires session_ended,
+    // closes the transcript file, and removes the session — even when no
+    // turn is in flight (between Codex turns the spawn-per-turn driver has
+    // no live child process to wait on).
+    this.emit('exit', null, proc ? 'stopped' : 'idle_stop');
   }
 }
 ```
@@ -2281,6 +2372,19 @@ async function handleMessage(
       }
       case 'get_history': {
         const h = mgr.getHistory(msg.sessionId, msg.since ?? 0);
+        if (h === null) {
+          // Session is not (or no longer) live. Reply with session_dead
+          // carrying both correlationId AND sessionId so the web client can
+          // route to the per-session transcript-only fallback.
+          sendError(
+            send,
+            'session_dead',
+            `session ${msg.sessionId} is not alive`,
+            msg.correlationId,
+            msg.sessionId,
+          );
+          return;
+        }
         send({
           type: 'history',
           sessionId: msg.sessionId,
@@ -2389,7 +2493,7 @@ git commit -m "feat(bridge): add list_accounts route + start.account validation"
 
 ```ts
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PromptStore } from '../prompt-store.js';
@@ -2451,7 +2555,7 @@ describe('PromptStore', () => {
 
   it('handles corrupt prompts.json by treating it as empty', () => {
     const path = join(dataDir, 'prompts.json');
-    require('node:fs').writeFileSync(path, '{not json');
+    writeFileSync(path, '{not json');
     const store = new PromptStore(dataDir);
     expect(store.list()).toEqual([]);
     store.add({ text: 'fresh', projectPath: '/p', agent: 'claude' });
@@ -2724,6 +2828,41 @@ case 'list_prompts': {
 - [ ] **Step 4: Add a websocket test for list_prompts**
 
 ```ts
+  it('get_history for an unknown session replies with error: session_dead carrying sessionId', async () => {
+    const { port, close } = await startServer();
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+    const got = new Promise<{
+      type: string;
+      code?: string;
+      sessionId?: string;
+      correlationId?: string;
+    }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'error') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'get_history',
+        sessionId: '00000000-0000-0000-0000-000000000000',
+        since: 0,
+        correlationId: 'cid-history',
+      }),
+    );
+    const msg = await got;
+    expect(msg.code).toBe('session_dead');
+    expect(msg.sessionId).toBe('00000000-0000-0000-0000-000000000000');
+    expect(msg.correlationId).toBe('cid-history');
+    sock.close();
+    await close();
+  });
+
   it('list_prompts replies with the PromptStore contents', async () => {
     // Spin up a manager with a fake promptStore that returns 1 entry.
     const fakePromptStore = {
@@ -3052,7 +3191,6 @@ export function App(): JSX.Element {
   const setStatus = useConnectionStore((s) => s.setStatus);
   const setError = useConnectionStore((s) => s.setError);
   const apply = useSessionsStore((s) => s.applyServerMsg);
-  const markTranscriptOnly = useSessionsStore((s) => s.markTranscriptOnly);
   const applyAccountList = useAccountsStore((s) => s.applyAccountList);
 
   const client = useMemo(() => new BridgeClient(), []);
@@ -3082,9 +3220,9 @@ export function App(): JSX.Element {
         return;
       }
       if (m.type === 'error') {
-        if (m.code === 'session_dead' && m.sessionId) {
-          markTranscriptOnly(m.sessionId);
-        }
+        // session_dead routing to markTranscriptOnly is added in Task 14 once
+        // the store has the setter. For now, all errors fall through to the
+        // global banner — Phase 1 behavior.
         setError(`${m.code}: ${m.message}`);
       } else {
         setError(null);
@@ -3101,7 +3239,7 @@ export function App(): JSX.Element {
       offMessage();
       client.close();
     };
-  }, [client, setStatus, setError, apply, markTranscriptOnly, applyAccountList]);
+  }, [client, setStatus, setError, apply, applyAccountList]);
 
   return (
     <Routes>
@@ -3189,6 +3327,45 @@ beforeEach(() => {
 });
 ```
 
+Now patch the `session_created` branch of `applyServerMsg` so transcript-only replays do NOT add the dead session back into the visible sidebar `order`. Locate the existing branch (it currently always pushes new ids onto `order`) and replace just the `set((s) => ({ ... }))` call with the version below:
+
+```ts
+const isTranscriptOnly = Boolean(get().transcriptOnly[m.sessionId]);
+set((s) => ({
+  sessions: { ...s.sessions, [m.sessionId]: view },
+  // Live sessions get added to the sidebar; transcript-only replays
+  // hydrate events into the store but stay OFF the sidebar.
+  order: isTranscriptOnly
+    ? s.order
+    : s.order.includes(m.sessionId)
+      ? s.order
+      : [...s.order, m.sessionId],
+}));
+```
+
+The rest of the branch (building `view` from the existing entry plus the incoming `m`) is unchanged.
+
+Add a sessions.test.ts case asserting the new behavior:
+
+```ts
+  it('session_created for a session marked transcriptOnly does NOT add to order', () => {
+    const store = useSessionsStore.getState();
+    store.markTranscriptOnly('s1');
+    store.applyServerMsg({
+      type: 'system',
+      event: 'session_created',
+      sessionId: 's1',
+      seq: 1,
+      agent: 'claude',
+      projectPath: '/p',
+      createdAt: 1,
+    });
+    const next = useSessionsStore.getState();
+    expect(next.sessions['s1']).toBeDefined();
+    expect(next.order).toEqual([]);
+  });
+```
+
 - [ ] **Step 4: Run tests + typecheck**
 
 ```bash
@@ -3198,11 +3375,51 @@ npx tsc --noEmit -p apps/web/tsconfig.json
 
 Expected: 9 passed (7 prior + 2 new); typecheck clean.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Update `apps/web/src/App.tsx` to route session_dead errors to the new setter**
+
+In the `useEffect` body, add a `markTranscriptOnly` selector and route `error { code: 'session_dead' }` through it. Replace the existing message handler (which Task 13 left as a Phase-1-style global banner) with:
+
+```tsx
+const setStatus = useConnectionStore((s) => s.setStatus);
+const setError = useConnectionStore((s) => s.setError);
+const apply = useSessionsStore((s) => s.applyServerMsg);
+const markTranscriptOnly = useSessionsStore((s) => s.markTranscriptOnly);
+const applyAccountList = useAccountsStore((s) => s.applyAccountList);
+```
+
+(Add `markTranscriptOnly` to the `useSessionsStore` selectors at the top of the component.)
+
+Then replace the `offMessage` block to call `markTranscriptOnly` on the right error code:
+
+```tsx
+const offMessage = client.on('message', (m) => {
+  if (m.type === 'account_list') {
+    applyAccountList(m.accounts);
+    return;
+  }
+  if (m.type === 'error') {
+    if (m.code === 'session_dead' && m.sessionId) {
+      markTranscriptOnly(m.sessionId);
+    }
+    setError(`${m.code}: ${m.message}`);
+  } else {
+    setError(null);
+  }
+  apply(m);
+});
+```
+
+Update the dependency array on the `useEffect` to include `markTranscriptOnly`:
+
+```tsx
+}, [client, setStatus, setError, apply, markTranscriptOnly, applyAccountList]);
+```
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add apps/web/src/store/sessions.ts apps/web/src/store/sessions.test.ts
-git commit -m "feat(web): add transcriptOnly map and markTranscriptOnly setter"
+git add apps/web/src/store/sessions.ts apps/web/src/store/sessions.test.ts apps/web/src/App.tsx
+git commit -m "feat(web): add transcriptOnly map and route session_dead errors to it"
 ```
 
 ---
@@ -3374,13 +3591,24 @@ export function Session({ client }: SessionProps): JSX.Element {
   }, [id, setActive]);
 
   const connStatus = useConnectionStore((s) => s.status);
-  const sessionExists = useSessionsStore((s) => (id ? Boolean(s.sessions[id]) : false));
+  // Send `get_history` exactly once per (id, connection-open) edge. We do
+  // NOT gate on `sessions[id]` existing, because deep-linking after a bridge
+  // restart hits this page with the session NOT in the store; the bridge
+  // replies with `error: session_dead` (carrying sessionId), which App.tsx
+  // routes to `markTranscriptOnly`, which flips `transcriptOnly[id]` and
+  // triggers the transcript-fetcher effect below.
+  const askedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!id || connStatus !== 'open' || !sessionExists || transcriptOnly) return;
+    if (!id || connStatus !== 'open' || transcriptOnly) {
+      askedRef.current = null;
+      return;
+    }
+    if (askedRef.current === id) return;
+    askedRef.current = id;
     const snapshot = useSessionsStore.getState().sessions[id];
-    if (!snapshot) return;
-    client.send({ type: 'get_history', sessionId: id, since: snapshot.lastSeq });
-  }, [client, id, connStatus, sessionExists, transcriptOnly]);
+    const since = snapshot?.lastSeq ?? 0;
+    client.send({ type: 'get_history', sessionId: id, since });
+  }, [client, id, connStatus, transcriptOnly]);
 
   // Transcript-only fallback: stream the disk transcript and dispatch each line
   // through applyServerMsg. Keep a guard ref so we only do it once per session id.
@@ -3695,7 +3923,9 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
 .picker-account select { background: #111; color: #ddd; border: 1px solid #333; padding: 0.25rem; }
 ```
 
-- [ ] **Step 3: Update `apps/web/src/features/project-picker/useNewSession.ts`**
+- [ ] **Step 3: Update `apps/web/src/features/project-picker/useNewSession.tsx`**
+
+(File extension is `.tsx` because it returns JSX. Phase 1 created it as `.tsx`. Do NOT rename; TypeScript module resolution accepts importing it as `./useNewSession` regardless.)
 
 Replace the `onPick` callback so it forwards `agent` and `account`:
 
