@@ -203,4 +203,26 @@ describe('http-server', () => {
     expect(res.status).toBe(403);
     await close();
   });
+
+  it('CSP includes connect-src with self + ws/wss, frame-ancestors none, img-src data/blob', async () => {
+    const { baseUrl, close } = await setup();
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { cookie: `bridge_session=${TOKEN}` },
+    });
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("connect-src 'self' ws: wss:");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("img-src 'self' data: blob:");
+    await close();
+  });
+
+  it('Permissions-Policy locks down camera/microphone/geolocation/payment/usb', async () => {
+    const { baseUrl, close } = await setup();
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { cookie: `bridge_session=${TOKEN}` },
+    });
+    const pp = res.headers.get('permissions-policy') ?? '';
+    expect(pp).toBe('camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+    await close();
+  });
 });

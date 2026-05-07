@@ -15,7 +15,15 @@ const SECURITY_HEADERS: Record<string, string> = {
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
   'Cross-Origin-Opener-Policy': 'same-origin',
-  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:",
+  'Content-Security-Policy':
+    "default-src 'self'; " +
+    "script-src 'self'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data: blob:; " +
+    "connect-src 'self' ws: wss:; " +
+    "frame-ancestors 'none'",
+  'Permissions-Policy':
+    'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
 };
 
 const MIME: Record<string, string> = {
