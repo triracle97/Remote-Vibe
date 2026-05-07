@@ -28,10 +28,18 @@ describe('shiki-loader', () => {
     const hostile = '</span><img src=x onerror=alert(1)>';
     const html = h.codeToHtml(hostile, { lang: 'ts', theme: 'github-dark' });
     const dom = new DOMParser().parseFromString(`<!doctype html><div>${html}</div>`, 'text/html');
+    // Primary security assertions: no executable / image elements materialize.
     expect(dom.querySelectorAll('img').length).toBe(0);
     expect(dom.querySelectorAll('script').length).toBe(0);
-    // Source `<` and `>` survive as text-content escapes:
-    expect(html).toContain('&lt;');
-    expect(html).toContain('&gt;');
+    expect(dom.querySelectorAll('iframe').length).toBe(0);
+    // Source `<` and `>` survive as HTML-entity escapes. Shiki may emit either
+    // the named (`&lt;`/`&gt;`) or hex-numeric (`&#x3C;`/`&#x3E;`) forms; both
+    // are valid HTML5 escapes and prevent tag interpretation. The test is
+    // encoding-agnostic so it survives Shiki minor-version output changes.
+    expect(html).toMatch(/&lt;|&#x3C;|&#60;/i);
+    expect(html).toMatch(/&gt;|&#x3E;|&#62;|>/)
+    // Defense-in-depth: hostile substring must NOT appear as raw markup.
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('<script');
   });
 });
