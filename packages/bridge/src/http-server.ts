@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { stat, realpath as fsRealpath } from 'node:fs/promises';
 import { join, normalize, sep, resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { tokensMatch, parseCookie, buildSessionCookie, isOriginAllowed, extractTokenFromRequest } from './auth.js';
@@ -7,6 +7,7 @@ import { tokensMatch, parseCookie, buildSessionCookie, isOriginAllowed, extractT
 export interface HttpHandlerOpts {
   token: string;
   staticDir: string;
+  dataDir: string;
 }
 
 const SECURITY_HEADERS: Record<string, string> = {
@@ -26,6 +27,8 @@ const MIME: Record<string, string> = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function applySecurity(res: ServerResponse): void {
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
@@ -83,6 +86,50 @@ export function createHttpHandler(opts: HttpHandlerOpts) {
     const host = req.headers.host;
     if (!isOriginAllowed(origin, host)) {
       send(res, 403, 'Origin mismatch');
+      return;
+    }
+
+    if (parsed.pathname.startsWith('/transcripts/')) {
+      const segment = parsed.pathname.slice('/transcripts/'.length);
+      if (!UUID_RE.test(segment)) {
+        send(res, 400, 'Invalid session id');
+        return;
+      }
+      const transcriptsRoot = join(opts.dataDir, 'transcripts');
+      const candidate = join(transcriptsRoot, `${segment}.jsonl`);
+      let resolvedRoot: string;
+      let resolvedFile: string;
+      try {
+        resolvedRoot = await fsRealpath(transcriptsRoot);
+        resolvedFile = await fsRealpath(candidate);
+      } catch {
+        send(res, 404, 'Not found');
+        return;
+      }
+      if (!resolvedFile.startsWith(resolvedRoot + sep)) {
+        send(res, 404, 'Not found');
+        return;
+      }
+      let st;
+      try {
+        st = await stat(resolvedFile);
+      } catch {
+        send(res, 404, 'Not found');
+        return;
+      }
+      if (!st.isFile()) {
+        send(res, 404, 'Not found');
+        return;
+      }
+      applySecurity(res);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.setHeader('Content-Length', String(st.size));
+      if (req.method === 'HEAD') {
+        res.end();
+        return;
+      }
+      createReadStream(resolvedFile).pipe(res);
       return;
     }
 

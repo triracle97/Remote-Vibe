@@ -32,7 +32,7 @@ async function main(): Promise<void> {
     spawnClaude: (path) => new ClaudeProcess(path),
   });
 
-  const handler = createHttpHandler({ token: cfg.token, staticDir });
+  const handler = createHttpHandler({ token: cfg.token, staticDir, dataDir: cfg.dataDir });
   const server = createServer(handler);
   attachWebSocket({ server, token: cfg.token, sessionManager });
 
