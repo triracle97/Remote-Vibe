@@ -65,7 +65,14 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
 
     send({ type: 'system', event: 'init' });
 
-    ws.on('message', (raw) => handleMessage(ws, raw, opts.sessionManager, send));
+    ws.on('message', (raw) => {
+      // Explicit fire-and-forget. handleMessage owns its own try/catch; the
+      // void here documents that any future regression that lets a rejection
+      // escape will surface as an unhandled rejection rather than be silently
+      // dropped (Node 20 default action is process termination, which is the
+      // right loud failure for a single-operator bridge).
+      void handleMessage(ws, raw, opts.sessionManager, send);
+    });
   });
 
   return wss;

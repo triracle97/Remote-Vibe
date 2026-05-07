@@ -53,6 +53,13 @@ export class ClaudeProcess extends EventEmitter {
       const reason = err.code === 'ENOENT' ? 'agent_not_installed' : 'spawn_failed';
       this.emit('exit', null, reason);
     });
+
+    // Swallow stdin EPIPE: when the agent exits, its stdin closes asynchronously
+    // before the child 'exit' event fires. Without this, a write() in the gap
+    // becomes an uncaught stream error and crashes the bridge. The 'exit' event
+    // will fire next tick and SessionManager will mark the session dead via
+    // onProcExit.
+    this.child.stdin.on('error', () => {});
   }
 
   private handleStdout(chunk: string): void {
