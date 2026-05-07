@@ -66,7 +66,7 @@ Boundaries:
 
 | Type | Diff |
 |---|---|
-| `input` | The optional `images?: [{mime: string, base64: string}]` field is now actually populated by the web client. Bridge enforces: at most 4 images, each ≤ 10 MB, MIME ∈ `{ image/png, image/jpeg, image/webp, image/gif }`, and session.agent must be `claude`. |
+| `input` | The optional `images?: [{mime: string, base64: string}]` field is now actually populated by the web client. Bridge enforces: at most 4 images, each ≤ 10 MB, MIME ∈ `{ image/png, image/jpeg, image/webp, image/gif }`, and session.agent must be `claude`. The web client MUST attach a fresh `correlationId` on every image-bearing `input` so the bridge can route validation errors back to the originating request. (Phase 1 protocol already declared `correlationId?` on `ClientInputMsg`; Phase 3 makes it mandatory whenever `images` is present.) |
 
 ### Server → Client (new)
 
@@ -92,7 +92,7 @@ Boundaries:
 | File | Responsibility |
 |---|---|
 | `fs-api.ts` | `class FsApi`. Constructor takes `{ allowedDirs: string[] }`. Exposes `async listDirs(path: string): Promise<Array<DirEntry>>` and `async readFile(path: string, sizeCap: number): Promise<FileResult>`. Both methods `realpath`-resolve the input, verify the resolved path is inside one of the allowed dirs, and verify the resolved path does not match the FS denylist. The denylist is a module-level constant (segments + basenames + glob basenames). Sort policy: dirs-first, name asc case-insensitive. Binary detection: read first 8 KB, scan for null bytes or > 5 % non-UTF8/non-printable bytes; if hit, return `{kind: 'binary', mime, size}` without reading the body. `mime` is best-guess from the file extension. Reads cap at `sizeCap` (5 MB by default); on overrun, returns `{kind: 'too_large', size}`. ENOENT and EACCES are mapped to `path_outside_allowlist` so the bridge does not leak existence. |
-| `image-store.ts` | `class ImageStore`. Constructor takes `{ dataDir: string }`. Exposes `validate(images, agent): { ok: boolean; error?: ServerErrorCode }` (4-image cap, MIME allowlist, 10 MB per image, codex rejects), `async writeAuditCopy(sessionId, images): Promise<void>` (writes each image to `${dataDir}/images/<sessionId>/<uuid>.<ext>` mode 0700; best-effort — failure logs and continues), and `async cleanup(sessionId): Promise<void>` (removes the per-session dir on `session_ended`). |
+| `image-store.ts` | `class ImageStore`. Constructor takes `{ dataDir: string }`. Exposes `validate(images, agent): { ok: boolean; error?: ServerErrorCode }` (4-image cap, MIME allowlist, 10 MB per image, codex rejects), `async writeAuditCopy(sessionId, images): Promise<void>` (creates `${dataDir}/images/<sessionId>/` with mode `0o700` if missing, writes each image to `<sessionId>/<uuid>.<ext>` with mode `0o600`; best-effort — failure logs and continues), and `async cleanup(sessionId): Promise<void>` (removes the per-session dir on `session_ended`). |
 
 ### Bridge — modified files
 
@@ -100,9 +100,9 @@ Boundaries:
 |---|---|
 | `types.ts` | Add `ClientListDirsMsg`, `ClientReadFileMsg`. Add `ServerDirsResultMsg` and a discriminated `ServerFileResultMsg = ServerFileResultText \| ServerFileResultBinary \| ServerFileResultTooLarge`. Add `ServerErrorCode` members `path_denied`, `image_too_large`, `image_invalid_mime`, `too_many_images`. |
 | `websocket.ts` | New routes: `list_dirs` → `fsApi.listDirs(path)` → `dirs_result`, errors mapped to typed `error` messages with `correlationId`. `read_file` → `fsApi.readFile(path, READ_FILE_BYTE_CAP)` → `file_result`. The existing `input` route invokes `imageStore.validate(images, session.agent)` before forwarding text + images to the agent driver; on failure, replies with a typed `error` carrying both `correlationId` and `sessionId`. `AttachWsOpts` gains `fsApi` and `imageStore`. The `MAX_MSG_BYTES` constant is bumped from 16 MB to 64 MB to leave headroom for the 4×10 MB image batch base64-encoded form (~52 MB after Base64 expansion). |
-| `session.ts` | `SessionManagerOpts` gains `imageStore?: ImageStore`. `sendInput(sessionId, text, images?)` (signature gains optional `images`). When `images` is provided, the validated batch is forwarded to the driver via `proc.sendUserText(text, images)`. After the user-event broadcast (Phase 1 behavior), if `images` is present, calls `imageStore.writeAuditCopy(sessionId, images)`. `onProcExit` calls `imageStore.cleanup(sessionId)` alongside `transcriptStore.close`. |
+| `session.ts` | `SessionManagerOpts` gains `imageStore?: ImageStore`. `sendInput(sessionId, text, images?)` (signature gains optional `images`). When `images` is provided: (1) append `user` event + broadcast + transcript, (2) `promptStore.add`, (3) `proc.sendUserText(text, images)`. **Then** schedule `imageStore.writeAuditCopy(sessionId, images)` as a fire-and-forget `void`-prefixed call with internal `.catch(log)`; audit-copy failures do not affect the synchronous return from `sendInput`. `onProcExit` calls `imageStore.cleanup(sessionId)` alongside `transcriptStore.close`. |
 | `claude-process.ts` | `sendUserText(text)` becomes `sendUserText(text, images?)`. When images are provided, the stream-json `user` message is built as `content: [{type:'text', text}, ...images.map(i => ({type:'image', source:{type:'base64', media_type: i.mime, data: i.base64}}))]`. `ClaudeProcessEvents`/`AgentDriver` interface signature updated accordingly; `CodexProcess.sendUserText` ignores images (codex sessions never receive them — gated at SessionManager). |
-| `http-server.ts` | `SECURITY_HEADERS` updated. New CSP: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'`. New `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`. The previous CSP that allowed `ws:` / `wss:` in `connect-src` is dropped — same-origin WebSocket does not need it. |
+| `http-server.ts` | `SECURITY_HEADERS` updated. New CSP: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'`. New `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`. `ws:` / `wss:` remain in `connect-src` alongside `'self'` as defense in depth — see §8. |
 | `index.ts` | Constructs `FsApi(allowedDirs)` and `ImageStore({ dataDir })`. Passes `imageStore` into `SessionManager`. Passes `fsApi` and `imageStore` into `attachWebSocket`. |
 
 ### Web — new files
@@ -160,22 +160,27 @@ Boundaries:
 1. In a Claude session, user pastes an image (or drops one, or clicks 📎 and picks files).
 2. `useImagePaste` reads each File via `FileReader.readAsDataURL`, strips the `data:<mime>;base64,` prefix, and calls `addImageFromFile`. Client-side validation: MIME allowlist + ≤ 10 MB + total ≤ 4. On fail, sets `error` and does not add. The user sees the error in a tooltip on the strip.
 3. `ImageThumbnails` re-renders with the new image and an x-button.
-4. User types text and presses Send (or Cmd/Ctrl-Enter). `InputBox` calls `client.send({type:'input', sessionId, text, images: [{mime, base64}, ...]})`.
+4. User types text and presses Send (or Cmd/Ctrl-Enter). `InputBox` generates a fresh `correlationId` and calls `client.send({type:'input', sessionId, text, images: [{mime, base64}, ...], correlationId})`. The `correlationId` is mandatory whenever `images` is present so the bridge can route image-validation errors back to the originating request (§4).
 5. Bridge `websocket.ts` `input` route now invokes `imageStore.validate(images, session.agent)`:
    - If `session.agent !== 'claude'` → `images_not_supported_for_agent` (sessionId + correlationId).
    - If `images.length > 4` → `too_many_images` (sessionId + correlationId).
    - Per image: MIME ∈ allowlist, decoded byte length (`(base64.length * 3) / 4 - padding`) ≤ 10 MB. Fail → `image_too_large` or `image_invalid_mime`.
-6. On pass: `imageStore.writeAuditCopy(sessionId, images)` writes each image to `${BRIDGE_DATA_DIR}/images/<sessionId>/<uuid>.<ext>` mode 0700. Best-effort — failure logs and does not block.
-7. `mgr.sendInput(sessionId, text, images)` → `claude-process.sendUserText(text, images)` → builds the Anthropic content-blocks array → writes one NDJSON line to claude stdin.
-8. SessionManager's existing user-event broadcast (Phase 1) fires with `payload: {text}` only. Image binaries do NOT travel back over the wire on every message broadcast. The chat bubble for the user message renders with the image data the InputBox kept locally (until clear-on-send). Subsequent reload-replay reconstructs the user bubble with text only and a small "📎 N attachments" badge whose payload is loaded from the audit copy if needed (deferred — not in Phase 3 scope).
+6. On `validate` pass, the bridge sequences the rest of the turn inside a single `SessionManager.sendInput` call. Audit-copy ownership lives in `SessionManager` (the websocket route is a thin dispatcher). The synchronous body of `sendInput` runs three message-delivery steps; only after all three return does `sendInput` schedule audit copy as a fire-and-forget side effect:
+   1. `appendAndBroadcast(s, userEvent)` — pushes the `user` event onto the ring buffer, writes it to the transcript, broadcasts to subscribers (Phase 1 behavior).
+   2. `promptStore.add({text, projectPath, agent})` (Phase 2 behavior).
+   3. `proc.sendUserText(text, images)` — writes one NDJSON line to claude's stdin with the embedded base64 content blocks.
+   4. *On the SAME tick*, before `sendInput` returns, the manager schedules `void imageStore.writeAuditCopy(sessionId, images).catch(logAuditFailure)`. The promise is intentionally unawaited; `sendInput` itself is `void`-returning and reports success the moment step 3 completes. Audit failures never propagate back to the websocket route, the user, or the synchronous return shape.
+
+The websocket `input` route does NOT touch `imageStore.writeAuditCopy` directly. Its only image-related calls are `imageStore.validate(images, agent)` (before forwarding) and the synchronous `mgr.sendInput(sessionId, text, images)`.
+7. SessionManager's user-event broadcast carries `payload: {text}` only. Image binaries do NOT travel back over the wire on every broadcast. The chat bubble for the user message renders with the image data the InputBox kept locally (cleared on Send). Subsequent reload-replay reconstructs the user bubble with text only plus a small "📎 N attachments" badge; loading the audit copy back into the bubble is deferred (out of Phase 3 scope).
 
 ### CSP polish
 
 Pure config change to `SECURITY_HEADERS` in `http-server.ts`:
-- `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'`.
+- `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'`.
 - `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`.
 
-`'self'` for `connect-src` works because the WebSocket lives on the same origin as the bundle. `data:` and `blob:` for `img-src` so client-rendered image previews work without CORS. `frame-ancestors 'none'` is redundant with the existing `X-Frame-Options: DENY` but the CSP variant is the modern equivalent and useful for browsers that prefer CSP.
+The `connect-src` directive keeps `ws:` and `wss:` alongside `'self'`. Modern browsers (Chrome 86+, Safari 15+) honor `'self'` for same-origin WebSocket connections, but historic spec quirks and older browsers vary in whether they require an explicit scheme — keeping `ws:` / `wss:` is a defense-in-depth no-op on modern browsers and prevents the bridge's own socket from breaking on outliers. `data:` and `blob:` in `img-src` allow client-rendered image previews without CORS. `frame-ancestors 'none'` is redundant with the existing `X-Frame-Options: DENY` but is the modern equivalent. The implementer must verify the new CSP does not break the existing WebSocket connection by running the smoke test (Task 12) and watching the browser console for CSP violations.
 
 ## 7. Errors
 
@@ -199,43 +204,61 @@ Pure config change to `SECURITY_HEADERS` in `http-server.ts`:
 
 Order: allowlist first, then denylist. The allowlist anchors the safe roots (`BRIDGE_ALLOWED_DIRS`); the denylist removes specific dangerous segments and basenames inside those roots.
 
-The denylist is a module-level constant in `fs-api.ts`:
+The denylist is a module-level constant in `fs-api.ts`. Three categories so each match rule is concrete and unambiguous:
 
 ```ts
+// Single segments. Matches if any path component of the resolved path
+// (split on '/') equals an entry. Good for "no entry in the tree may
+// be inside one of these directories".
 const DENIED_PATH_SEGMENTS: ReadonlySet<string> = new Set([
   '.ssh',
   '.aws',
   '.gnupg',
   '.gnupg-keys',
   '.kube',
-  '.netrc',
-  'Library/Keychains',     // macOS
-  'Library/Cookies',        // macOS
 ]);
 
-const DENIED_BASENAMES: ReadonlySet<string> = new Set([
+// Consecutive-segment runs. Matches if the resolved path contains
+// these path components in order. Each entry is split on '/'.
+const DENIED_SEGMENT_RUNS: ReadonlyArray<readonly string[]> = [
+  ['.config', 'op'],
+  ['.config', 'keys'],
+  ['.docker', 'config.json'],
+  ['Library', 'Keychains'],
+  ['Library', 'Cookies'],
+];
+
+// Exact basenames. Matches if the resolved path's last segment equals
+// (case-insensitive) one of these entries.
+const DENIED_BASENAMES_CI: ReadonlySet<string> = new Set([
   '.netrc',
-  '.docker/config.json',
   'id_rsa',
   'id_ed25519',
   'id_ecdsa',
   'id_dsa',
-  '.config/op',             // 1Password CLI session dir
 ]);
 
+// Basename glob patterns (case-insensitive via the `i` flag).
 const DENIED_BASENAME_PATTERNS: ReadonlyArray<RegExp> = [
-  /^.+\.pem$/,
-  /^.+\.key$/,
-  /^.+\.p12$/,
+  /^.+\.pem$/i,
+  /^.+\.key$/i,
+  /^.+\.p12$/i,
+  /^.+\.pfx$/i,
 ];
 ```
 
 Match rules:
-- **Segment match:** any path component (split on `/`) of the resolved path equals an entry in `DENIED_PATH_SEGMENTS`. (`.ssh` segment matches `~/.ssh` and `~/code/.ssh/known_hosts`.) Entries containing `/` (like `Library/Keychains`) are matched against consecutive segments.
-- **Basename match:** the resolved path's last segment equals an entry in `DENIED_BASENAMES`.
-- **Glob-basename match:** the resolved path's last segment matches one of the `DENIED_BASENAME_PATTERNS` regexes.
+- **Segment match:** any path component of the resolved path equals an entry in `DENIED_PATH_SEGMENTS`. (`.ssh` segment matches `~/.ssh` and `~/code/.ssh/known_hosts`.)
+- **Segment-run match:** the resolved path's split components contain one of the runs in `DENIED_SEGMENT_RUNS` as a contiguous subsequence. (`['.docker', 'config.json']` matches `~/.docker/config.json` whether or not its parent is `$HOME`.)
+- **Basename match (case-insensitive):** the resolved path's last segment, lower-cased, equals an entry in `DENIED_BASENAMES_CI`. (`id_rsa` and `ID_RSA` both match.)
+- **Glob-basename match:** the resolved path's last segment matches one of the `DENIED_BASENAME_PATTERNS` regexes (each compiled with the `i` flag).
 
-A directory's children are individually filtered: if a child's resolved path hits the denylist, the child is dropped from the `dirs_result`.
+A directory's children are individually filtered. For each child entry returned by `readdir`, `listDirs` computes the child's `realpath` and applies BOTH gates:
+
+1. **Allowlist gate:** the child's resolved path must equal an allowed dir or start with `<allowedDir>/`. Otherwise the child is dropped silently. This is what blocks symlink-out-of-allowlist children — without this filter, a `~/code/proj/external -> /opt/secrets` symlink would render as a visible `external/` row even though clicking it later returns `path_outside_allowlist`. The drop must happen at listing time so the row never appears.
+2. **Denylist gate:** the child's resolved path must not match any of the four match rules. Otherwise the child is dropped silently.
+
+Both gates run against the resolved (post-`realpath`) child path, not the symlink target's name as it appears in the parent directory.
 
 The allowlist check uses `resolved === d || resolved.startsWith(d + '/')` — exact match or proper subpath. Symlink escapes are blocked because `realpath` resolves symlinks before the allowlist check.
 
@@ -245,11 +268,11 @@ The allowlist check uses `resolved === d || resolved.startsWith(d + '/')` — ex
 
 ### Image audit copy
 
-`${BRIDGE_DATA_DIR}/images/<sessionId>/` is `mkdir`-ed with mode `0o700` so only the operator's UID can read it. Each image written with `0o600`. Per-session directory removed on `session_ended`. `BRIDGE_DATA_DIR` defaults under `$HOME/.config/`, which is already operator-owned.
+`${BRIDGE_DATA_DIR}/images/<sessionId>/` is `mkdir`-ed with mode `0o700` so only the operator's UID can read the directory. Each image file is written with mode `0o600` (read+write for owner only — never executable). Per-session directory removed on `session_ended`. `BRIDGE_DATA_DIR` defaults under `$HOME/.config/`, which is already operator-owned.
 
 ### CSP / Permissions-Policy
 
-The new CSP drops `ws:` / `wss:` from `connect-src` because same-origin WebSocket does not need an explicit scheme — `'self'` covers it. `'self' 'unsafe-inline'` for `style-src` is required by Vite's CSS injection at dev time (production bundle is fully external). `img-src 'self' data: blob:` allows rendered image previews without breaking same-origin assertions for fetch calls.
+The new CSP retains `ws:` / `wss:` in `connect-src` alongside `'self'`. Modern browsers (Chrome 86+, Safari 15+) honor `'self'` for same-origin WebSocket connections, but historic browser quirks vary. Keeping `ws:` / `wss:` is defense in depth — it does not relax `'self'`'s same-origin guarantee for HTTP `fetch`, and it ensures the bridge's own socket survives on outliers. `'self' 'unsafe-inline'` for `style-src` is required by Vite's CSS injection at dev time (production bundle is fully external). `img-src 'self' data: blob:` allows rendered image previews without breaking same-origin assertions for fetch calls.
 
 The new `Permissions-Policy` denies the named features outright. Because the operator might want to use voice input from their phone in a later phase, `microphone` is currently denied — relax in that phase if/when the feature ships.
 
@@ -271,7 +294,7 @@ The new `Permissions-Policy` denies the named features outright. Because the ope
 - `image-store.test.ts` — `validate` 4-image cap, MIME allowlist, 10 MB cap, agent gating; `writeAuditCopy` writes correct files with mode 0o600 in a 0o700 dir; `cleanup` removes the dir.
 - `websocket.test.ts` (additions) — `list_dirs` happy path replies `dirs_result`; allowlist + denylist errors propagate `correlationId`. `read_file` happy path replies `file_result` with the right `kind`. `input` with codex session + `images` → `images_not_supported_for_agent`. `input` with > 4 images → `too_many_images`.
 - `claude-process.test.ts` (additions) — `sendUserText('hi', images)` writes a single NDJSON line whose `content` array contains `[{type:'text', text:'hi'}, {type:'image', source:{type:'base64', media_type:'image/png', data:'...'}}]`.
-- `http-server.test.ts` (additions) — CSP header asserts `connect-src 'self'`, no `ws:` / `wss:` substring; `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()` exact match.
+- `http-server.test.ts` (additions) — CSP header includes `connect-src 'self' ws: wss:` (substring assertion), `frame-ancestors 'none'`, and `img-src 'self' data: blob:`; `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()` exact match.
 
 ### Web unit tests
 
