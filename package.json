@@ -1,17 +1,29 @@
 {
   "name": "mac-remote-terminal",
-  "version": "1.0.0",
-  "main": "index.js",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "bridge:dev": "npm run dev --workspace=packages/bridge",
+    "bridge:build": "npm run build --workspace=packages/bridge",
+    "bridge:test": "npm run test --workspace=packages/bridge",
+    "web:dev": "npm run dev --workspace=apps/web",
+    "web:build": "npm run build --workspace=apps/web",
+    "web:test": "npm run test --workspace=apps/web",
+    "build": "npm run web:build && npm run bridge:build",
+    "test": "npm run bridge:test && npm run web:test",
+    "bridge:typecheck": "npm run typecheck --workspace=packages/bridge",
+    "web:typecheck": "npm run typecheck --workspace=apps/web",
+    "typecheck": "npm run bridge:typecheck && npm run web:typecheck"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
-  "dependencies": {
-    "express": "^5.2.1",
-    "node-pty": "^1.1.0",
-    "ws": "^8.20.0"
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
