@@ -10,13 +10,19 @@ vi.mock('mermaid', () => {
   return { default: { initialize, render } };
 });
 
-import mermaid from 'mermaid';
-import { renderMermaid } from './mermaid-loader';
-
 describe('renderMermaid', () => {
-  beforeEach(() => {
+  let mermaid: typeof import('mermaid').default;
+  let renderMermaid: (typeof import('./mermaid-loader'))['renderMermaid'];
+
+  beforeEach(async () => {
+    // Reset loader's module-level `initialized` flag so each test starts cold.
+    // This keeps the "init exactly once" assertion true regardless of test order.
+    vi.resetModules();
+    const mermaidModule = await import('mermaid');
+    mermaid = mermaidModule.default;
     (mermaid.initialize as ReturnType<typeof vi.fn>).mockClear();
     (mermaid.render as ReturnType<typeof vi.fn>).mockClear();
+    renderMermaid = (await import('./mermaid-loader')).renderMermaid;
   });
 
   it('initializes mermaid with strict security + dark theme exactly once across calls', async () => {
