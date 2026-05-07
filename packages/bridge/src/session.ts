@@ -5,6 +5,7 @@ import type { ClaudeProcess } from './claude-process.js';
 import type { TranscriptStore } from './transcript-store.js';
 import type { CodexAccount } from './accounts.js';
 import type { PromptStore } from './prompt-store.js';
+import type { ImageStore } from './image-store.js';
 import type {
   AgentEvent,
   AgentKind,
@@ -28,7 +29,7 @@ interface InternalSession extends SessionInfo {
 }
 
 export interface AgentDriver extends EventEmitter {
-  sendUserText(text: string): void;
+  sendUserText(text: string, images?: ReadonlyArray<{ mime: string; base64: string }>): void;
   kill(): void;
 }
 
@@ -49,6 +50,7 @@ export interface SessionManagerOpts {
   transcriptStore?: TranscriptStore;
   accounts?: Map<string, CodexAccount>;
   promptStore?: PromptStore;
+  imageStore?: ImageStore;
 }
 
 export class PathOutsideAllowlistError extends Error {
@@ -81,6 +83,7 @@ export class SessionManager extends EventEmitter {
   private readonly transcriptStore: TranscriptStore | undefined;
   private readonly accounts: Map<string, CodexAccount>;
   private readonly promptStore: PromptStore | undefined;
+  private readonly imageStore: ImageStore | undefined;
 
   constructor(opts: SessionManagerOpts) {
     super();
@@ -90,6 +93,7 @@ export class SessionManager extends EventEmitter {
     this.transcriptStore = opts.transcriptStore;
     this.accounts = opts.accounts ?? new Map();
     this.promptStore = opts.promptStore;
+    this.imageStore = opts.imageStore;
     if (opts.driverFactory) {
       this.driverFactory = opts.driverFactory;
     } else if (opts.spawnClaude) {
@@ -248,6 +252,9 @@ export class SessionManager extends EventEmitter {
       reason: finalReason,
     });
     this.transcriptStore?.close(s.sessionId);
+    void this.imageStore?.cleanup(s.sessionId).catch((err) =>
+      console.warn('[image-audit] cleanup', err),
+    );
     this.sessions.delete(s.sessionId);
   }
 
@@ -291,17 +298,28 @@ export class SessionManager extends EventEmitter {
     return this.sessions.has(sessionId);
   }
 
-  sendInput(sessionId: string, text: string): void {
+  sendInput(
+    sessionId: string,
+    text: string,
+    images?: ReadonlyArray<{ mime: string; base64: string }>,
+  ): void {
     const s = this.sessions.get(sessionId);
     if (!s || !s.alive) throw new SessionDeadError(sessionId);
     this.appendAndBroadcast(s, {
       type: 'user',
       sessionId,
       seq: s.nextSeq++,
-      payload: { text },
+      payload: { text, ...(images && images.length > 0 ? { imageCount: images.length } : {}) },
     });
     this.promptStore?.add({ text, projectPath: s.projectPath, agent: s.agent });
-    s.proc.sendUserText(text);
+    s.proc.sendUserText(text, images);
+    // Fire-and-forget audit copy (Phase 3 §6 ordering). Errors are logged inside
+    // ImageStore; never block delivery.
+    if (this.imageStore && images && images.length > 0) {
+      void this.imageStore
+        .writeAuditCopy(sessionId, images.slice())
+        .catch((err) => console.warn('[image-audit]', err));
+    }
   }
 
   stop(sessionId: string): void {

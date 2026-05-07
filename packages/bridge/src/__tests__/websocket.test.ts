@@ -137,7 +137,7 @@ describe('websocket', () => {
     sock.send(JSON.stringify({ type: 'input', sessionId: session.sessionId, text: 'hello' }));
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(procs[0]!.sendUserText).toHaveBeenCalledWith('hello');
+    expect(procs[0]!.sendUserText).toHaveBeenCalledWith('hello', undefined);
     sock.close();
     await close();
   });

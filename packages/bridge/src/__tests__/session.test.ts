@@ -6,7 +6,11 @@ import type { AgentEvent, ServerLifecycleMsg, ServerStreamMsg } from '../types.j
 class FakeProc extends EventEmitter {
   killed = false;
   sentText: string[] = [];
-  sendUserText(s: string) { this.sentText.push(s); }
+  sentImages: Array<ReadonlyArray<{ mime: string; base64: string }> | undefined> = [];
+  sendUserText(s: string, images?: ReadonlyArray<{ mime: string; base64: string }>) {
+    this.sentText.push(s);
+    this.sentImages.push(images);
+  }
   kill() { this.killed = true; this.emit('exit', 0); }
   emitEvent(e: AgentEvent) { this.emit('event', e); }
 }
@@ -281,6 +285,52 @@ describe('SessionManager', () => {
     procs[0]!.emit('exit', 0);
     await new Promise((r) => setImmediate(r));
     expect(closed).toEqual([s.sessionId]);
+  });
+
+  it('schedules ImageStore.writeAuditCopy as a fire-and-forget after sendInput', async () => {
+    const procs: FakeProc[] = [];
+    const auditCalls: Array<{ id: string; n: number }> = [];
+    const fakeImageStore = {
+      validate: () => ({ ok: true as const }),
+      writeAuditCopy: async (id: string, imgs: unknown[]) => {
+        auditCalls.push({ id, n: imgs.length });
+      },
+      cleanup: async () => {},
+    };
+    const mgr = new SessionManager({
+      allowedDirs: ['/Users/test'],
+      bufferCap: 100,
+      driverFactory: () => {
+        const p = new FakeProc();
+        procs.push(p);
+        return p as unknown as import('../session.js').AgentDriver;
+      },
+      realpath: async (p) => p,
+      imageStore: fakeImageStore as unknown as import('../image-store.js').ImageStore,
+    });
+    const s = await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });
+    mgr.sendInput(s.sessionId, 'hi', [{ mime: 'image/png', base64: 'AA==' }]);
+    // sendInput returns synchronously; audit copy was scheduled.
+    await new Promise((r) => setImmediate(r));
+    expect(auditCalls).toEqual([{ id: s.sessionId, n: 1 }]);
+  });
+
+  it('forwards images to the driver via proc.sendUserText', async () => {
+    const procs: FakeProc[] = [];
+    const mgr = new SessionManager({
+      allowedDirs: ['/Users/test'],
+      bufferCap: 100,
+      driverFactory: () => {
+        const p = new FakeProc();
+        procs.push(p);
+        return p as unknown as import('../session.js').AgentDriver;
+      },
+      realpath: async (p) => p,
+    });
+    const s = await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });
+    mgr.sendInput(s.sessionId, 'hi', [{ mime: 'image/png', base64: 'AAA=' }]);
+    expect(procs[0]!.sentText).toEqual(['hi']);
+    expect(procs[0]!.sentImages).toEqual([[{ mime: 'image/png', base64: 'AAA=' }]]);
   });
 
   it('records user prompts in the PromptStore on sendInput', async () => {

@@ -85,12 +85,20 @@ export class ClaudeProcess extends EventEmitter {
     return this.stderrBuf.toString('utf8');
   }
 
-  sendUserText(text: string): void {
-    const line =
-      JSON.stringify({
-        type: 'user',
-        message: { role: 'user', content: [{ type: 'text', text }] },
-      }) + '\n';
+  sendUserText(text: string, images?: ReadonlyArray<{ mime: string; base64: string }>): void {
+    const content: Array<unknown> = [{ type: 'text', text }];
+    if (images) {
+      for (const img of images) {
+        content.push({
+          type: 'image',
+          source: { type: 'base64', media_type: img.mime, data: img.base64 },
+        });
+      }
+    }
+    const line = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content },
+    }) + '\n';
     this.child.stdin.write(line);
   }
 

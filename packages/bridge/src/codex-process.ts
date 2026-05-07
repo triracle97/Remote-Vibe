@@ -44,7 +44,7 @@ export class CodexProcess extends EventEmitter {
     this.spawnFn = opts.spawn ?? (nodeSpawn as unknown as SpawnFn);
   }
 
-  sendUserText(text: string): void {
+  sendUserText(text: string, _images?: ReadonlyArray<{ mime: string; base64: string }>): void {
     // Concurrent-turn guard. If a previous turn is still in flight when the
     // next sendUserText arrives, terminate it cleanly first. Without this,
     // `currentTurnProc` would be silently overwritten and the prior child's

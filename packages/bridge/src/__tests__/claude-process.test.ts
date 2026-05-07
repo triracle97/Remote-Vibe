@@ -166,6 +166,33 @@ describe('ClaudeProcess', () => {
     expect(exitSpy).toHaveBeenCalledWith(null, 'spawn_failed');
   });
 
+  it('embeds image content blocks alongside text in the user message', () => {
+    const fakes = makeFakeChild();
+    const spawn = vi.fn().mockReturnValue(fakes.child);
+    const proc = new ClaudeProcess('/p', { spawn });
+    proc.sendUserText('look at this', [
+      { mime: 'image/png', base64: 'PNGDATA' },
+      { mime: 'image/jpeg', base64: 'JPGDATA' },
+    ]);
+    expect(fakes.stdinWrites.length).toBe(1);
+    const written = JSON.parse(fakes.stdinWrites[0]!.trimEnd()) as {
+      type: string;
+      message: {
+        role: string;
+        content: Array<
+          | { type: 'text'; text: string }
+          | { type: 'image'; source: { type: string; media_type: string; data: string } }
+        >;
+      };
+    };
+    expect(written.type).toBe('user');
+    expect(written.message.content).toEqual([
+      { type: 'text', text: 'look at this' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'PNGDATA' } },
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'JPGDATA' } },
+    ]);
+  });
+
   it('kill() sends SIGTERM then SIGKILL after grace', async () => {
     vi.useFakeTimers();
     const fakes = makeFakeChild();
