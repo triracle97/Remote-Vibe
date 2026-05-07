@@ -35,6 +35,10 @@ export function MessageBubble({ event }: MessageBubbleProps): JSX.Element | null
     const payload = event.payload as { toolUseId: string; output: unknown };
     return <ToolResultBubble output={payload.output} />;
   }
+  if (event.type === 'user') {
+    const payload = event.payload as { text?: string };
+    return <div className="bubble user">{payload.text ?? ''}</div>;
+  }
   if (event.type === 'result') {
     const payload = event.payload as { cost?: number; durationMs?: number };
     const parts: string[] = [];

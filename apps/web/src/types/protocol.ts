@@ -74,7 +74,7 @@ export interface ServerLifecycleMsg {
 }
 
 export interface ServerStreamMsg {
-  type: 'assistant' | 'stream_delta' | 'tool_result' | 'result' | 'status';
+  type: 'assistant' | 'stream_delta' | 'tool_result' | 'result' | 'status' | 'user';
   sessionId: string;
   seq: number;
   payload: unknown;

@@ -168,9 +168,30 @@ describe('SessionManager', () => {
 
   it('sendInput forwards text to the process', async () => {
     const { mgr, procs } = makeManager();
+    const broadcasts: unknown[] = [];
+    mgr.on('broadcast', (m) => broadcasts.push(m));
     const s = await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });
     mgr.sendInput(s.sessionId, 'hi there');
     expect(procs[0]!.sentText).toEqual(['hi there']);
+    const userBroadcast = broadcasts.find((b) => (b as { type: string }).type === 'user') as ServerStreamMsg;
+    expect(userBroadcast).toBeDefined();
+    expect(userBroadcast.seq).toBe(2);
+    expect((userBroadcast.payload as { text: string }).text).toBe('hi there');
+  });
+
+  it('appends user events to the ring buffer so replay reproduces them', async () => {
+    const { mgr } = makeManager();
+    const s = await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });
+    mgr.sendInput(s.sessionId, 'first');
+    mgr.sendInput(s.sessionId, 'second');
+
+    const h = mgr.getHistory(s.sessionId, 0);
+    // session_created (seq 1) + 2 user events (seq 2, 3) = 3 events
+    expect(h.events.length).toBe(3);
+    const userEvents = h.events.filter((e) => (e as { type: string }).type === 'user');
+    expect(userEvents.length).toBe(2);
+    expect((userEvents[0] as { payload: { text: string } }).payload.text).toBe('first');
+    expect((userEvents[1] as { payload: { text: string } }).payload.text).toBe('second');
   });
 
   it('throws session_dead error when sending input to unknown session', async () => {

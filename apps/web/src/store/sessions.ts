@@ -66,7 +66,8 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       m.type === 'stream_delta' ||
       m.type === 'tool_result' ||
       m.type === 'result' ||
-      m.type === 'status'
+      m.type === 'status' ||
+      m.type === 'user'
     ) {
       const exists = get().sessions[m.sessionId];
       if (!exists) return;

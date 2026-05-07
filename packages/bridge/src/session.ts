@@ -199,6 +199,16 @@ export class SessionManager extends EventEmitter {
   sendInput(sessionId: string, text: string): void {
     const s = this.sessions.get(sessionId);
     if (!s || !s.alive) throw new SessionDeadError(sessionId);
+    // Broadcast the user prompt to all subscribers and append to the ring
+    // buffer BEFORE forwarding to the agent process. This makes the user side
+    // of the conversation reconstructable from history replay and ensures
+    // every UI tab sees the message at the same seq.
+    this.appendAndBroadcast(s, {
+      type: 'user',
+      sessionId,
+      seq: s.nextSeq++,
+      payload: { text },
+    });
     s.proc.sendUserText(text);
   }
 

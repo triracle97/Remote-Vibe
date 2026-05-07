@@ -4,6 +4,7 @@
 .bubble { margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
 .bubble.system { color: #888; font-style: italic; background: transparent; padding-left: 0; }
 .bubble.assistant { background: #1c2a44; }
+.bubble.user { background: #2a1c44; }
 .bubble-delta { background: #1c2a44; padding: 0 0.25rem; }
 .bubble.tool-use, .bubble.tool-result { background: #2a2a1c; }
 .bubble.tool-use button, .bubble.tool-result button { background: none; border: none; color: inherit; cursor: pointer; padding: 0; }
