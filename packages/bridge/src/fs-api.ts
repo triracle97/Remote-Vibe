@@ -77,13 +77,15 @@ function basenameOf(p: string): string {
 function pathHitsDenylist(resolved: string): boolean {
   const segs = splitSegments(resolved);
   for (const s of segs) {
-    if (DENIED_PATH_SEGMENTS.has(s)) return true;
+    if (DENIED_PATH_SEGMENTS.has(s.toLowerCase())) return true;
   }
   for (const run of DENIED_SEGMENT_RUNS) {
     for (let i = 0; i + run.length <= segs.length; i++) {
       let match = true;
       for (let j = 0; j < run.length; j++) {
-        if (segs[i + j] !== run[j]) {
+        const segLower = (segs[i + j] ?? '').toLowerCase();
+        const runLower = run[j]!.toLowerCase();
+        if (segLower !== runLower) {
           match = false;
           break;
         }

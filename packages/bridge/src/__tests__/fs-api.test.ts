@@ -47,6 +47,12 @@ describe('FsApi.listDirs', () => {
     await expect(api.listDirs(join(root, '.ssh'))).rejects.toMatchObject({ code: 'path_denied' });
   });
 
+  it('denylist segment match is case-insensitive', async () => {
+    mkdirSync(join(root, '.SSH'));
+    const api = new FsApi({ allowedDirs: [root] });
+    await expect(api.listDirs(join(root, '.SSH'))).rejects.toMatchObject({ code: 'path_denied' });
+  });
+
   it('drops denylisted children from listings', async () => {
     mkdirSync(join(root, '.ssh'));
     mkdirSync(join(root, 'src'));

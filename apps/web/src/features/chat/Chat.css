@@ -17,3 +17,4 @@
 .chat-header-spacer { flex: 1; text-align: right; padding-right: 0.5rem; }
 .chat-drawer-toggle { background: #2a2a2a; color: #ccc; border: 0; padding: 0.2rem 0.45rem; cursor: pointer; border-radius: 4px; }
 .chat { position: relative; }
+.chat-error-banner { background: #2a1010; color: #f88; padding: 0.4rem 1rem; font-size: 0.85rem; border-bottom: 1px solid #4a1a1a; }

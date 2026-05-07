@@ -38,6 +38,7 @@ export function Session({ client }: SessionProps): JSX.Element {
   }, [id, resetExplorer]);
 
   const connStatus = useConnectionStore((s) => s.status);
+  const lastError = useConnectionStore((s) => s.lastError);
   const askedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!id || connStatus !== 'open' || transcriptOnly) {
@@ -114,6 +115,7 @@ export function Session({ client }: SessionProps): JSX.Element {
           onToggleDrawer={() => setDrawerOpen((o) => !o)}
           drawerOpen={drawerOpen}
           banner={transcriptOnly ? 'transcript-only view (session no longer live)' : null}
+          errorBanner={lastError}
           inputDisabled={transcriptOnly}
         />
       )}

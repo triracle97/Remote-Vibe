@@ -12,6 +12,7 @@ interface ChatProps {
   onToggleDrawer?(): void;
   drawerOpen?: boolean;
   banner?: string | null;
+  errorBanner?: string | null;
   inputDisabled?: boolean;
 }
 
@@ -22,6 +23,7 @@ export function Chat({
   onToggleDrawer,
   drawerOpen,
   banner,
+  errorBanner,
   inputDisabled,
 }: ChatProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -75,6 +77,7 @@ export function Chat({
         )}
       </div>
       {banner && <div className="chat-banner">{banner}</div>}
+      {errorBanner && <div className="chat-error-banner">{errorBanner}</div>}
       <div className="chat-scroll" ref={scrollRef}>
         {session.events.map((e, i) => (
           <MessageBubble
