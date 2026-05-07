@@ -12,6 +12,8 @@ import { attachWebSocket } from './websocket.js';
 import { SessionManager, type AgentDriver, type DriverFactoryArgs } from './session.js';
 import { TranscriptStore } from './transcript-store.js';
 import { PromptStore } from './prompt-store.js';
+import { FsApi } from './fs-api.js';
+import { ImageStore } from './image-store.js';
 
 async function main(): Promise<void> {
   const cfg = loadEnv(process.env);
@@ -58,6 +60,9 @@ async function main(): Promise<void> {
     throw new Error(`unsupported agent: ${args.agent}`);
   };
 
+  const fsApi = new FsApi({ allowedDirs: cfg.allowedDirs });
+  const imageStore = new ImageStore({ dataDir: cfg.dataDir });
+
   const sessionManager = new SessionManager({
     allowedDirs: cfg.allowedDirs,
     bufferCap: 1000,
@@ -65,6 +70,7 @@ async function main(): Promise<void> {
     transcriptStore,
     promptStore,
     accounts,
+    imageStore,
   });
 
   const handler = createHttpHandler({
@@ -79,6 +85,8 @@ async function main(): Promise<void> {
     sessionManager,
     accounts,
     promptStore,
+    fsApi,
+    imageStore,
   });
 
   await new Promise<void>((res, rej) => {

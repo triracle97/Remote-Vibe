@@ -14,8 +14,23 @@ class FakeProc extends EventEmitter {
 
 async function startServer(opts: {
   accounts?: Map<string, import('../accounts.js').CodexAccount>;
+  fsApi?: import('../fs-api.js').FsApi;
+  imageStore?: import('../image-store.js').ImageStore;
 } = {}) {
   const procs: FakeProc[] = [];
+  const fsApi =
+    opts.fsApi ??
+    ({
+      listDirs: async () => [],
+      readFile: async () => ({ kind: 'text' as const, content: '', bytesRead: 0, truncated: false }),
+    } as unknown as import('../fs-api.js').FsApi);
+  const imageStore =
+    opts.imageStore ??
+    ({
+      validate: () => ({ ok: true as const }),
+      writeAuditCopy: async () => {},
+      cleanup: async () => {},
+    } as unknown as import('../image-store.js').ImageStore);
   const mgr = new SessionManager({
     allowedDirs: ['/Users/test'],
     bufferCap: 100,
@@ -26,9 +41,10 @@ async function startServer(opts: {
     },
     realpath: async (p) => p,
     accounts: opts.accounts ?? new Map(),
+    imageStore,
   });
   const server = createServer();
-  attachWebSocket({ server, token: TOKEN, sessionManager: mgr, accounts: opts.accounts ?? new Map() });
+  attachWebSocket({ server, token: TOKEN, sessionManager: mgr, accounts: opts.accounts ?? new Map(), fsApi, imageStore });
 
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   const addr = server.address();
@@ -320,7 +336,24 @@ describe('websocket', () => {
       promptStore: fakePromptStore,
     });
     const server = createServer();
-    attachWebSocket({ server, token: TOKEN, sessionManager: mgr, accounts: new Map(), promptStore: fakePromptStore });
+    const fakeFsApi = {
+      listDirs: async () => [],
+      readFile: async () => ({ kind: 'text' as const, content: '', bytesRead: 0, truncated: false }),
+    } as unknown as import('../fs-api.js').FsApi;
+    const fakeImageStore = {
+      validate: () => ({ ok: true as const }),
+      writeAuditCopy: async () => {},
+      cleanup: async () => {},
+    } as unknown as import('../image-store.js').ImageStore;
+    attachWebSocket({
+      server,
+      token: TOKEN,
+      sessionManager: mgr,
+      accounts: new Map(),
+      promptStore: fakePromptStore,
+      fsApi: fakeFsApi,
+      imageStore: fakeImageStore,
+    });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
     const addr = server.address();
     if (!addr || typeof addr === 'string') throw new Error('no addr');
@@ -343,5 +376,139 @@ describe('websocket', () => {
     expect(msg.prompts[0]!.text).toBe('hi');
     sock.close();
     await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  it('list_dirs replies with dirs_result on a happy path', async () => {
+    const fakeFsApi = {
+      listDirs: async (_path: string) => [
+        { name: 'src', kind: 'dir' as const },
+        { name: 'README.md', kind: 'file' as const, size: 42 },
+      ],
+      readFile: async () => ({ kind: 'text' as const, content: '', bytesRead: 0, truncated: false }),
+    };
+    const { port, close } = await startServer({ fsApi: fakeFsApi });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+    const got = new Promise<{ type: string; entries: unknown[]; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'dirs_result') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'list_dirs', path: '/Users/test/proj', correlationId: 'cd' }));
+    const msg = await got;
+    expect(msg.entries).toHaveLength(2);
+    expect(msg.correlationId).toBe('cd');
+    sock.close();
+    await close();
+  });
+
+  it('list_dirs propagates path_outside_allowlist errors with correlationId', async () => {
+    const fakeFsApi = {
+      listDirs: async () => {
+        const e = new Error('outside') as Error & { code?: string };
+        e.code = 'path_outside_allowlist';
+        throw e;
+      },
+      readFile: async () => ({ kind: 'text' as const, content: '', bytesRead: 0, truncated: false }),
+    };
+    const { port, close } = await startServer({ fsApi: fakeFsApi });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+    const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'error') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'list_dirs', path: '/etc', correlationId: 'cx' }));
+    const m = await got;
+    expect(m.code).toBe('path_outside_allowlist');
+    expect(m.correlationId).toBe('cx');
+    sock.close();
+    await close();
+  });
+
+  it('read_file replies with file_result of the right kind', async () => {
+    const fakeFsApi = {
+      listDirs: async () => [],
+      readFile: async (_path: string, _cap: number) => ({
+        kind: 'text' as const,
+        content: 'hello',
+        bytesRead: 5,
+        truncated: false,
+      }),
+    };
+    const { port, close } = await startServer({ fsApi: fakeFsApi });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+    const got = new Promise<{ type: string; kind?: string; content?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'file_result') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'read_file', path: '/Users/test/proj/README.md', correlationId: 'cf' }));
+    const m = await got;
+    expect(m.kind).toBe('text');
+    expect(m.content).toBe('hello');
+    expect(m.correlationId).toBe('cf');
+    sock.close();
+    await close();
+  });
+
+  it('input with codex session and images replies images_not_supported_for_agent', async () => {
+    const fakeImageStore = {
+      validate: (_imgs: unknown, agent: string) =>
+        agent === 'codex'
+          ? { ok: false, error: 'images_not_supported_for_agent' as const }
+          : { ok: true as const },
+      writeAuditCopy: async () => {},
+      cleanup: async () => {},
+    };
+    const accounts = new Map([
+      ['default', { name: 'default', codexHome: '/Users/test/.codex', isDefault: true }],
+    ]);
+    const { port, mgr, close } = await startServer({ accounts, imageStore: fakeImageStore });
+    const session = await mgr.create({ agent: 'codex', projectPath: '/Users/test/proj' });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+    const got = new Promise<{ type: string; code?: string; sessionId?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'error') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'input',
+        sessionId: session.sessionId,
+        text: 'hi',
+        images: [{ mime: 'image/png', base64: 'AAA=' }],
+        correlationId: 'ci',
+      }),
+    );
+    const m = await got;
+    expect(m.code).toBe('images_not_supported_for_agent');
+    expect(m.sessionId).toBe(session.sessionId);
+    expect(m.correlationId).toBe('ci');
+    sock.close();
+    await close();
   });
 });
