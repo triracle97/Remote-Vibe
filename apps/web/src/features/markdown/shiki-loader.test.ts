@@ -32,12 +32,12 @@ describe('shiki-loader', () => {
     expect(dom.querySelectorAll('img').length).toBe(0);
     expect(dom.querySelectorAll('script').length).toBe(0);
     expect(dom.querySelectorAll('iframe').length).toBe(0);
-    // Source `<` and `>` survive as HTML-entity escapes. Shiki may emit either
-    // the named (`&lt;`/`&gt;`) or hex-numeric (`&#x3C;`/`&#x3E;`) forms; both
-    // are valid HTML5 escapes and prevent tag interpretation. The test is
-    // encoding-agnostic so it survives Shiki minor-version output changes.
+    // The source `<` survives as an HTML-entity escape. Shiki may emit either
+    // the named (`&lt;`) or hex-numeric (`&#x3C;`) form; both are valid HTML5
+    // escapes and prevent tag interpretation. The test is encoding-agnostic
+    // so it survives Shiki minor-version output changes. (`>` is not escaped
+    // by Shiki because `>` alone cannot open a tag in HTML5 — only `<` does.)
     expect(html).toMatch(/&lt;|&#x3C;|&#60;/i);
-    expect(html).toMatch(/&gt;|&#x3E;|&#62;|>/)
     // Defense-in-depth: hostile substring must NOT appear as raw markup.
     expect(html).not.toContain('<img');
     expect(html).not.toContain('<script');
