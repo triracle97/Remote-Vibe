@@ -11,6 +11,7 @@ export function App(): JSX.Element {
   const setStatus = useConnectionStore((s) => s.setStatus);
   const setError = useConnectionStore((s) => s.setError);
   const apply = useSessionsStore((s) => s.applyServerMsg);
+  const markTranscriptOnly = useSessionsStore((s) => s.markTranscriptOnly);
   const applyAccountList = useAccountsStore((s) => s.applyAccountList);
 
   const client = useMemo(() => new BridgeClient(), []);
@@ -40,9 +41,9 @@ export function App(): JSX.Element {
         return;
       }
       if (m.type === 'error') {
-        // session_dead routing to markTranscriptOnly is added in Task 14 once
-        // the store has the setter. For now, all errors fall through to the
-        // global banner — Phase 1 behavior.
+        if (m.code === 'session_dead' && m.sessionId) {
+          markTranscriptOnly(m.sessionId);
+        }
         setError(`${m.code}: ${m.message}`);
       } else {
         setError(null);
@@ -59,7 +60,7 @@ export function App(): JSX.Element {
       offMessage();
       client.close();
     };
-  }, [client, setStatus, setError, apply, applyAccountList]);
+  }, [client, setStatus, setError, apply, markTranscriptOnly, applyAccountList]);
 
   return (
     <Routes>

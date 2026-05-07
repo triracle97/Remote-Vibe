@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { useSessionsStore } from './sessions';
 
 beforeEach(() => {
-  useSessionsStore.setState({ sessions: {}, order: [], activeId: null });
+  useSessionsStore.setState({ sessions: {}, order: [], activeId: null, transcriptOnly: {} });
 });
 
 describe('sessions store', () => {
@@ -103,5 +103,35 @@ describe('sessions store', () => {
     const s = useSessionsStore.getState().sessions['s1']!;
     expect(s.events.length).toBe(4); // session_created + 3 deltas, dup removed
     expect(s.lastSeq).toBe(4);
+  });
+
+  it('markTranscriptOnly flips the flag for the given session', () => {
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+    expect(useSessionsStore.getState().transcriptOnly['s1']).toBeUndefined();
+    store.markTranscriptOnly('s1');
+    expect(useSessionsStore.getState().transcriptOnly['s1']).toBe(true);
+  });
+
+  it('markTranscriptOnly works for sessions not yet in the store (deep link)', () => {
+    useSessionsStore.getState().markTranscriptOnly('unknown-id');
+    expect(useSessionsStore.getState().transcriptOnly['unknown-id']).toBe(true);
+  });
+
+  it('session_created for a session marked transcriptOnly does NOT add to order', () => {
+    const store = useSessionsStore.getState();
+    store.markTranscriptOnly('s1');
+    store.applyServerMsg({
+      type: 'system',
+      event: 'session_created',
+      sessionId: 's1',
+      seq: 1,
+      agent: 'claude',
+      projectPath: '/p',
+      createdAt: 1,
+    });
+    const next = useSessionsStore.getState();
+    expect(next.sessions['s1']).toBeDefined();
+    expect(next.order).toEqual([]);
   });
 });

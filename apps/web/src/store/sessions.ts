@@ -17,15 +17,18 @@ interface SessionsStore {
   sessions: Record<string, SessionView>;
   order: string[];
   activeId: string | null;
+  transcriptOnly: Record<string, boolean>;
 
   applyServerMsg(m: ServerMsg): void;
   setActive(id: string): void;
+  markTranscriptOnly(id: string): void;
 }
 
 export const useSessionsStore = create<SessionsStore>((set, get) => ({
   sessions: {},
   order: [],
   activeId: null,
+  transcriptOnly: {},
 
   applyServerMsg(m) {
     if (m.type === 'system' && m.event === 'init') return;
@@ -41,9 +44,16 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         lastSeq: m.seq,
         alive: true,
       };
+      const isTranscriptOnly = Boolean(get().transcriptOnly[m.sessionId]);
       set((s) => ({
         sessions: { ...s.sessions, [m.sessionId]: view },
-        order: s.order.includes(m.sessionId) ? s.order : [...s.order, m.sessionId],
+        // Live sessions get added to the sidebar; transcript-only replays
+        // hydrate events into the store but stay OFF the sidebar.
+        order: isTranscriptOnly
+          ? s.order
+          : s.order.includes(m.sessionId)
+            ? s.order
+            : [...s.order, m.sessionId],
       }));
       return;
     }
@@ -143,5 +153,9 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
   setActive(id) {
     if (!get().sessions[id]) return;
     set({ activeId: id });
+  },
+
+  markTranscriptOnly(id) {
+    set((s) => ({ transcriptOnly: { ...s.transcriptOnly, [id]: true } }));
   },
 }));
