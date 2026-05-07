@@ -527,6 +527,16 @@ describe('FsApi.readFile', () => {
       code: 'path_denied',
     });
   });
+
+  it('detects invalid-UTF8 binary content even without NUL bytes', async () => {
+    // A single 0xFF byte is invalid UTF-8 (no NUL to short-circuit on). The
+    // TextDecoder fatal:true gate must catch it; the legacy heuristic that
+    // treated b >= 0x80 as printable would mislabel this as text.
+    writeFileSync(join(root, 'latin1.bin'), Buffer.from([0xff, 0xfe, 0xfd]));
+    const api = new FsApi({ allowedDirs: [root] });
+    const r = await api.readFile(join(root, 'latin1.bin'), 1024);
+    expect(r.kind).toBe('binary');
+  });
 });
 ```
 
@@ -647,18 +657,33 @@ function isInsideAllowed(resolved: string, allowedDirs: string[]): boolean {
   return allowedDirs.some((d) => resolved === d || resolved.startsWith(d + sep));
 }
 
-const PRINTABLE_OR_WHITESPACE = (b: number): boolean =>
-  b === 0x09 || b === 0x0a || b === 0x0d || (b >= 0x20 && b <= 0x7e) || b >= 0x80;
-
 function looksBinary(buf: Buffer): boolean {
   if (buf.length === 0) return false;
+  // 1. NUL byte → definitely binary.
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0x00) return true;
+  }
+  // 2. Try strict UTF-8 decode. Any malformed sequence (e.g. Latin-1 tail
+  //    bytes that don't form a valid UTF-8 multi-byte sequence) → binary.
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buf);
+  } catch {
+    return true;
+  }
+  // 3. Valid UTF-8, but might still be unprintable control chars
+  //    (e.g. some structured-binary formats coincidentally happen to be
+  //    valid UTF-8). Count low-range control bytes that aren't tab / LF / CR.
   let nonPrintable = 0;
   for (let i = 0; i < buf.length; i++) {
     const b = buf[i]!;
-    if (b === 0x00) return true;
-    if (!PRINTABLE_OR_WHITESPACE(b)) nonPrintable++;
+    const isWhitespace = b === 0x09 || b === 0x0a || b === 0x0d;
+    const isPrintableAscii = b >= 0x20 && b <= 0x7e;
+    const isMultibyteUtf8Lead = b >= 0x80; // already validated by step 2
+    if (!isWhitespace && !isPrintableAscii && !isMultibyteUtf8Lead) {
+      nonPrintable++;
+    }
   }
-  return nonPrintable * 20 > buf.length; // > 5 % non-printable, non-UTF8 lead
+  return nonPrintable * 20 > buf.length; // > 5 % non-printable
 }
 
 function guessMime(path: string): string | undefined {
@@ -1613,7 +1638,46 @@ function errorMessageFor(code: ServerErrorMsg['code']): string {
 }
 ```
 
-- [ ] **Step 4: Run tests + typecheck**
+- [ ] **Step 4: Update existing tests that break under the new shape**
+
+Two pre-existing tests in `websocket.test.ts` need updating because of Task 4's `AgentDriver.sendUserText(text, images?)` signature change and Task 5's `AttachWsOpts` now requiring `fsApi` + `imageStore`:
+
+(a) The existing test `'routes input → process.sendUserText'` uses `expect(procs[0]!.sendUserText).toHaveBeenCalledWith('hello');`. With the new signature, the route forwards `(text, images)` — the second arg is `undefined` when no images. Update the assertion to accept the new arity:
+
+```ts
+expect(procs[0]!.sendUserText).toHaveBeenCalledWith('hello', undefined);
+```
+
+(b) The existing test `'list_prompts replies with the PromptStore contents'` constructs its own `attachWebSocket(...)` directly (not through `startServer`). Update that direct call to pass the new required fields:
+
+Find:
+```ts
+attachWebSocket({ server, token: TOKEN, sessionManager: mgr, accounts: new Map(), promptStore: fakePromptStore });
+```
+
+Replace with:
+```ts
+const fakeFsApi = {
+  listDirs: async () => [],
+  readFile: async () => ({ kind: 'text' as const, content: '', bytesRead: 0, truncated: false }),
+} as unknown as import('../fs-api.js').FsApi;
+const fakeImageStore = {
+  validate: () => ({ ok: true as const }),
+  writeAuditCopy: async () => {},
+  cleanup: async () => {},
+} as unknown as import('../image-store.js').ImageStore;
+attachWebSocket({
+  server,
+  token: TOKEN,
+  sessionManager: mgr,
+  accounts: new Map(),
+  promptStore: fakePromptStore,
+  fsApi: fakeFsApi,
+  imageStore: fakeImageStore,
+});
+```
+
+- [ ] **Step 5: Run tests + typecheck**
 
 ```bash
 npm run bridge:test
@@ -1622,7 +1686,7 @@ npx tsc --noEmit -p packages/bridge/tsconfig.json
 
 Expected: green.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add packages/bridge/src/websocket.ts packages/bridge/src/__tests__/websocket.test.ts
@@ -1916,6 +1980,31 @@ describe('file-explorer store', () => {
     expect(s.loadingPaths).toEqual({});
     expect(s.selectedFile).toBeNull();
   });
+
+  it('refreshOpen clears entries for every expanded path and re-requests them', () => {
+    const send = vi.fn();
+    const client = { send };
+    useFileExplorerStore.setState({
+      dirs: {
+        '/p': [{ name: 'src', kind: 'dir' }],
+        '/p/src': [{ name: 'index.ts', kind: 'file', size: 10 }],
+      },
+      expanded: { '/p': true, '/p/src': true },
+      loadingPaths: {},
+      selectedFile: null,
+    });
+    useFileExplorerStore.getState().refreshOpen(client as unknown as { send: (m: unknown) => void });
+
+    const s = useFileExplorerStore.getState();
+    // Cached entries for both expanded paths cleared:
+    expect(s.dirs['/p']).toBeUndefined();
+    expect(s.dirs['/p/src']).toBeUndefined();
+    expect(s.loadingPaths['/p']).toBe(true);
+    expect(s.loadingPaths['/p/src']).toBe(true);
+    // Two list_dirs sends:
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls.map((c) => (c[0] as { path: string }).path).sort()).toEqual(['/p', '/p/src']);
+  });
 });
 ```
 
@@ -1953,6 +2042,12 @@ interface FileExplorerStore {
   toggleExpand(path: string): void;
   requestFile(client: { send(m: ClientMsg): void }, path: string): void;
   applyFileResult(m: ServerFileResultMsg): void;
+  /**
+   * Refresh the currently-rendered subtree: clear cached entries for every
+   * currently-expanded path, then re-request each one. Called from the
+   * drawer's refresh button. Spec §6 step 7.
+   */
+  refreshOpen(client: { send(m: ClientMsg): void }): void;
   reset(): void;
 }
 
@@ -2021,6 +2116,23 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
       });
     } else {
       set({ selectedFile: { state: 'too_large', path: m.path, size: m.size } });
+    }
+  },
+
+  refreshOpen(client) {
+    const openPaths = Object.keys(get().expanded);
+    if (openPaths.length === 0) return;
+    set((s) => {
+      const dirs = { ...s.dirs };
+      const loadingPaths = { ...s.loadingPaths };
+      for (const p of openPaths) {
+        delete dirs[p];
+        loadingPaths[p] = true;
+      }
+      return { dirs, loadingPaths };
+    });
+    for (const p of openPaths) {
+      client.send({ type: 'list_dirs', path: p, correlationId: newCorrelationId() });
     }
   },
 
@@ -2210,7 +2322,11 @@ export function FileExplorer({ client, rootPath, onClose }: FileExplorerProps): 
     <aside className="file-explorer">
       <div className="fe-header">
         <code className="fe-root">{rootPath}</code>
-        <button type="button" onClick={() => requestDirs(client, rootPath)} title="Refresh">
+        <button
+          type="button"
+          onClick={() => useFileExplorerStore.getState().refreshOpen(client)}
+          title="Refresh open subtree"
+        >
           ↻
         </button>
         <button type="button" onClick={onClose} title="Close">
@@ -2426,7 +2542,9 @@ Add the import at the top:
 import { useFileExplorerStore } from './store/file-explorer';
 ```
 
-- [ ] **Step 6: Update `Chat.tsx` to expose toggleDrawer button + pass agent + onSend with images**
+- [ ] **Step 6: Update `Chat.tsx` to expose drawer toggle button + onSend signature passthrough**
+
+Task 9 only adds the file-explorer drawer integration to `Chat.tsx`. The image-attach wiring (drag-drop overlay, useImagePaste, imagePaste prop to InputBox) lands in Task 11 once the hook and the prop-accepting InputBox both exist. The `onSend` signature is widened to accept an optional `images` parameter now so Session.tsx's wire-up compiles without further churn later — Task 9's Chat.tsx never invokes the second arg, but its presence in the type signature is what later tasks rely on.
 
 Replace `Chat.tsx` with:
 
@@ -2487,11 +2605,10 @@ export function Chat({
         ))}
       </div>
       <InputBox
-        onSend={onSend}
+        onSend={(text) => onSend(text)}
         onStop={onStop}
         disabled={(!session.alive) || Boolean(inputDisabled)}
         currentProjectPath={session.projectPath}
-        agent={session.agent}
       />
     </div>
   );
@@ -2503,6 +2620,7 @@ Append CSS rule for the toggle:
 ```css
 .chat-header-spacer { flex: 1; text-align: right; padding-right: 0.5rem; }
 .chat-drawer-toggle { background: #2a2a2a; color: #ccc; border: 0; padding: 0.2rem 0.45rem; cursor: pointer; border-radius: 4px; }
+.chat { position: relative; }
 ```
 
 - [ ] **Step 7: Run web tests + typecheck + build**
@@ -2611,6 +2729,23 @@ describe('useImagePaste', () => {
     act(() => result.current.clear());
     expect(result.current.images).toHaveLength(0);
   });
+
+  it('rejects the 5th file in a back-to-back batch (no stale-closure race)', async () => {
+    // The hook renders once and we call addImageFromFile 5 times in a row
+    // without giving React a chance to re-render between calls. The cap MUST
+    // be enforced inside the functional setImages updater — not by reading
+    // the stale `images.length` from the original render closure.
+    const { result } = renderHook(() => useImagePaste());
+    await act(async () => {
+      await Promise.all(
+        [0, 1, 2, 3, 4].map((i) =>
+          result.current.addImageFromFile(makeFile(`a${i}.png`, 'image/png', 64)),
+        ),
+      );
+    });
+    expect(result.current.images.length).toBe(4);
+    expect(result.current.error).toMatch(/4/);
+  });
 });
 ```
 
@@ -2662,52 +2797,70 @@ export interface UseImagePaste {
 }
 
 export function useImagePaste(): UseImagePaste {
-  const [images, setImages] = useState<PendingImage[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  // Single state object so {images, error} updates are atomic. A separate
+  // useState for each could split the cap-rejection across two renders and
+  // drop the error message under React 18 batching.
+  const [state, setState] = useState<{ images: PendingImage[]; error: string | null }>({
+    images: [],
+    error: null,
+  });
+  const { images, error } = state;
 
   const addImageFromFile = useCallback(async (file: File) => {
+    // Validate stable file properties up front. These don't depend on
+    // current state, so eager `setError` via the single-state updater is safe.
     if (!ALLOWED_MIMES.has(file.type)) {
-      setError(`Unsupported MIME ${file.type}; allowed: png/jpeg/webp/gif`);
+      setState((prev) => ({ ...prev, error: `Unsupported MIME ${file.type}; allowed: png/jpeg/webp/gif` }));
       return;
     }
     if (file.size > MAX_BYTES) {
-      setError(`Image is ${(file.size / 1024 / 1024).toFixed(1)} MB; max 10 MB per image`);
-      return;
-    }
-    if (images.length >= MAX_IMAGES) {
-      setError(`At most ${MAX_IMAGES} images per message`);
+      setState((prev) => ({
+        ...prev,
+        error: `Image is ${(file.size / 1024 / 1024).toFixed(1)} MB; max 10 MB per image`,
+      }));
       return;
     }
     let dataUrl: string;
     try {
       dataUrl = await readAsDataURL(file);
     } catch (err) {
-      setError(`Could not read file: ${(err as Error).message}`);
+      setState((prev) => ({ ...prev, error: `Could not read file: ${(err as Error).message}` }));
       return;
     }
     const comma = dataUrl.indexOf(',');
     const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-    setImages((prev) => [
-      ...prev,
-      {
-        id: newId(),
-        mime: file.type,
-        base64,
-        filename: file.name,
-        sizeBytes: file.size,
-        dataUrl,
-      },
-    ]);
-    setError(null);
-  }, [images.length]);
+    // Atomic decision: a single functional updater either appends and
+    // clears the error, or rejects and sets the error. Both `images` and
+    // `error` live in one state object so React batching cannot drop the
+    // error update (the prior `let rejected = false` side-channel was
+    // racy under React 18 concurrent rendering).
+    setState((prev) => {
+      if (prev.images.length >= MAX_IMAGES) {
+        return { ...prev, error: `At most ${MAX_IMAGES} images per message` };
+      }
+      return {
+        images: [
+          ...prev.images,
+          {
+            id: newId(),
+            mime: file.type,
+            base64,
+            filename: file.name,
+            sizeBytes: file.size,
+            dataUrl,
+          },
+        ],
+        error: null,
+      };
+    });
+  }, []);
 
   const removeImage = useCallback((id: string) => {
-    setImages((prev) => prev.filter((img) => img.id !== id));
+    setState((prev) => ({ ...prev, images: prev.images.filter((img) => img.id !== id) }));
   }, []);
 
   const clear = useCallback(() => {
-    setImages([]);
-    setError(null);
+    setState({ images: [], error: null });
   }, []);
 
   return { images, error, addImageFromFile, removeImage, clear };
@@ -2720,7 +2873,7 @@ export function useImagePaste(): UseImagePaste {
 npm run web:test -- useImagePaste
 ```
 
-Expected: 6 passed.
+Expected: 7 passed.
 
 - [ ] **Step 5: Implement `ImageThumbnails.tsx`**
 
@@ -2798,18 +2951,125 @@ git commit -m "feat(web): add useImagePaste hook + ImageThumbnails"
 
 ---
 
-## Task 11: Web `InputBox` 📎 button + send-with-images + agent gating
+## Task 11: Wire image attach into Chat.tsx + InputBox
 
 **Files:**
+- Modify: `apps/web/src/features/chat/Chat.tsx`
 - Modify: `apps/web/src/features/chat/InputBox.tsx`
+
+This task lands the integration deferred from Task 9: Chat.tsx hosts `useImagePaste` and the chat-area drag-drop overlay; InputBox accepts the `imagePaste` instance via props and wires paste, the 📎 button, and the thumbnail strip.
+
+- [ ] **Step 0: Replace `apps/web/src/features/chat/Chat.tsx`**
+
+```tsx
+import { useEffect, useRef, useState, type DragEvent } from 'react';
+import type { SessionView } from '../../store/sessions';
+import { MessageBubble } from './MessageBubble';
+import { InputBox } from './InputBox';
+import { useImagePaste } from '../image-attach/useImagePaste';
+import './Chat.css';
+
+interface ChatProps {
+  session: SessionView;
+  onSend(text: string, images?: ReadonlyArray<{ mime: string; base64: string }>): void;
+  onStop(): void;
+  onToggleDrawer?(): void;
+  drawerOpen?: boolean;
+  banner?: string | null;
+  inputDisabled?: boolean;
+}
+
+export function Chat({
+  session,
+  onSend,
+  onStop,
+  onToggleDrawer,
+  drawerOpen,
+  banner,
+  inputDisabled,
+}: ChatProps): JSX.Element {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // useImagePaste lives at Chat level so drag-drop on the entire chat area
+  // and paste on the textarea inside InputBox feed the same image list.
+  // Spec §3 / §5: "drag-drop into the chat area".
+  const imagePaste = useImagePaste();
+  const imagesEnabled = session.agent === 'claude' && session.alive && !inputDisabled;
+  const [dragOver, setDragOver] = useState(false);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [session.events]);
+
+  // Reset images when switching sessions.
+  useEffect(() => {
+    imagePaste.clear();
+    setDragOver(false);
+  }, [session.sessionId]);
+
+  const onDragOver = (e: DragEvent<HTMLDivElement>): void => {
+    if (!imagesEnabled) return;
+    e.preventDefault();
+    setDragOver(true);
+  };
+  const onDragLeave = (e: DragEvent<HTMLDivElement>): void => {
+    if (e.currentTarget === e.target) setDragOver(false);
+  };
+  const onDrop = async (e: DragEvent<HTMLDivElement>): Promise<void> => {
+    e.preventDefault();
+    setDragOver(false);
+    if (!imagesEnabled) return;
+    const files = Array.from(e.dataTransfer.files ?? []);
+    for (const f of files) await imagePaste.addImageFromFile(f);
+  };
+
+  return (
+    <div className="chat" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      <div className="chat-header">
+        <code>{session.projectPath}</code>
+        <span className="chat-header-spacer">session {session.sessionId.slice(0, 8)}</span>
+        {onToggleDrawer && (
+          <button
+            type="button"
+            className="chat-drawer-toggle"
+            onClick={onToggleDrawer}
+            aria-label="Toggle file explorer"
+          >
+            {drawerOpen ? '📂' : '📁'}
+          </button>
+        )}
+      </div>
+      {banner && <div className="chat-banner">{banner}</div>}
+      <div className="chat-scroll" ref={scrollRef}>
+        {session.events.map((e, i) => (
+          <MessageBubble
+            key={`${i}-${e.type}-${e.type === 'system' ? e.event : (e as { seq: number }).seq}`}
+            event={e}
+          />
+        ))}
+      </div>
+      {dragOver && imagesEnabled && (
+        <div className="image-attach-drop-overlay">Drop image to attach</div>
+      )}
+      <InputBox
+        onSend={onSend}
+        onStop={onStop}
+        disabled={(!session.alive) || Boolean(inputDisabled)}
+        currentProjectPath={session.projectPath}
+        agent={session.agent}
+        imagePaste={imagePaste}
+      />
+    </div>
+  );
+}
+```
 
 - [ ] **Step 1: Replace `apps/web/src/features/chat/InputBox.tsx`**
 
 ```tsx
-import { useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
+import { useRef, useState, type KeyboardEvent } from 'react';
 import { PromptHistoryDropdown } from '../prompt-history/PromptHistoryDropdown';
-import { useImagePaste } from '../image-attach/useImagePaste';
 import { ImageThumbnails } from '../image-attach/ImageThumbnails';
+import type { UseImagePaste } from '../image-attach/useImagePaste';
 import type { AgentKind } from '../../types/protocol';
 
 interface InputBoxProps {
@@ -2818,6 +3078,9 @@ interface InputBoxProps {
   disabled: boolean;
   currentProjectPath?: string;
   agent: AgentKind;
+  // Owned by Chat.tsx so drag-drop on the chat area and paste on the
+  // textarea share the same image list.
+  imagePaste: UseImagePaste;
 }
 
 export function InputBox({
@@ -2826,13 +3089,13 @@ export function InputBox({
   disabled,
   currentProjectPath,
   agent,
+  imagePaste,
 }: InputBoxProps): JSX.Element {
   const [text, setText] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imagesEnabled = agent === 'claude' && !disabled;
-  const { images, error, addImageFromFile, removeImage, clear } = useImagePaste();
+  const { images, error, addImageFromFile, removeImage, clear } = imagePaste;
 
   const submit = (): void => {
     const t = text.trim();
@@ -2878,14 +3141,6 @@ export function InputBox({
     for (const f of files) await addImageFromFile(f);
   };
 
-  const onDrop = async (e: DragEvent<HTMLDivElement>): Promise<void> => {
-    e.preventDefault();
-    setDragOver(false);
-    if (!imagesEnabled) return;
-    const files = Array.from(e.dataTransfer.files ?? []);
-    for (const f of files) await addImageFromFile(f);
-  };
-
   const onAttachClick = (): void => {
     if (!imagesEnabled) return;
     fileInputRef.current?.click();
@@ -2898,17 +3153,7 @@ export function InputBox({
   };
 
   return (
-    <div
-      className="input-box"
-      style={{ position: 'relative' }}
-      onDragOver={(e) => {
-        if (!imagesEnabled) return;
-        e.preventDefault();
-        setDragOver(true);
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={onDrop}
-    >
+    <div className="input-box" style={{ position: 'relative' }}>
       {historyOpen && (
         <PromptHistoryDropdown
           {...(currentProjectPath !== undefined ? { currentProjectPath } : {})}
@@ -2918,9 +3163,6 @@ export function InputBox({
           }}
           onClose={() => setHistoryOpen(false)}
         />
-      )}
-      {dragOver && imagesEnabled && (
-        <div className="image-attach-drop-overlay">Drop image to attach</div>
       )}
       <ImageThumbnails images={images} onRemove={removeImage} />
       {error && <div className="image-attach-error">{error}</div>}
@@ -2999,8 +3241,8 @@ Expected: all green; bundle ≤ ~200 KB gzipped.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add apps/web/src/features/chat/InputBox.tsx
-git commit -m "feat(web): InputBox supports paste/drop/attach images with agent gating"
+git add apps/web/src/features/chat/Chat.tsx apps/web/src/features/chat/InputBox.tsx
+git commit -m "feat(web): wire image attach into Chat.tsx + InputBox"
 ```
 
 ---
