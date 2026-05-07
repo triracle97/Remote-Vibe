@@ -25,6 +25,12 @@ export class CodexProcess extends EventEmitter {
   private readonly spawnFn: SpawnFn;
   private codexSessionId: string | null = null;
   private currentTurnProc: ChildProcessByStdio<Writable, Readable, Readable> | null = null;
+  // activeChild tracks the "accepted" child for stdout/stderr data guards.
+  // It is set when a new child is spawned and cleared only when a newer child
+  // supersedes it — NOT when the child exits naturally. This lets deferred
+  // stdout/stderr data (which Node delivers asynchronously after the process
+  // exits) still reach handleStdout/handleStderr for the exiting child.
+  private activeChild: ChildProcessByStdio<Writable, Readable, Readable> | null = null;
   private currentTurnSawSessionId = false;
   private currentTurnSawResult = false;
   private stdoutBuf = '';
@@ -39,6 +45,22 @@ export class CodexProcess extends EventEmitter {
   }
 
   sendUserText(text: string): void {
+    // Concurrent-turn guard. If a previous turn is still in flight when the
+    // next sendUserText arrives, terminate it cleanly first. Without this,
+    // `currentTurnProc` would be silently overwritten and the prior child's
+    // late `exit` event would clobber state for the new child.
+    if (this.currentTurnProc) {
+      const stale = this.currentTurnProc;
+      this.currentTurnProc = null;
+      // Supersede activeChild NOW so stale child's deferred stdout/stderr data
+      // and exit events are filtered out by the per-listener guards below.
+      this.activeChild = null;
+      try {
+        stale.kill('SIGTERM');
+      } catch {
+        /* already dead */
+      }
+    }
     if (this.killed) return;
     const baseArgs = [
       '--json',
@@ -63,16 +85,31 @@ export class CodexProcess extends EventEmitter {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     this.currentTurnProc = child;
+    // activeChild is set to the new child so its stdout/stderr/exit/error
+    // listeners are accepted. It is only superseded when a NEWER child is
+    // spawned — NOT when this child exits naturally — so deferred async data
+    // events that arrive after the child exits still reach the handlers.
+    this.activeChild = child;
     this.currentTurnSawSessionId = false;
     this.currentTurnSawResult = false;
     this.stdoutBuf = '';
     this.stderrBuf = Buffer.alloc(0);
 
     child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => this.handleStdout(chunk));
-    child.stderr.on('data', (chunk: Buffer) => this.handleStderr(chunk));
-    child.on('exit', (code) => this.handleExit(code));
+    child.stdout.on('data', (chunk: string) => {
+      if (this.activeChild !== child) return; // superseded child, ignore
+      this.handleStdout(chunk);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (this.activeChild !== child) return; // superseded child, ignore
+      this.handleStderr(chunk);
+    });
+    child.on('exit', (code) => {
+      if (this.activeChild !== child) return; // superseded child, ignore
+      this.handleExit(code);
+    });
     child.on('error', (err: NodeJS.ErrnoException) => {
+      if (this.activeChild !== child) return; // superseded child, ignore
       const reason = err.code === 'ENOENT' ? 'agent_not_installed' : 'spawn_failed';
       this.currentTurnProc = null;
       this.emit('exit', null, reason);
@@ -173,6 +210,7 @@ export class CodexProcess extends EventEmitter {
     this.killed = true;
     const proc = this.currentTurnProc;
     this.currentTurnProc = null; // ensure handleExit's natural-exit path no-ops
+    this.activeChild = null; // suppress any deferred data/exit from killed child
     if (proc) {
       proc.kill('SIGTERM');
       setTimeout(() => {

@@ -170,6 +170,41 @@ describe('CodexProcess', () => {
     vi.useRealTimers();
   });
 
+  it('concurrent-turn guard: kills stale child and ignores its late events', async () => {
+    const fakes1 = makeFakeChild();
+    const fakes2 = makeFakeChild();
+    const spawn = vi.fn();
+    spawn.mockReturnValueOnce(fakes1.child).mockReturnValueOnce(fakes2.child);
+    const proc = new CodexProcess({
+      projectPath: '/p',
+      codexHome: '/c',
+      spawn,
+    });
+    const events: unknown[] = [];
+    proc.on('event', (e) => events.push(e));
+
+    // Start first turn — child-1 is now in flight.
+    proc.sendUserText('turn-1');
+    expect(spawn).toHaveBeenCalledTimes(1);
+
+    // Start second turn before child-1 exits — should kill child-1 first.
+    proc.sendUserText('turn-2');
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(fakes1.child.kill).toHaveBeenCalledWith('SIGTERM');
+
+    // Late stdout data from child-1 must be silently discarded.
+    fakes1.pushStdout('{"type":"agent_message","content":"stale from child-1"}\n');
+    await new Promise((r) => setImmediate(r));
+    expect(events.find((e) => (e as { text?: string }).text === 'stale from child-1')).toBeUndefined();
+
+    // Data and exit from child-2 MUST be processed normally.
+    fakes2.pushStdout('{"type":"session_init","session_id":"sess-2"}\n');
+    fakes2.pushStdout('{"type":"agent_message","content":"fresh from child-2"}\n');
+    fakes2.exit(0);
+    await new Promise((r) => setImmediate(r));
+    expect(events.find((e) => (e as { text?: string }).text === 'fresh from child-2')).toBeDefined();
+  });
+
   it('kill() emits a single exit even when no turn is in flight', () => {
     const fakes = makeFakeChild();
     const spawn = vi.fn().mockReturnValue(fakes.child);

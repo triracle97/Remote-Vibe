@@ -64,6 +64,31 @@ describe('SessionManager', () => {
     expect(created.correlationId).toBe('cid-42');
   });
 
+  it('broadcasts a typed error with code codex_session_id_missing when a result carries that error', async () => {
+    const { mgr, procs } = makeManager();
+    const s = await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });
+    const broadcasts: unknown[] = [];
+    mgr.on('broadcast', (m) => broadcasts.push(m));
+
+    procs[0]!.emitEvent({ kind: 'result', error: 'codex_session_id_missing' });
+
+    // The result stream message should land first, then the typed error.
+    const resultMsg = broadcasts.find((b) => (b as { type: string }).type === 'result');
+    expect(resultMsg).toBeDefined();
+    const errMsg = broadcasts.find(
+      (b) => (b as { type: string }).type === 'error',
+    ) as { code: string; sessionId: string; message: string } | undefined;
+    expect(errMsg).toBeDefined();
+    expect(errMsg?.code).toBe('codex_session_id_missing');
+    expect(errMsg?.sessionId).toBe(s.sessionId);
+    expect(errMsg?.message).toMatch(/session_id/);
+
+    // The result broadcast must precede the error broadcast.
+    const resultIdx = broadcasts.indexOf(resultMsg!);
+    const errIdx = broadcasts.indexOf(errMsg!);
+    expect(resultIdx).toBeLessThan(errIdx);
+  });
+
   it('broadcasts agent_not_installed error on ENOENT spawn failure', async () => {
     const { mgr, procs } = makeManager();
     await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });

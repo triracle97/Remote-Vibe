@@ -213,6 +213,18 @@ export class SessionManager extends EventEmitter {
         break;
     }
     this.appendAndBroadcast(s, msg);
+    // If a Codex turn surfaced a session_id_missing error inside the result,
+    // also broadcast a typed ServerErrorMsg so the frontend can route it via
+    // the standard error channel (App.tsx may show a distinct UI for it).
+    if (e.kind === 'result' && (e as { error?: string }).error === 'codex_session_id_missing') {
+      this.emit('broadcast', {
+        type: 'error',
+        code: 'codex_session_id_missing',
+        message:
+          'Codex did not emit a session_id; subsequent turns will start a fresh session (no resume).',
+        sessionId: s.sessionId,
+      });
+    }
   }
 
   private onProcExit(s: InternalSession, code: number | null, reason?: string): void {
