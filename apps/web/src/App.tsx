@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { BridgeClient } from './services/bridge-client';
 import { useConnectionStore } from './store/connection';
 import { useSessionsStore } from './store/sessions';
+import { useAccountsStore } from './store/accounts';
 import { Home } from './pages/Home';
 import { Session } from './pages/Session';
 
@@ -10,6 +11,7 @@ export function App(): JSX.Element {
   const setStatus = useConnectionStore((s) => s.setStatus);
   const setError = useConnectionStore((s) => s.setError);
   const apply = useSessionsStore((s) => s.applyServerMsg);
+  const applyAccountList = useAccountsStore((s) => s.applyAccountList);
 
   const client = useMemo(() => new BridgeClient(), []);
 
@@ -17,8 +19,8 @@ export function App(): JSX.Element {
     const offOpen = client.on('open', () => {
       setStatus('open');
       client.send({ type: 'list_sessions' });
-      // Reconnect: re-request missed history for every session we already
-      // know about so the ring buffer fills the local gap.
+      client.send({ type: 'list_accounts' });
+      client.send({ type: 'list_prompts', limit: 200 });
       const { sessions } = useSessionsStore.getState();
       for (const id of Object.keys(sessions)) {
         const s = sessions[id];
@@ -33,11 +35,16 @@ export function App(): JSX.Element {
       setError(e.message);
     });
     const offMessage = client.on('message', (m) => {
+      if (m.type === 'account_list') {
+        applyAccountList(m.accounts);
+        return;
+      }
       if (m.type === 'error') {
+        // session_dead routing to markTranscriptOnly is added in Task 14 once
+        // the store has the setter. For now, all errors fall through to the
+        // global banner — Phase 1 behavior.
         setError(`${m.code}: ${m.message}`);
       } else {
-        // Clear the last error on any successful (non-error) frame after
-        // recovery so stale messages do not linger.
         setError(null);
       }
       apply(m);
@@ -52,7 +59,7 @@ export function App(): JSX.Element {
       offMessage();
       client.close();
     };
-  }, [client, setStatus, setError, apply]);
+  }, [client, setStatus, setError, apply, applyAccountList]);
 
   return (
     <Routes>
