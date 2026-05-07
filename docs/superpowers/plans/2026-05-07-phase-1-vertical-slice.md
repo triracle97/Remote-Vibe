@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stand up the smallest end-to-end slice of the web Claude/Codex spawner: a single Claude session spawnable from a browser over Tailscale, with token-bootstrap auth and a plain-text chat that survives a page reload.
+**Goal:** Stand up the smallest end-to-end slice of the web Claude/Codex spawner: Claude sessions spawnable from a browser over Tailscale, with token-bootstrap auth and a plain-text chat that survives a page reload. Multiple parallel Claude sessions are allowed (the `SessionManager` already supports it cleanly); Codex remains a Phase 2 concern.
 
 **Architecture:** TypeScript ESM monorepo (npm workspaces). `packages/bridge` is a Node 20 process running `node:http` + `ws` that resolves the Tailscale IPv4 at boot, gates traffic with a token-set HttpOnly cookie, validates `Origin`/`Host` on WebSocket upgrades, spawns Claude Code via `child_process.spawn` (separate stdout/stderr), parses its stream-json into a unified event shape, fans those events out to subscribed WS clients, and keeps a per-session in-memory ring buffer for reconnect-replay. `apps/web` is a Vite + React + TypeScript SPA with Zustand stores, a chat view, a session list, and a typed-path project picker.
 
@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-05-07-web-claude-codex-spawner-design.md`
 
-**Out of scope for Phase 1 (deferred to later phases):** multiple parallel sessions, Codex agent, image attachments, file explorer, prompt history persistence, on-disk transcript JSONL, `GET /transcripts/<id>` HTTP endpoint, file browser API (`list_dirs` / `read_tree` / `read_file`), markdown rendering, FS denylist enforcement beyond the project-cwd allowlist, Playwright E2E (added in Phase 5 hardening).
+**Out of scope for Phase 1 (deferred to later phases):** Codex agent, image attachments, file explorer, prompt history persistence, on-disk transcript JSONL, `GET /transcripts/<id>` HTTP endpoint, file browser API (`list_dirs` / `read_tree` / `read_file`), markdown rendering, FS denylist enforcement beyond the project-cwd allowlist, Playwright E2E (added in Phase 5 hardening). Multiple parallel Claude sessions are in scope here even though the original spec phasing parked them in Phase 2 — `SessionManager` already supports them, so the Phase 1 UI ships with the `+ New Claude session` button enabled.
 
 ---
 
@@ -135,7 +135,9 @@ The current `package.json` was scaffolded for the deleted single-PTY server. Ove
     "web:test": "npm run test --workspace=apps/web",
     "build": "npm run web:build && npm run bridge:build",
     "test": "npm run bridge:test && npm run web:test",
-    "typecheck": "tsc --noEmit -p packages/bridge/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json"
+    "bridge:typecheck": "npm run typecheck --workspace=packages/bridge",
+    "web:typecheck": "npm run typecheck --workspace=apps/web",
+    "typecheck": "npm run bridge:typecheck && npm run web:typecheck"
   },
   "devDependencies": {
     "typescript": "^5.5.0"
@@ -577,6 +579,12 @@ describe('tokensMatch', () => {
   it('returns false for different-length tokens', () => {
     expect(tokensMatch('abc', 'abcd')).toBe(false);
   });
+  it('returns false (does not throw) when buffer byte-lengths differ despite equal string-length', () => {
+    // 'aa' is 2 bytes in UTF-8; '€€' is 6 bytes (each U+20AC encodes to 3 bytes)
+    // but both are length 2 in UTF-16 code units.
+    expect(() => tokensMatch('aa', '€€')).not.toThrow();
+    expect(tokensMatch('aa', '€€')).toBe(false);
+  });
 });
 
 describe('parseCookie', () => {
@@ -655,8 +663,15 @@ import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 
 export function tokensMatch(a: string, b: string): boolean {
+  // JS string length is in UTF-16 code units, but timingSafeEqual requires
+  // equal byte lengths. Compare on Buffer length so a non-ASCII candidate
+  // cannot throw RangeError. The string-length short-circuit is kept as a
+  // cheap fast path; the buffer-length check is the authoritative gate.
   if (a.length !== b.length) return false;
-  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
 }
 
 export function parseCookie(header: string | undefined): Record<string, string> {
@@ -787,6 +802,17 @@ export interface ServerLifecycleMsg {
   event: 'session_created' | 'session_ended';
   sessionId: string;
   seq: number;
+  // Populated only on session_created so the web client gets metadata
+  // without an extra round-trip:
+  agent?: AgentKind;
+  projectPath?: string;
+  createdAt?: number;
+  // Echoed only on session_created when the client's `start` carried a
+  // correlationId. Lets the UI deterministically link a `start` request
+  // to its server-assigned sessionId without racing other lifecycle
+  // events (e.g. session_list arriving with old sessions right after).
+  correlationId?: string;
+  // Populated only on session_ended:
   reason?: string;
   exitCode?: number;
 }
@@ -1206,6 +1232,32 @@ describe('ClaudeProcess', () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 
+  it('translates a child ENOENT error into exit(null, "agent_not_installed")', async () => {
+    const fakes = makeFakeChild();
+    const spawn = vi.fn().mockReturnValue(fakes.child);
+    const proc = new ClaudeProcess('/p', { spawn });
+    const exitSpy = vi.fn();
+    proc.on('exit', exitSpy);
+
+    fakes.child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }));
+    await new Promise((r) => setImmediate(r));
+
+    expect(exitSpy).toHaveBeenCalledWith(null, 'agent_not_installed');
+  });
+
+  it('translates other child errors into exit(null, "spawn_failed")', async () => {
+    const fakes = makeFakeChild();
+    const spawn = vi.fn().mockReturnValue(fakes.child);
+    const proc = new ClaudeProcess('/p', { spawn });
+    const exitSpy = vi.fn();
+    proc.on('exit', exitSpy);
+
+    fakes.child.emit('error', Object.assign(new Error('boom'), { code: 'EACCES' }));
+    await new Promise((r) => setImmediate(r));
+
+    expect(exitSpy).toHaveBeenCalledWith(null, 'spawn_failed');
+  });
+
   it('kill() sends SIGTERM then SIGKILL after grace', async () => {
     vi.useFakeTimers();
     const fakes = makeFakeChild();
@@ -1257,7 +1309,7 @@ const CLAUDE_FLAGS = [
 
 export interface ClaudeProcessEvents {
   event: (e: AgentEvent) => void;
-  exit: (code: number | null) => void;
+  exit: (code: number | null, reason?: string) => void;
 }
 
 export class ClaudeProcess extends EventEmitter {
@@ -1280,6 +1332,14 @@ export class ClaudeProcess extends EventEmitter {
     this.child.stdout.on('data', (chunk: string) => this.handleStdout(chunk));
     this.child.stderr.on('data', (chunk: Buffer) => this.handleStderr(chunk));
     this.child.on('exit', (code) => this.emit('exit', code));
+    // ENOENT (claude not on PATH) and other spawn errors arrive on the
+    // child's `error` event instead of `exit`. Without a listener, Node
+    // throws and crashes the bridge. Translate into the same `exit` event
+    // shape with a reason so SessionManager can surface a typed error.
+    this.child.on('error', (err: NodeJS.ErrnoException) => {
+      const reason = err.code === 'ENOENT' ? 'agent_not_installed' : 'spawn_failed';
+      this.emit('exit', null, reason);
+    });
   }
 
   private handleStdout(chunk: string): void {
@@ -1335,7 +1395,7 @@ export class ClaudeProcess extends EventEmitter {
 npm run bridge:test -- claude-process
 ```
 
-Expected: 7 passed.
+Expected: 9 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1407,6 +1467,36 @@ describe('SessionManager', () => {
     expect(m.event).toBe('session_created');
     expect(m.sessionId).toBe(s.sessionId);
     expect(m.seq).toBe(1);
+    expect(m.agent).toBe('claude');
+    expect(m.projectPath).toBe('/Users/test/proj');
+    expect(typeof m.createdAt).toBe('number');
+  });
+
+  it('echoes correlationId on session_created when create is called with one', async () => {
+    const { mgr } = makeManager();
+    const events: unknown[] = [];
+    mgr.on('broadcast', (m) => events.push(m));
+    await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj', correlationId: 'cid-42' });
+    const created = events.find(
+      (e) => (e as { event?: string }).event === 'session_created',
+    ) as { correlationId?: string };
+    expect(created.correlationId).toBe('cid-42');
+  });
+
+  it('broadcasts agent_not_installed error on ENOENT spawn failure', async () => {
+    const { mgr, procs } = makeManager();
+    await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });
+    const broadcasts: unknown[] = [];
+    mgr.on('broadcast', (m) => broadcasts.push(m));
+
+    procs[0]!.emit('exit', null, 'agent_not_installed');
+
+    const err = broadcasts.find((b) => (b as { type: string }).type === 'error');
+    expect(err).toMatchObject({ code: 'agent_not_installed' });
+    const ended = broadcasts.find(
+      (b) => (b as { type: string; event?: string }).event === 'session_ended',
+    );
+    expect((ended as { reason: string }).reason).toBe('agent_not_installed');
   });
 
   it('forwards process events as protocol messages with monotonic seq', async () => {
@@ -1593,7 +1683,11 @@ export class SessionManager extends EventEmitter {
     return real;
   }
 
-  async create(params: { agent: AgentKind; projectPath: string }): Promise<SessionInfo> {
+  async create(params: {
+    agent: AgentKind;
+    projectPath: string;
+    correlationId?: string;
+  }): Promise<SessionInfo> {
     if (params.agent !== 'claude') {
       throw new Error(`agent ${params.agent} not supported in Phase 1`);
     }
@@ -1618,10 +1712,14 @@ export class SessionManager extends EventEmitter {
       event: 'session_created',
       sessionId,
       seq: internal.nextSeq++,
+      agent: internal.agent,
+      projectPath: internal.projectPath,
+      createdAt: internal.createdAt,
+      ...(params.correlationId ? { correlationId: params.correlationId } : {}),
     });
 
     proc.on('event', (e: AgentEvent) => this.onProcEvent(internal, e));
-    proc.on('exit', (code) => this.onProcExit(internal, code));
+    proc.on('exit', (code: number | null, reason?: string) => this.onProcExit(internal, code, reason));
 
     return {
       sessionId,
@@ -1655,16 +1753,28 @@ export class SessionManager extends EventEmitter {
     this.appendAndBroadcast(s, msg);
   }
 
-  private onProcExit(s: InternalSession, code: number | null): void {
+  private onProcExit(s: InternalSession, code: number | null, reason?: string): void {
     if (!s.alive) return;
     s.alive = false;
+    const finalReason = reason ?? 'agent_exit';
+    if (finalReason === 'agent_not_installed') {
+      this.emit('broadcast', {
+        type: 'error',
+        code: 'agent_not_installed',
+        message: 'claude CLI not found on PATH',
+      });
+    }
     this.appendAndBroadcast(s, {
       type: 'system',
       event: 'session_ended',
       sessionId: s.sessionId,
       seq: s.nextSeq++,
-      exitCode: code ?? -1,
-      reason: 'agent_exit',
+      // Omit exitCode entirely when the OS did not give us a numeric one
+      // (signal-terminated children — the SIGTERM/SIGKILL path — exit with
+      // code === null). The UI renders the absence as "exit ?" rather than
+      // a misleading "exit -1".
+      ...(typeof code === 'number' ? { exitCode: code } : {}),
+      reason: finalReason,
     });
     this.sessions.delete(s.sessionId);
   }
@@ -1722,7 +1832,7 @@ export class SessionManager extends EventEmitter {
 npm run bridge:test -- session
 ```
 
-Expected: 10 passed.
+Expected: 12 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1849,6 +1959,26 @@ describe('http-server', () => {
     await close();
   });
 
+  it('falls back to index.html for unknown SPA routes', async () => {
+    const { baseUrl, close } = await setup();
+    const res = await fetch(`${baseUrl}/session/abc-123`, {
+      headers: { cookie: `bridge_session=${TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('<body>app</body>');
+    await close();
+  });
+
+  it('returns 404 for missing asset-shaped paths instead of falling back', async () => {
+    const { baseUrl, close } = await setup();
+    const res = await fetch(`${baseUrl}/missing.png`, {
+      headers: { cookie: `bridge_session=${TOKEN}` },
+    });
+    expect(res.status).toBe(404);
+    await close();
+  });
+
   it('rejects path traversal attempts', async () => {
     const { baseUrl, close } = await setup();
     const res = await fetch(`${baseUrl}/../../etc/passwd`, {
@@ -1960,7 +2090,7 @@ export function createHttpHandler(opts: HttpHandlerOpts) {
     }
 
     const urlPath = parsed.pathname === '/' ? '/index.html' : parsed.pathname;
-    const filePath = safeResolveStaticPath(opts.staticDir, urlPath);
+    let filePath = safeResolveStaticPath(opts.staticDir, urlPath);
     if (!filePath) {
       send(res, 400, 'Bad path');
       return;
@@ -1969,13 +2099,28 @@ export function createHttpHandler(opts: HttpHandlerOpts) {
     let st;
     try {
       st = await stat(filePath);
+      if (!st.isFile()) throw new Error('not a file');
     } catch {
-      send(res, 404, 'Not found');
-      return;
-    }
-    if (!st.isFile()) {
-      send(res, 404, 'Not found');
-      return;
+      // SPA history-mode fallback: any non-asset path falls back to
+      // index.html so React Router can handle routes like /session/<id>
+      // after a reload.
+      const looksLikeAsset = /\.[a-z0-9]{1,5}$/i.test(parsed.pathname);
+      if (looksLikeAsset) {
+        send(res, 404, 'Not found');
+        return;
+      }
+      const fallbackPath = safeResolveStaticPath(opts.staticDir, '/index.html');
+      if (!fallbackPath) {
+        send(res, 404, 'Not found');
+        return;
+      }
+      try {
+        st = await stat(fallbackPath);
+      } catch {
+        send(res, 404, 'Not found');
+        return;
+      }
+      filePath = fallbackPath;
     }
 
     const ext = filePath.slice(filePath.lastIndexOf('.'));
@@ -2000,7 +2145,7 @@ export function createHttpHandler(opts: HttpHandlerOpts) {
 npm run bridge:test -- http-server
 ```
 
-Expected: 8 passed.
+Expected: 10 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -2108,7 +2253,7 @@ describe('websocket', () => {
     await close();
   });
 
-  it('routes start → session_created broadcast', async () => {
+  it('routes start → session_created broadcast and forwards correlationId', async () => {
     const { port, close } = await startServer();
     const sock = ws(`ws://127.0.0.1:${port}/ws`, {
       cookie: `bridge_session=${TOKEN}`,
@@ -2120,13 +2265,27 @@ describe('websocket', () => {
     const messages: unknown[] = [];
     sock.on('message', (raw) => messages.push(JSON.parse(raw.toString())));
 
-    sock.send(JSON.stringify({ type: 'start', agent: 'claude', projectPath: '/Users/test/proj' }));
+    sock.send(
+      JSON.stringify({
+        type: 'start',
+        agent: 'claude',
+        projectPath: '/Users/test/proj',
+        correlationId: 'cid-router-1',
+      }),
+    );
     await new Promise((r) => setTimeout(r, 50));
 
     const created = messages.find(
-      (m) => (m as { type: string; event?: string }).type === 'system' && (m as { event?: string }).event === 'session_created',
-    );
+      (m) =>
+        (m as { type: string; event?: string }).type === 'system' &&
+        (m as { event?: string }).event === 'session_created',
+    ) as { correlationId?: string } | undefined;
     expect(created).toBeTruthy();
+    // Browser auto-navigation depends on this echo. Asserting it here
+    // pins the websocket router to forwarding correlationId into
+    // SessionManager.create — without this assertion, the unit test
+    // for SessionManager would still pass even if the wiring broke.
+    expect(created?.correlationId).toBe('cid-router-1');
     sock.close();
     await close();
   });
@@ -2302,7 +2461,11 @@ async function handleMessage(
   try {
     switch (msg.type) {
       case 'start': {
-        await mgr.create({ agent: msg.agent, projectPath: msg.projectPath });
+        await mgr.create({
+          agent: msg.agent,
+          projectPath: msg.projectPath,
+          ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+        });
         return;
       }
       case 'input': {
@@ -2723,6 +2886,17 @@ export interface ServerLifecycleMsg {
   event: 'session_created' | 'session_ended';
   sessionId: string;
   seq: number;
+  // Populated only on session_created so the web client gets metadata
+  // without an extra round-trip:
+  agent?: AgentKind;
+  projectPath?: string;
+  createdAt?: number;
+  // Echoed only on session_created when the client's `start` carried a
+  // correlationId. Lets the UI deterministically link a `start` request
+  // to its server-assigned sessionId without racing other lifecycle
+  // events (e.g. session_list arriving with old sessions right after).
+  correlationId?: string;
+  // Populated only on session_ended:
   reason?: string;
   exitCode?: number;
 }
@@ -3114,6 +3288,45 @@ describe('sessions store', () => {
     store.setActive('unknown');
     expect(useSessionsStore.getState().activeId).toBe('s1');
   });
+
+  it('uses agent/projectPath/createdAt from session_created when present', () => {
+    useSessionsStore.getState().applyServerMsg({
+      type: 'system',
+      event: 'session_created',
+      sessionId: 's1',
+      seq: 1,
+      agent: 'claude',
+      projectPath: '/Users/x/proj',
+      createdAt: 100,
+    });
+    const s = useSessionsStore.getState().sessions['s1']!;
+    expect(s.projectPath).toBe('/Users/x/proj');
+    expect(s.createdAt).toBe(100);
+  });
+
+  it('merges history events by seq with dedup and advances lastSeq', () => {
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+    store.applyServerMsg({
+      type: 'stream_delta',
+      sessionId: 's1',
+      seq: 2,
+      payload: { delta: 'a' },
+    });
+    store.applyServerMsg({
+      type: 'history',
+      sessionId: 's1',
+      events: [
+        { type: 'stream_delta', sessionId: 's1', seq: 2, payload: { delta: 'a' } },
+        { type: 'stream_delta', sessionId: 's1', seq: 3, payload: { delta: 'b' } },
+        { type: 'stream_delta', sessionId: 's1', seq: 4, payload: { delta: 'c' } },
+      ],
+      hasMore: false,
+    });
+    const s = useSessionsStore.getState().sessions['s1']!;
+    expect(s.events.length).toBe(4); // session_created + 3 deltas, dup removed
+    expect(s.lastSeq).toBe(4);
+  });
 });
 ```
 
@@ -3161,19 +3374,16 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     if (m.type === 'system' && m.event === 'init') return;
 
     if (m.type === 'system' && m.event === 'session_created') {
-      const exists = get().sessions[m.sessionId];
-      const view: SessionView = exists ?? {
+      const existing = get().sessions[m.sessionId];
+      const view: SessionView = {
         sessionId: m.sessionId,
-        agent: 'claude',
-        projectPath: '',
-        createdAt: Date.now(),
-        events: [],
-        lastSeq: 0,
+        agent: m.agent ?? existing?.agent ?? 'claude',
+        projectPath: m.projectPath ?? existing?.projectPath ?? '',
+        createdAt: m.createdAt ?? existing?.createdAt ?? Date.now(),
+        events: [...(existing?.events ?? []), m],
+        lastSeq: m.seq,
         alive: true,
       };
-      view.events = [...view.events, m];
-      view.lastSeq = m.seq;
-      view.alive = true;
       set((s) => ({
         sessions: { ...s.sessions, [m.sessionId]: view },
         order: s.order.includes(m.sessionId) ? s.order : [...s.order, m.sessionId],
@@ -3231,6 +3441,45 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       set({ sessions, order });
       return;
     }
+
+    if (m.type === 'history') {
+      const existing = get().sessions[m.sessionId];
+      if (!existing) return;
+      // No-op guard: if every replayed seq is already known, do not write
+      // a new state object. Without this, opening a session that asks for
+      // history on every render would loop (history → state write → render
+      // → another get_history → another history reply).
+      if (m.events.length === 0) return;
+      const knownSeqs = new Set<number>();
+      for (const e of existing.events) {
+        const seq = (e as { seq?: number }).seq;
+        if (typeof seq === 'number') knownSeqs.add(seq);
+      }
+      const novel = m.events.filter((e) => !knownSeqs.has(e.seq));
+      if (novel.length === 0) return;
+
+      const bySeq = new Map<number, SessionEvent>();
+      for (const e of existing.events) {
+        const seq = (e as { seq?: number }).seq;
+        if (typeof seq === 'number') bySeq.set(seq, e);
+      }
+      for (const e of novel) bySeq.set(e.seq, e);
+      const merged = [...bySeq.values()].sort(
+        (a, b) => (a as { seq: number }).seq - (b as { seq: number }).seq,
+      );
+      const lastSeq =
+        merged.length > 0 ? (merged[merged.length - 1] as { seq: number }).seq : existing.lastSeq;
+      const next: SessionView = { ...existing, events: merged, lastSeq };
+      set((s) => ({ sessions: { ...s.sessions, [m.sessionId]: next } }));
+      return;
+    }
+
+    if (m.type === 'error') {
+      // Bridge error messages are surfaced via the connection store
+      // (App routes them there) so the UI can display them. The sessions
+      // store ignores them — they are not session-scoped events.
+      return;
+    }
   },
 
   setActive(id) {
@@ -3246,7 +3495,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 npm run web:test -- sessions
 ```
 
-Expected: 5 passed.
+Expected: 7 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -3444,7 +3693,78 @@ export function SessionList({ sessions, activeId, onSelect, onNewSession }: Sess
 .session-ended { font-size: 0.7rem; color: #d97; margin-top: 0.25rem; }
 ```
 
-- [ ] **Step 5: Verify type-check**
+- [ ] **Step 5: Create `apps/web/src/features/project-picker/useNewSession.ts`**
+
+Both Home and Session need the same "open the picker → start a session → auto-navigate to it" flow. Extract that into a hook so it lives in one place.
+
+```tsx
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useSessionsStore } from '../../store/sessions';
+import type { BridgeClient } from '../../services/bridge-client';
+import { ProjectPicker } from './ProjectPicker';
+
+// crypto.getRandomValues is available in non-secure contexts (the Tailscale
+// IP serves plain HTTP, so crypto.randomUUID would not be defined). 16 random
+// bytes hex-encoded is sufficient correlation entropy for one operator.
+function newCorrelationId(): string {
+  const buf = new Uint8Array(16);
+  crypto.getRandomValues(buf);
+  return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function useNewSession(client: BridgeClient): {
+  open(): void;
+  pickerNode: JSX.Element | null;
+} {
+  const navigate = useNavigate();
+  const sessionsMap = useSessionsStore((s) => s.sessions);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Track the correlationId of the in-flight `start` request, NOT a "next
+  // session arrives" boolean. order.length growth could be triggered by
+  // an unrelated list_sessions arriving from App.connect — that race would
+  // navigate to the wrong session. Matching by correlationId pins us to
+  // the session this hook actually started.
+  const awaitingCorrelationRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const target = awaitingCorrelationRef.current;
+    if (!target) return;
+    for (const s of Object.values(sessionsMap)) {
+      const matched = s.events.find(
+        (e) =>
+          e.type === 'system' &&
+          e.event === 'session_created' &&
+          e.correlationId === target,
+      );
+      if (matched) {
+        awaitingCorrelationRef.current = null;
+        navigate(`/session/${s.sessionId}`);
+        return;
+      }
+    }
+  }, [sessionsMap, navigate]);
+
+  const pickerNode = pickerOpen ? (
+    <ProjectPicker
+      onCancel={() => setPickerOpen(false)}
+      onPick={(path) => {
+        const correlationId = newCorrelationId();
+        awaitingCorrelationRef.current = correlationId;
+        client.send({ type: 'start', agent: 'claude', projectPath: path, correlationId });
+        setPickerOpen(false);
+      }}
+    />
+  ) : null;
+
+  return {
+    open: () => setPickerOpen(true),
+    pickerNode,
+  };
+}
+```
+
+- [ ] **Step 6: Verify type-check**
 
 ```bash
 npm run web:typecheck
@@ -3452,11 +3772,11 @@ npm run web:typecheck
 
 Expected: no errors.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add apps/web/src/features/project-picker apps/web/src/features/session-list
-git commit -m "feat(web): add project picker and session list"
+git commit -m "feat(web): add project picker, session list, and useNewSession hook"
 ```
 
 ---
@@ -3486,7 +3806,12 @@ export function MessageBubble({ event }: MessageBubbleProps): JSX.Element | null
     return <div className="bubble system">session started</div>;
   }
   if (event.type === 'system' && event.event === 'session_ended') {
-    return <div className="bubble system">session ended (exit {event.exitCode ?? '?'})</div>;
+    const reason = event.reason;
+    return (
+      <div className="bubble system">
+        session ended (exit {event.exitCode ?? '?'}{reason ? `, ${reason}` : ''})
+      </div>
+    );
   }
   if (event.type === 'stream_delta') {
     const delta = (event.payload as { delta?: string }).delta ?? '';
@@ -3698,13 +4023,31 @@ export function App(): JSX.Element {
     const offOpen = client.on('open', () => {
       setStatus('open');
       client.send({ type: 'list_sessions' });
+      // Reconnect: re-request missed history for every session we already
+      // know about so the ring buffer fills the local gap.
+      const { sessions } = useSessionsStore.getState();
+      for (const id of Object.keys(sessions)) {
+        const s = sessions[id];
+        if (s && s.alive) {
+          client.send({ type: 'get_history', sessionId: id, since: s.lastSeq });
+        }
+      }
     });
     const offClose = client.on('close', () => setStatus('closed'));
     const offError = client.on('error', (e) => {
       setStatus('error');
       setError(e.message);
     });
-    const offMessage = client.on('message', (m) => apply(m));
+    const offMessage = client.on('message', (m) => {
+      if (m.type === 'error') {
+        setError(`${m.code}: ${m.message}`);
+      } else {
+        // Clear the last error on any successful (non-error) frame after
+        // recovery so stale messages do not linger.
+        setError(null);
+      }
+      apply(m);
+    });
 
     client.connect();
 
@@ -3730,13 +4073,12 @@ export function App(): JSX.Element {
 - [ ] **Step 2: Create `apps/web/src/pages/Home.tsx`**
 
 ```tsx
-import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSessionsStore } from '../store/sessions';
 import { useConnectionStore } from '../store/connection';
 import type { BridgeClient } from '../services/bridge-client';
 import { SessionList } from '../features/session-list/SessionList';
-import { ProjectPicker } from '../features/project-picker/ProjectPicker';
+import { useNewSession } from '../features/project-picker/useNewSession';
 
 interface HomeProps {
   client: BridgeClient;
@@ -3746,8 +4088,9 @@ export function Home({ client }: HomeProps): JSX.Element {
   const order = useSessionsStore((s) => s.order);
   const sessionsMap = useSessionsStore((s) => s.sessions);
   const status = useConnectionStore((s) => s.status);
+  const lastError = useConnectionStore((s) => s.lastError);
   const navigate = useNavigate();
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const newSession = useNewSession(client);
 
   const sessions = order.map((id) => sessionsMap[id]!).filter((s) => s !== undefined);
 
@@ -3757,22 +4100,15 @@ export function Home({ client }: HomeProps): JSX.Element {
         sessions={sessions}
         activeId={null}
         onSelect={(id) => navigate(`/session/${id}`)}
-        onNewSession={() => setPickerOpen(true)}
+        onNewSession={newSession.open}
       />
       <main className="home-main">
         <h1>mac-remote-terminal</h1>
         <p>connection: {status}</p>
+        {lastError && <p className="error-banner">error: {lastError}</p>}
         <p>{sessions.length === 0 ? 'No sessions yet. Click + New Claude session.' : 'Pick a session from the sidebar.'}</p>
       </main>
-      {pickerOpen && (
-        <ProjectPicker
-          onCancel={() => setPickerOpen(false)}
-          onPick={(path) => {
-            client.send({ type: 'start', agent: 'claude', projectPath: path });
-            setPickerOpen(false);
-          }}
-        />
-      )}
+      {newSession.pickerNode}
     </>
   );
 }
@@ -3784,9 +4120,11 @@ export function Home({ client }: HomeProps): JSX.Element {
 import { useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useSessionsStore } from '../store/sessions';
+import { useConnectionStore } from '../store/connection';
 import type { BridgeClient } from '../services/bridge-client';
 import { SessionList } from '../features/session-list/SessionList';
 import { Chat } from '../features/chat/Chat';
+import { useNewSession } from '../features/project-picker/useNewSession';
 
 interface SessionProps {
   client: BridgeClient;
@@ -3799,15 +4137,25 @@ export function Session({ client }: SessionProps): JSX.Element {
   const sessionsMap = useSessionsStore((s) => s.sessions);
   const setActive = useSessionsStore((s) => s.setActive);
   const session = id ? sessionsMap[id] : undefined;
+  const newSession = useNewSession(client);
 
   useEffect(() => {
     if (id) setActive(id);
   }, [id, setActive]);
 
+  const connStatus = useConnectionStore((s) => s.status);
+  // sessionExists flips false → true exactly once when the session
+  // appears in the store (either from session_list after a reload or
+  // from session_created on a fresh start). Using a boolean here, not
+  // the whole session object, prevents history-request loops while
+  // still firing the effect when the session first becomes known.
+  const sessionExists = useSessionsStore((s) => (id ? Boolean(s.sessions[id]) : false));
   useEffect(() => {
-    if (!id || !session) return;
-    client.send({ type: 'get_history', sessionId: id, since: session.lastSeq });
-  }, [client, id, session]);
+    if (!id || connStatus !== 'open' || !sessionExists) return;
+    const snapshot = useSessionsStore.getState().sessions[id];
+    if (!snapshot) return;
+    client.send({ type: 'get_history', sessionId: id, since: snapshot.lastSeq });
+  }, [client, id, connStatus, sessionExists]);
 
   if (!session) {
     return (
@@ -3826,13 +4174,14 @@ export function Session({ client }: SessionProps): JSX.Element {
         sessions={sessions}
         activeId={id ?? null}
         onSelect={(nid) => navigate(`/session/${nid}`)}
-        onNewSession={() => navigate('/')}
+        onNewSession={newSession.open}
       />
       <Chat
         session={session}
         onSend={(text) => client.send({ type: 'input', sessionId: session.sessionId, text })}
         onStop={() => client.send({ type: 'stop_session', sessionId: session.sessionId })}
       />
+      {newSession.pickerNode}
     </>
   );
 }
@@ -3845,6 +4194,7 @@ Append to `apps/web/src/App.css`:
 ```css
 .home-main { flex: 1; padding: 2rem; color: #ccc; }
 .home-main h1 { margin-top: 0; }
+.error-banner { color: #f88; background: #2a1010; border: 1px solid #4a1a1a; padding: 0.5rem 0.75rem; border-radius: 4px; }
 ```
 
 - [ ] **Step 5: Verify build**
@@ -3855,67 +4205,9 @@ npm run web:build
 
 Expected: build succeeds.
 
-- [ ] **Step 6: Auto-navigate to new session when bridge confirms creation**
+- [ ] **Step 6: Commit**
 
-After a session is created (server emits `session_created`), the user should land in its session view. Add a small effect in `Home.tsx` that watches `order` and pushes to the latest one when the picker has just been used.
-
-Modify `Home.tsx` — replace the `pickerOpen` block with a tracker:
-
-```tsx
-import { useEffect, useRef, useState } from 'react';
-// ...other imports unchanged...
-
-export function Home({ client }: HomeProps): JSX.Element {
-  const order = useSessionsStore((s) => s.order);
-  const sessionsMap = useSessionsStore((s) => s.sessions);
-  const status = useConnectionStore((s) => s.status);
-  const navigate = useNavigate();
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const awaitingRef = useRef(false);
-  const knownCountRef = useRef(order.length);
-
-  useEffect(() => {
-    if (awaitingRef.current && order.length > knownCountRef.current) {
-      const last = order[order.length - 1];
-      awaitingRef.current = false;
-      knownCountRef.current = order.length;
-      if (last) navigate(`/session/${last}`);
-    } else {
-      knownCountRef.current = order.length;
-    }
-  }, [order, navigate]);
-
-  const sessions = order.map((id) => sessionsMap[id]!).filter((s) => s !== undefined);
-
-  return (
-    <>
-      <SessionList
-        sessions={sessions}
-        activeId={null}
-        onSelect={(id) => navigate(`/session/${id}`)}
-        onNewSession={() => setPickerOpen(true)}
-      />
-      <main className="home-main">
-        <h1>mac-remote-terminal</h1>
-        <p>connection: {status}</p>
-        <p>{sessions.length === 0 ? 'No sessions yet. Click + New Claude session.' : 'Pick a session from the sidebar.'}</p>
-      </main>
-      {pickerOpen && (
-        <ProjectPicker
-          onCancel={() => setPickerOpen(false)}
-          onPick={(path) => {
-            awaitingRef.current = true;
-            client.send({ type: 'start', agent: 'claude', projectPath: path });
-            setPickerOpen(false);
-          }}
-        />
-      )}
-    </>
-  );
-}
-```
-
-- [ ] **Step 7: Commit**
+The auto-navigate-to-newly-created-session behavior is provided by the `useNewSession` hook from Task 17. The hook generates a 32-hex `correlationId`, stores it in a ref when sending `start`, and watches `sessionsMap` for any session whose recorded `session_created` event echoes that same `correlationId` — then navigates to that exact session. This avoids races with `list_sessions` responses or unrelated session creations. Both `Home` and `Session` consume the hook, so the `+ New Claude session` button works from either page.
 
 ```bash
 git add apps/web/src/App.tsx apps/web/src/App.css apps/web/src/pages
