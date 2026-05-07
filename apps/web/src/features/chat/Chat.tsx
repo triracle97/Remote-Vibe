@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, type DragEvent } from 'react';
 import type { SessionView } from '../../store/sessions';
 import { MessageBubble } from './MessageBubble';
 import { InputBox } from './InputBox';
+import { useImagePaste } from '../image-attach/useImagePaste';
 import './Chat.css';
 
 interface ChatProps {
@@ -24,12 +25,41 @@ export function Chat({
   inputDisabled,
 }: ChatProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
+  // useImagePaste lives at Chat level so drag-drop on the entire chat area
+  // and paste on the textarea inside InputBox feed the same image list.
+  // Spec §3 / §5: "drag-drop into the chat area".
+  const imagePaste = useImagePaste();
+  const imagesEnabled = session.agent === 'claude' && session.alive && !inputDisabled;
+  const [dragOver, setDragOver] = useState(false);
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [session.events]);
 
+  // Reset images when switching sessions.
+  useEffect(() => {
+    imagePaste.clear();
+    setDragOver(false);
+  }, [session.sessionId]);
+
+  const onDragOver = (e: DragEvent<HTMLDivElement>): void => {
+    if (!imagesEnabled) return;
+    e.preventDefault();
+    setDragOver(true);
+  };
+  const onDragLeave = (e: DragEvent<HTMLDivElement>): void => {
+    if (e.currentTarget === e.target) setDragOver(false);
+  };
+  const onDrop = async (e: DragEvent<HTMLDivElement>): Promise<void> => {
+    e.preventDefault();
+    setDragOver(false);
+    if (!imagesEnabled) return;
+    const files = Array.from(e.dataTransfer.files ?? []);
+    for (const f of files) await imagePaste.addImageFromFile(f);
+  };
+
   return (
-    <div className="chat">
+    <div className="chat" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div className="chat-header">
         <code>{session.projectPath}</code>
         <span className="chat-header-spacer">session {session.sessionId.slice(0, 8)}</span>
@@ -53,11 +83,16 @@ export function Chat({
           />
         ))}
       </div>
+      {dragOver && imagesEnabled && (
+        <div className="image-attach-drop-overlay">Drop image to attach</div>
+      )}
       <InputBox
-        onSend={(text) => onSend(text)}
+        onSend={onSend}
         onStop={onStop}
         disabled={(!session.alive) || Boolean(inputDisabled)}
         currentProjectPath={session.projectPath}
+        agent={session.agent}
+        imagePaste={imagePaste}
       />
     </div>
   );
