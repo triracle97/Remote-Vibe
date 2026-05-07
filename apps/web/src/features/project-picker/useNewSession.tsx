@@ -2,11 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSessionsStore } from '../../store/sessions';
 import type { BridgeClient } from '../../services/bridge-client';
-import { ProjectPicker } from './ProjectPicker';
+import { ProjectPicker, type ProjectPickerSelection } from './ProjectPicker';
 
-// crypto.getRandomValues is available in non-secure contexts (the Tailscale
-// IP serves plain HTTP, so crypto.randomUUID would not be defined). 16 random
-// bytes hex-encoded is sufficient correlation entropy for one operator.
 function newCorrelationId(): string {
   const buf = new Uint8Array(16);
   crypto.getRandomValues(buf);
@@ -20,11 +17,6 @@ export function useNewSession(client: BridgeClient): {
   const navigate = useNavigate();
   const sessionsMap = useSessionsStore((s) => s.sessions);
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Track the correlationId of the in-flight `start` request, NOT a "next
-  // session arrives" boolean. order.length growth could be triggered by
-  // an unrelated list_sessions arriving from App.connect — that race would
-  // navigate to the wrong session. Matching by correlationId pins us to
-  // the session this hook actually started.
   const awaitingCorrelationRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -48,10 +40,16 @@ export function useNewSession(client: BridgeClient): {
   const pickerNode = pickerOpen ? (
     <ProjectPicker
       onCancel={() => setPickerOpen(false)}
-      onPick={(path) => {
+      onPick={(selection: ProjectPickerSelection) => {
         const correlationId = newCorrelationId();
         awaitingCorrelationRef.current = correlationId;
-        client.send({ type: 'start', agent: 'claude', projectPath: path, correlationId });
+        client.send({
+          type: 'start',
+          agent: selection.agent,
+          projectPath: selection.projectPath,
+          ...(selection.account ? { account: selection.account } : {}),
+          correlationId,
+        });
         setPickerOpen(false);
       }}
     />

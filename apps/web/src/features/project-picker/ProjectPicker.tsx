@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { useAccountsStore } from '../../store/accounts';
+import type { AgentKind } from '../../types/protocol';
 import './ProjectPicker.css';
 
 const RECENT_KEY = 'mrt.recentProjects';
@@ -29,13 +31,23 @@ export function rememberRecentProject(path: string): void {
   saveRecents(next);
 }
 
+export interface ProjectPickerSelection {
+  agent: AgentKind;
+  projectPath: string;
+  account?: string;
+}
+
 interface ProjectPickerProps {
-  onPick(path: string): void;
+  onPick(selection: ProjectPickerSelection): void;
   onCancel(): void;
 }
 
 export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Element {
   const [path, setPath] = useState('');
+  const [agent, setAgent] = useState<AgentKind>('claude');
+  const accounts = useAccountsStore((s) => s.accounts);
+  const selectedAccount = useAccountsStore((s) => s.selectedAccount);
+  const setSelectedAccount = useAccountsStore((s) => s.setSelectedAccount);
   const [recents, setRecents] = useState<string[]>([]);
 
   useEffect(() => {
@@ -46,13 +58,57 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
     const trimmed = chosen.trim();
     if (trimmed.length === 0) return;
     rememberRecentProject(trimmed);
-    onPick(trimmed);
+    onPick({
+      agent,
+      projectPath: trimmed,
+      ...(agent === 'codex' && selectedAccount ? { account: selectedAccount } : {}),
+    });
   };
 
   return (
     <div className="picker-backdrop">
       <div className="picker">
         <h2>Pick a project</h2>
+        <div className="picker-agent">
+          <label>
+            <input
+              type="radio"
+              name="agent"
+              value="claude"
+              checked={agent === 'claude'}
+              onChange={() => setAgent('claude')}
+            />
+            Claude
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="agent"
+              value="codex"
+              checked={agent === 'codex'}
+              onChange={() => setAgent('codex')}
+            />
+            Codex
+          </label>
+        </div>
+        {agent === 'codex' && accounts.length > 0 && (
+          <div className="picker-account">
+            <label>
+              Account:&nbsp;
+              <select
+                value={selectedAccount ?? ''}
+                onChange={(e) => setSelectedAccount(e.target.value)}
+              >
+                {accounts.map((a) => (
+                  <option key={a.name} value={a.name}>
+                    {a.name}
+                    {a.isDefault ? ' (default)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
         <form
           onSubmit={(e) => {
             e.preventDefault();

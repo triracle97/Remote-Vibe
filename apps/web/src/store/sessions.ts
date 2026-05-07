@@ -11,6 +11,7 @@ export interface SessionView {
   events: SessionEvent[];
   lastSeq: number;
   alive: boolean;
+  account?: string;
 }
 
 interface SessionsStore {
@@ -35,6 +36,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
     if (m.type === 'system' && m.event === 'session_created') {
       const existing = get().sessions[m.sessionId];
+      const resolvedAccount = m.account ?? existing?.account;
       const view: SessionView = {
         sessionId: m.sessionId,
         agent: m.agent ?? existing?.agent ?? 'claude',
@@ -43,6 +45,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         events: [...(existing?.events ?? []), m],
         lastSeq: m.seq,
         alive: true,
+        ...(resolvedAccount !== undefined ? { account: resolvedAccount } : {}),
       };
       const isTranscriptOnly = Boolean(get().transcriptOnly[m.sessionId]);
       set((s) => ({
@@ -103,6 +106,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
           events: [],
           lastSeq: 0,
           alive: true,
+          ...(summary.account !== undefined ? { account: summary.account } : {}),
         };
         order.push(summary.sessionId);
       }

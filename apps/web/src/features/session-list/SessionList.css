@@ -8,3 +8,6 @@
 .session-label { font-weight: 600; }
 .session-path { font-size: 0.75rem; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-ended { font-size: 0.7rem; color: #d97; margin-top: 0.25rem; }
+.session-badge { font-size: 0.7rem; padding: 0.05rem 0.35rem; border-radius: 4px; margin-left: 0.35rem; }
+.session-badge.agent-claude { background: #1c2a44; color: #aef; }
+.session-badge.agent-codex { background: #2a1c44; color: #fae; }

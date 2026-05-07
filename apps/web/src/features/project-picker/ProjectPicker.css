@@ -15,3 +15,6 @@
 .picker-recents { list-style: none; padding: 0; max-height: 200px; overflow-y: auto; }
 .picker-recents button { background: none; border: 1px solid #333; color: #ccc; width: 100%; text-align: left; padding: 0.4rem; margin-bottom: 0.2rem; cursor: pointer; }
 .picker-recents button:hover { background: #2a2a2a; }
+.picker-agent { display: flex; gap: 1rem; margin-bottom: 0.5rem; }
+.picker-account { margin-bottom: 0.5rem; }
+.picker-account select { background: #111; color: #ddd; border: 1px solid #333; padding: 0.25rem; }
