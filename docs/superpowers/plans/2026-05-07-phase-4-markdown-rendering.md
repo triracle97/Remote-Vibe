@@ -39,8 +39,9 @@ apps/web/src/features/markdown/
 |---|---|
 | `apps/web/src/main.tsx` | Eager imports of `katex/dist/katex.min.css` and `./features/markdown/markdown.css`. After `createRoot(...).render(...)`, fire-and-forget `void import('./features/markdown/shiki-loader').then((m) => m.getHighlighter())` to warm the Shiki cache without blocking first paint. |
 | `apps/web/package.json` | Add deps: `react-markdown` `^9`, `remark-gfm` `^4`, `remark-math` `^6`, `rehype-katex` `^7`, `shiki` `^1.22`, `mermaid` `^11`, `katex` `^0.16`. |
-| `apps/web/src/store/sessions.ts` | `SessionEvent` augmented with optional `superseded?: true`. New private helper `markPriorStreamDeltasSuperseded(events, assistantIndex)` flips the flag on every preceding `stream_delta` event up to the first non-`stream_delta` boundary. `applyServerMsg` for `type === 'assistant'` invokes the helper when `payload` contains a non-empty `text: string`. |
-| `apps/web/src/store/sessions.test.ts` | 3 new test cases for the supersession walk. |
+| `apps/web/src/store/sessions.ts` | `SessionEvent` augmented with optional `superseded?: true`. New private helper `applySupersessionWalk(events)` re-derives flags from event order in one pass — for each `assistant` with non-empty text payload, walks backwards flagging stream_delta events until the first non-`stream_delta` boundary. Idempotent + order-only so reload-replay reaches the same flag set as live. Invoked in BOTH the live `assistant` append path AND the `history` bulk-merge path. |
+| `apps/web/src/store/sessions.test.ts` | 4 new test cases for the supersession walk (including reload-replay parity). |
+| `apps/web/src/features/chat/MessageBubble.test.tsx` | New file — TDD additions per spec §8: assistant text + user bubbles render `<MarkdownRenderer />` (mocked), tool-use/tool-result/result/system branches unchanged, `superseded === true` returns `null`. |
 | `apps/web/src/features/chat/MessageBubble.tsx` | Top-of-function: `if ((event as { superseded?: boolean }).superseded) return null;`. `event.type === 'assistant'` text branch wraps in `<MarkdownRenderer source={text} />` instead of plain text. `event.type === 'user'` likewise. Other branches unchanged. |
 
 ### Bridge
@@ -269,17 +270,51 @@ git commit -m "feat(web): shiki singleton highlighter with curated language set"
 `apps/web/src/features/markdown/mermaid-loader.test.ts`:
 
 ```ts
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Mock mermaid: the unit test does NOT exercise real Mermaid SVG generation
+// (Mermaid 11 depends on browser SVG/font/DOMPurify behavior that happy-dom
+// does not fully emulate, and would either flake or pull in heavy deps).
+// Real-rendering verification belongs in the manual e2e smoke (Task 10).
+vi.mock('mermaid', () => {
+  const initialize = vi.fn();
+  const render = vi.fn();
+  return { default: { initialize, render } };
+});
+
+import mermaid from 'mermaid';
 import { renderMermaid } from './mermaid-loader';
 
 describe('renderMermaid', () => {
-  it('resolves to {svg} for a valid graph', async () => {
-    const result = await renderMermaid('mtest-1', 'graph TD; A-->B;');
-    expect(result.svg).toContain('<svg');
+  beforeEach(() => {
+    (mermaid.initialize as ReturnType<typeof vi.fn>).mockClear();
+    (mermaid.render as ReturnType<typeof vi.fn>).mockClear();
   });
 
-  it('rejects for invalid input', async () => {
-    await expect(renderMermaid('mtest-2', 'this is not mermaid syntax {{{')).rejects.toBeDefined();
+  it('initializes mermaid with strict security + dark theme exactly once across calls', async () => {
+    (mermaid.render as ReturnType<typeof vi.fn>).mockResolvedValue({ svg: '<svg/>' });
+    await renderMermaid('m1', 'graph TD; A-->B;');
+    await renderMermaid('m2', 'graph TD; C-->D;');
+    expect(mermaid.initialize).toHaveBeenCalledTimes(1);
+    expect(mermaid.initialize).toHaveBeenCalledWith({
+      startOnLoad: false,
+      theme: 'dark',
+      securityLevel: 'strict',
+    });
+  });
+
+  it('resolves to {svg} when mermaid.render succeeds', async () => {
+    (mermaid.render as ReturnType<typeof vi.fn>).mockResolvedValue({
+      svg: '<svg data-test="ok"/>',
+    });
+    const result = await renderMermaid('m3', 'graph TD; A-->B;');
+    expect(result.svg).toBe('<svg data-test="ok"/>');
+    expect(mermaid.render).toHaveBeenCalledWith('m3', 'graph TD; A-->B;');
+  });
+
+  it('rejects when mermaid.render rejects', async () => {
+    (mermaid.render as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('parse failed'));
+    await expect(renderMermaid('m4', 'bad source {{{')).rejects.toThrow('parse failed');
   });
 });
 ```
@@ -322,7 +357,7 @@ export async function renderMermaid(id: string, source: string): Promise<{ svg: 
 npm run web:test -- mermaid-loader
 ```
 
-Expected: 2 passed. (Note: mermaid renders inside happy-dom which has SVG support; tests should not need a real DOM.)
+Expected: 3 passed. (Real Mermaid SVG generation is exercised in Task 10's manual smoke; happy-dom does not fully emulate Mermaid 11's SVG/DOMPurify path so unit tests mock the module instead.)
 
 - [ ] **Step 5: Commit**
 
@@ -480,19 +515,31 @@ import { getHighlighter } from './shiki-loader';
 describe('CodeBlock', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
   });
 
-  it('renders inline code as <code className="md-inline-code">', () => {
-    const { container } = render(<CodeBlock inline>{['hello']}</CodeBlock>);
+  // react-markdown 9 does NOT pass an `inline` prop. The CodeBlock detects
+  // inline vs block from props alone:
+  //   - no className AND single-line text  → inline
+  //   - has language-* className OR multi-line text → block
+  // This matches react-markdown 9's actual `code` component prop shape.
+
+  it('renders inline code (no className, single-line) as <code className="md-inline-code">', () => {
+    const { container } = render(<CodeBlock>{'hello'}</CodeBlock>);
     const code = container.querySelector('code.md-inline-code');
     expect(code?.textContent).toBe('hello');
+    expect(container.querySelector('.md-code-block')).toBeNull();
   });
 
   it('delegates language-mermaid to MermaidBlock', () => {
-    const { getByTestId } = render(
-      <CodeBlock className="language-mermaid">{['graph TD; A-->B;']}</CodeBlock>,
+    const { getByTestId, container } = render(
+      <CodeBlock className="language-mermaid">{'graph TD; A-->B;\n'}</CodeBlock>,
     );
     expect(getByTestId('mermaid-mock').textContent).toBe('graph TD; A-->B;');
+    expect(container.querySelector('.md-inline-code')).toBeNull();
   });
 
   it('renders Shiki HTML for a curated language once highlighter resolves', async () => {
@@ -500,19 +547,39 @@ describe('CodeBlock', () => {
       codeToHtml: (src: string, _opts: unknown) => `<pre data-test="shiki">${src}</pre>`,
     });
     const { container } = render(
-      <CodeBlock className="language-ts">{['const x = 1;']}</CodeBlock>,
+      <CodeBlock className="language-ts">{'const x = 1;\n'}</CodeBlock>,
     );
     await waitFor(() => {
       expect(container.querySelector('pre[data-test="shiki"]')).toBeTruthy();
     });
+    expect(getHighlighter).toHaveBeenCalled();
   });
 
-  it('falls through to plain <pre> for non-curated language', () => {
+  it('falls through to plain <pre> wrapper for non-curated language', () => {
     const { container } = render(
-      <CodeBlock className="language-fortran">{['program hi']}</CodeBlock>,
+      <CodeBlock className="language-fortran">{'program hi\n'}</CodeBlock>,
     );
-    expect(container.querySelector('.md-code-block pre code')?.textContent).toBe('program hi');
+    expect(container.querySelector('.md-code-block pre code')?.textContent).toBe('program hi\n');
     expect(getHighlighter).not.toHaveBeenCalled();
+  });
+
+  it('renders block <pre> wrapper for fenced code WITHOUT a language (multi-line, no className)', () => {
+    const { container } = render(<CodeBlock>{'line one\nline two\n'}</CodeBlock>);
+    // multi-line + no className → block path, plain wrapper, no Shiki
+    expect(container.querySelector('.md-code-block pre code')?.textContent).toBe(
+      'line one\nline two\n',
+    );
+    expect(container.querySelector('.md-inline-code')).toBeNull();
+    expect(getHighlighter).not.toHaveBeenCalled();
+  });
+
+  it('shows a dev-only "language X not highlighted" caption for non-curated lang in DEV', () => {
+    // import.meta.env.DEV is true by default under Vitest (dev-mode module).
+    const { container } = render(
+      <CodeBlock className="language-fortran">{'program hi\n'}</CodeBlock>,
+    );
+    const caption = container.querySelector('.md-code-dev-caption');
+    expect(caption?.textContent).toMatch(/language\s+`?fortran`?\s+not highlighted/);
   });
 
   it('copy button writes the original source to navigator.clipboard', async () => {
@@ -522,18 +589,18 @@ describe('CodeBlock', () => {
       value: { writeText },
     });
     const { container } = render(
-      <CodeBlock className="language-fortran">{['program hi']}</CodeBlock>,
+      <CodeBlock className="language-fortran">{'program hi\n'}</CodeBlock>,
     );
     const copy = container.querySelector('button.md-code-copy') as HTMLButtonElement;
     expect(copy).toBeTruthy();
     fireEvent.click(copy);
-    expect(writeText).toHaveBeenCalledWith('program hi');
+    expect(writeText).toHaveBeenCalledWith('program hi\n');
   });
 
   it('hides copy button when navigator.clipboard is undefined', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
     const { container } = render(
-      <CodeBlock className="language-fortran">{['program hi']}</CodeBlock>,
+      <CodeBlock className="language-fortran">{'program hi\n'}</CodeBlock>,
     );
     expect(container.querySelector('button.md-code-copy')).toBeNull();
   });
@@ -551,14 +618,13 @@ Expected: FAIL — module not found.
 - [ ] **Step 3: Implement `apps/web/src/features/markdown/CodeBlock.tsx`**
 
 ```tsx
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { getHighlighter, CURATED_LANGUAGES } from './shiki-loader';
 import { MermaidBlock } from './MermaidBlock';
 
 interface CodeBlockProps {
-  inline?: boolean;
   className?: string;
-  children?: React.ReactNode;
+  children?: ReactNode;
 }
 
 function extractLang(className?: string): string | null {
@@ -567,24 +633,37 @@ function extractLang(className?: string): string | null {
   return m ? m[1]! : null;
 }
 
-function nodeToString(children: React.ReactNode): string {
+function nodeToString(children: ReactNode): string {
   if (typeof children === 'string') return children;
+  if (typeof children === 'number') return String(children);
   if (Array.isArray(children)) return children.map(nodeToString).join('');
   if (children && typeof children === 'object' && 'props' in children) {
-    const props = (children as { props?: { children?: React.ReactNode } }).props;
+    const props = (children as { props?: { children?: ReactNode } }).props;
     if (props && 'children' in props) return nodeToString(props.children);
   }
   return '';
+}
+
+// react-markdown 9 removed the `inline` prop. Detect inline vs block from
+// the props that ARE passed through:
+//   - has a `language-*` className → fenced block (always)
+//   - no className AND source has no internal newline → inline backtick
+//   - no className AND source DOES have internal newlines → fenced block w/o language
+function isInline(className: string | undefined, source: string): boolean {
+  if (className && /\blanguage-/.test(className)) return false;
+  return !source.includes('\n');
 }
 
 function CodeFenceWrapper({
   lang,
   source,
   body,
+  devCaption,
 }: {
   lang: string | null;
   source: string;
-  body: React.ReactNode;
+  body: ReactNode;
+  devCaption?: string;
 }): JSX.Element {
   const [copied, setCopied] = useState<'idle' | 'ok' | 'fail'>('idle');
   const canCopy =
@@ -620,14 +699,17 @@ function CodeFenceWrapper({
         </button>
       )}
       {body}
+      {devCaption !== undefined && (
+        <div className="md-code-dev-caption">{devCaption}</div>
+      )}
     </div>
   );
 }
 
-export function CodeBlock({ inline, className, children }: CodeBlockProps): JSX.Element {
+export function CodeBlock({ className, children }: CodeBlockProps): JSX.Element {
   const source = nodeToString(children);
 
-  if (inline) {
+  if (isInline(className, source)) {
     return <code className="md-inline-code">{children}</code>;
   }
 
@@ -637,12 +719,18 @@ export function CodeBlock({ inline, className, children }: CodeBlockProps): JSX.
     return <MermaidBlock source={source.trim()} />;
   }
 
-  // Curated language → render via Shiki async-highlighter pattern.
   const supported = lang !== null && (CURATED_LANGUAGES as readonly string[]).includes(lang);
 
-  return supported ? (
-    <ShikiBlock lang={lang!} source={source} />
-  ) : (
+  if (supported) {
+    return <ShikiBlock lang={lang!} source={source} />;
+  }
+
+  // Non-curated language OR fenced code without a language — plain block wrapper.
+  // Per spec §6: dev mode shows a small caption naming the unhighlighted lang.
+  const devCaption =
+    import.meta.env.DEV && lang !== null ? `language \`${lang}\` not highlighted` : undefined;
+
+  return (
     <CodeFenceWrapper
       lang={lang}
       source={source}
@@ -651,6 +739,7 @@ export function CodeBlock({ inline, className, children }: CodeBlockProps): JSX.
           <code>{children}</code>
         </pre>
       }
+      {...(devCaption !== undefined ? { devCaption } : {})}
     />
   );
 }
@@ -702,7 +791,7 @@ function ShikiBlock({ lang, source }: { lang: string; source: string }): JSX.Ele
 npm run web:test -- CodeBlock
 ```
 
-Expected: 7 passed.
+Expected: 9 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -729,11 +818,10 @@ import { render } from '@testing-library/react';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 vi.mock('./CodeBlock', () => ({
-  CodeBlock: (props: { inline?: boolean; className?: string; children?: React.ReactNode }) => (
+  CodeBlock: (props: { className?: string; children?: React.ReactNode }) => (
     <div
       data-test="code-block"
-      data-inline={props.inline ? '1' : '0'}
-      data-className={props.className ?? ''}
+      data-classname={props.className ?? ''}
     >
       {props.children}
     </div>
@@ -754,25 +842,32 @@ describe('MarkdownRenderer', () => {
     expect(container.querySelectorAll('ul li').length).toBe(2);
   });
 
-  it('renders inline code via CodeBlock with inline=true', () => {
-    const { container } = render(<MarkdownRenderer source={'use \`foo\` here'} />);
+  it('renders inline code via CodeBlock with no className', () => {
+    const { container } = render(<MarkdownRenderer source={'use `foo` here'} />);
     const cb = container.querySelector('[data-test="code-block"]');
-    expect(cb?.getAttribute('data-inline')).toBe('1');
+    // react-markdown 9: inline backticks pass through `code` with no className.
+    expect(cb?.getAttribute('data-classname')).toBe('');
     expect(cb?.textContent).toBe('foo');
   });
 
-  it('renders fenced code via CodeBlock with className', () => {
+  it('renders fenced code via CodeBlock with language className', () => {
     const { container } = render(
-      <MarkdownRenderer source={'\`\`\`ts\nconst x = 1;\n\`\`\`'} />,
+      <MarkdownRenderer source={'```ts\nconst x = 1;\n```'} />,
     );
     const cb = container.querySelector('[data-test="code-block"]');
-    expect(cb?.getAttribute('data-inline')).toBe('0');
-    expect(cb?.getAttribute('data-className')).toContain('language-ts');
+    expect(cb?.getAttribute('data-classname')).toContain('language-ts');
   });
 
   it('renders block math as a .katex element', () => {
     const { container } = render(<MarkdownRenderer source={'$$x^2$$'} />);
     expect(container.querySelector('.katex')).toBeTruthy();
+  });
+
+  it('does NOT throw on malformed math (KaTeX throwOnError: false)', () => {
+    // Spec §6: malformed math must render as a styled error, not crash.
+    expect(() =>
+      render(<MarkdownRenderer source={'$$\\frac$$'} />),
+    ).not.toThrow();
   });
 
   it('renders GFM tables', () => {
@@ -819,7 +914,11 @@ function MarkdownRendererImpl({ source }: MarkdownRendererProps): JSX.Element {
     <div className="md-rendered">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
+        rehypePlugins={[
+          // Spec §6: throwOnError: false renders malformed math as red literal
+          // text instead of crashing the bubble. errorColor matches the spec.
+          [rehypeKatex, { throwOnError: false, errorColor: '#cc0000' }],
+        ]}
         components={{
           code: CodeBlock as never,
         }}
@@ -842,7 +941,7 @@ export const MarkdownRenderer = memo(
 npm run web:test -- MarkdownRenderer
 ```
 
-Expected: 6 passed.
+Expected: 7 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1006,6 +1105,43 @@ Append inside the existing `describe('sessions store', ...)` block:
     expect((seq4 as { superseded?: boolean }).superseded).toBe(true);
   });
 
+  it('reload-replay (cold reload via history) reaches the same superseded set', () => {
+    // Spec §5 + §8 test #3: replay the same events from a cold store and
+    // verify the supersession walk re-derives identical superseded flags.
+    const replay = [
+      { type: 'system', event: 'session_created', sessionId: 's1', seq: 1 } as const,
+      { type: 'stream_delta', sessionId: 's1', seq: 2, payload: { delta: 'hel' } } as const,
+      { type: 'stream_delta', sessionId: 's1', seq: 3, payload: { delta: 'lo' } } as const,
+      { type: 'assistant', sessionId: 's1', seq: 4, payload: { text: 'hello' } } as const,
+    ];
+    // Pass 1: live append path (event-by-event)
+    const store1 = useSessionsStore.getState();
+    for (const e of replay) store1.applyServerMsg(e);
+    const liveDeltas = useSessionsStore
+      .getState()
+      .sessions['s1']!.events.filter((e) => e.type === 'stream_delta');
+    const liveFlags = liveDeltas.map((e) => (e as { superseded?: boolean }).superseded === true);
+
+    // Reset store to cold and re-load the same events via the history bulk-merge path.
+    useSessionsStore.setState({ sessions: {}, order: [], activeId: null, transcriptOnly: {} });
+    const store2 = useSessionsStore.getState();
+    // Seed the session row first (history path requires existing summary).
+    store2.applyServerMsg({
+      type: 'session_list',
+      sessions: [{ sessionId: 's1', agent: 'claude', projectPath: '/p', createdAt: 1 }],
+    });
+    store2.applyServerMsg({ type: 'history', sessionId: 's1', events: replay });
+    const replayDeltas = useSessionsStore
+      .getState()
+      .sessions['s1']!.events.filter((e) => e.type === 'stream_delta');
+    const replayFlags = replayDeltas.map(
+      (e) => (e as { superseded?: boolean }).superseded === true,
+    );
+
+    expect(replayFlags).toEqual(liveFlags);
+    expect(replayFlags.every((f) => f === true)).toBe(true);
+  });
+
   it('does NOT supersede on assistant events that have no text payload (e.g. tool_use)', () => {
     const store = useSessionsStore.getState();
     store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
@@ -1027,13 +1163,13 @@ Append inside the existing `describe('sessions store', ...)` block:
   });
 ```
 
-- [ ] **Step 2: Run test — expect FAIL on the three new ones**
+- [ ] **Step 2: Run test — expect FAIL on the four new ones**
 
 ```bash
 npm run web:test -- sessions
 ```
 
-Expected: 3 new tests fail (no supersession behavior yet).
+Expected: 4 new tests fail (no supersession behavior yet).
 
 - [ ] **Step 3: Update `apps/web/src/store/sessions.ts`**
 
@@ -1064,26 +1200,36 @@ export type SessionEvent = (ServerLifecycleMsg | ServerStreamMsg) & {
 Add this private helper inside the store module (above the `useSessionsStore` factory):
 
 ```ts
-function markPriorStreamDeltasSuperseded(
-  events: SessionEvent[],
-  assistantIndex: number,
-): SessionEvent[] {
-  // Walk backwards from just-before assistantIndex; flag stream_delta events
-  // until we hit any non-stream_delta boundary.
-  const out = events.slice();
-  for (let i = assistantIndex - 1; i >= 0; i--) {
-    const e = out[i]!;
-    if (e.type !== 'stream_delta') break;
-    if (e.superseded) continue; // idempotent
-    out[i] = { ...e, superseded: true };
+function applySupersessionWalk(events: SessionEvent[]): SessionEvent[] {
+  // Single SSOT for the supersession derivation. Order-only and idempotent:
+  // for each `assistant` with a non-empty text payload, walk backwards until
+  // any non-`stream_delta` boundary, flagging stream_delta events as
+  // `superseded: true`. Already-flagged events are not re-allocated.
+  // Used by BOTH the live `assistant` append path and the `history` bulk-merge
+  // (replay) path so reload-replay reaches the same superseded set as live.
+  let out: SessionEvent[] | null = null;
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!;
+    if (e.type !== 'assistant') continue;
+    const text = (e.payload as { text?: unknown }).text;
+    if (typeof text !== 'string' || text.length === 0) continue;
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = (out ?? events)[j]!;
+      if (prev.type !== 'stream_delta') break;
+      if (prev.superseded) continue;
+      if (out === null) out = events.slice();
+      out[j] = { ...prev, superseded: true };
+    }
   }
-  return out;
+  return out ?? events;
 }
 ```
 
-Locate the `applyServerMsg` action's branch that handles `m.type === 'assistant'` (it appends to the events array). Augment the append step: after appending, if `m.payload` is an object with a non-empty `text: string`, replace the events array with `markPriorStreamDeltasSuperseded(eventsAfterAppend, eventsAfterAppend.length - 1)`.
+#### 3a. Live `assistant` append path
 
-Concretely, find code shaped like:
+Locate the `applyServerMsg` action's branch that handles `m.type === 'assistant'` (it appends to the session's events array). Augment the append step: after appending, replace the events array with `applySupersessionWalk(nextEvents)`. The walk is idempotent and cheap (O(n) per assistant; flagged events are skipped without re-allocation), so calling it on every relevant append is safe.
+
+Find code shaped like:
 
 ```ts
 if (m.type === 'assistant' || m.type === 'stream_delta' || ...) {
@@ -1102,12 +1248,10 @@ if (m.type === 'assistant' || m.type === 'stream_delta' || m.type === 'tool_resu
   const existing = get().sessions[m.sessionId];
   if (!existing) return;
   let nextEvents: SessionEvent[] = [...existing.events, m as SessionEvent];
-  if (
-    m.type === 'assistant' &&
-    typeof (m.payload as { text?: unknown }).text === 'string' &&
-    (m.payload as { text: string }).text.length > 0
-  ) {
-    nextEvents = markPriorStreamDeltasSuperseded(nextEvents, nextEvents.length - 1);
+  // Only the `assistant` append can introduce a new supersession boundary —
+  // skip the walk on every other event type for performance.
+  if (m.type === 'assistant') {
+    nextEvents = applySupersessionWalk(nextEvents);
   }
   const next = { ...existing, events: nextEvents, lastSeq: m.seq };
   set((s) => ({ sessions: { ...s.sessions, [m.sessionId]: next } }));
@@ -1117,13 +1261,54 @@ if (m.type === 'assistant' || m.type === 'stream_delta' || m.type === 'tool_resu
 
 (If the existing branching is structured differently — e.g. multiple `if` arms per type — apply the supersession step inside the `assistant` arm only.)
 
+#### 3b. History bulk-merge path (reload-replay parity)
+
+The `if (m.type === 'history')` branch in `apps/web/src/store/sessions.ts` (around line 117) merges replayed events by `seq` and writes a new state. After computing the merged array but BEFORE writing state, run the same supersession walk:
+
+```ts
+if (m.type === 'history') {
+  const existing = get().sessions[m.sessionId];
+  if (!existing) return;
+  if (m.events.length === 0) return;
+  const knownSeqs = new Set<number>();
+  for (const e of existing.events) {
+    const seq = (e as { seq?: number }).seq;
+    if (typeof seq === 'number') knownSeqs.add(seq);
+  }
+  const novel = m.events.filter((e) => !knownSeqs.has(e.seq));
+  if (novel.length === 0) return;
+
+  const bySeq = new Map<number, SessionEvent>();
+  for (const e of existing.events) {
+    const seq = (e as { seq?: number }).seq;
+    if (typeof seq === 'number') bySeq.set(seq, e);
+  }
+  for (const e of novel) bySeq.set(e.seq, e);
+  const merged = [...bySeq.values()].sort(
+    (a, b) => (a as { seq: number }).seq - (b as { seq: number }).seq,
+  );
+  // Re-derive supersession flags on the merged array. The walk is purely
+  // additive and order-only — replay reaches the same flag set as live.
+  const mergedWithFlags = applySupersessionWalk(merged);
+  const lastSeq =
+    mergedWithFlags.length > 0
+      ? (mergedWithFlags[mergedWithFlags.length - 1] as { seq: number }).seq
+      : existing.lastSeq;
+  const next: SessionView = { ...existing, events: mergedWithFlags, lastSeq };
+  set((s) => ({ sessions: { ...s.sessions, [m.sessionId]: next } }));
+  return;
+}
+```
+
+(Edit only the two new lines: the `applySupersessionWalk(merged)` call and the rename of the `merged` reference inside the `lastSeq` computation + `next` object. Existing dedup + sort logic is unchanged.)
+
 - [ ] **Step 4: Run test — expect PASS**
 
 ```bash
 npm run web:test -- sessions
 ```
 
-Expected: existing tests + 3 new tests all pass.
+Expected: existing tests + 4 new tests all pass.
 
 - [ ] **Step 5: Commit**
 
@@ -1134,24 +1319,185 @@ git commit -m "feat(web): supersede stream_delta events when assistant text arri
 
 ---
 
-## Task 9: Wire MarkdownRenderer + supersession early-return into MessageBubble
+## Task 9: Wire MarkdownRenderer + supersession early-return into MessageBubble (TDD)
 
 **Files:**
+- Create: `apps/web/src/features/chat/MessageBubble.test.tsx`
 - Modify: `apps/web/src/features/chat/MessageBubble.tsx`
 
-- [ ] **Step 1: Read the existing file**
+This task is TDD — write failing tests first, then make them pass.
+
+The existing file branches on `event.type` to render bubbles. Phase 4 changes:
+1. Top-of-function early return: if the event has `superseded === true`, return `null`.
+2. `assistant` text branch wraps in `<MarkdownRenderer source={text} />`.
+3. `user` branch wraps in `<MarkdownRenderer source={text ?? ''} />`.
+4. `stream_delta`, tool_use (assistant payload variant), tool_result, result, system branches unchanged.
+
+- [ ] **Step 1: Read the existing file for line-accurate context**
 
 ```bash
 cat /Volumes/WDSSD/Code/mac-remote-terminal/apps/web/src/features/chat/MessageBubble.tsx
 ```
 
-The current file branches on `event.type` to render bubbles. Phase 4 changes:
-1. Top-of-function early return: if the event has `superseded === true`, return `null`.
-2. `assistant` text branch: replace `<div className="bubble assistant">{payload.text}</div>` with `<div className="bubble assistant"><MarkdownRenderer source={payload.text} /></div>`.
-3. `user` branch: replace `<div className="bubble user">{payload.text}</div>` with `<div className="bubble user"><MarkdownRenderer source={payload.text} /></div>`.
-4. All other branches (stream_delta, tool_use, tool_result, result, system) unchanged.
+Expected shape (Phase 3 state): plain function `MessageBubble({ event })` with a series of `if (event.type === '...')` branches. Inline payload casts.
 
-- [ ] **Step 2: Edit `apps/web/src/features/chat/MessageBubble.tsx`**
+- [ ] **Step 2: Write `apps/web/src/features/chat/MessageBubble.test.tsx` (failing tests)**
+
+Per spec §8: assertions cover assistant + user → MarkdownRenderer, unchanged non-markdown branches (tool_use, tool_result, result, system), and the `superseded` early-return.
+
+```tsx
+import { describe, it, expect, vi } from 'vitest';
+import { render } from '@testing-library/react';
+import { MessageBubble } from './MessageBubble';
+import type { SessionEvent } from '../../store/sessions';
+
+vi.mock('../markdown/MarkdownRenderer', () => ({
+  MarkdownRenderer: ({ source }: { source: string }) => (
+    <div data-test="md-renderer">{source}</div>
+  ),
+}));
+
+function ev(partial: Partial<SessionEvent> & { type: SessionEvent['type'] }): SessionEvent {
+  return partial as SessionEvent;
+}
+
+describe('MessageBubble', () => {
+  it('renders assistant text via MarkdownRenderer', () => {
+    const { container } = render(
+      <MessageBubble
+        event={ev({
+          type: 'assistant',
+          sessionId: 's1',
+          seq: 5,
+          payload: { text: '**bold**' },
+        })}
+      />,
+    );
+    const md = container.querySelector('[data-test="md-renderer"]');
+    expect(md).toBeTruthy();
+    expect(md?.textContent).toBe('**bold**');
+    expect(container.querySelector('.bubble.assistant')).toBeTruthy();
+  });
+
+  it('renders user text via MarkdownRenderer', () => {
+    const { container } = render(
+      <MessageBubble
+        event={ev({
+          type: 'user',
+          sessionId: 's1',
+          seq: 6,
+          payload: { text: 'hello `world`' },
+        })}
+      />,
+    );
+    const md = container.querySelector('[data-test="md-renderer"]');
+    expect(md?.textContent).toBe('hello `world`');
+    expect(container.querySelector('.bubble.user')).toBeTruthy();
+  });
+
+  it('returns null for events flagged superseded', () => {
+    const { container } = render(
+      <MessageBubble
+        event={ev({
+          type: 'stream_delta',
+          sessionId: 's1',
+          seq: 4,
+          payload: { delta: 'hel' },
+          // @ts-expect-error — superseded is a web-store-only flag added via intersection
+          superseded: true,
+        })}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('renders stream_delta unchanged (no markdown) when not superseded', () => {
+    const { container } = render(
+      <MessageBubble
+        event={ev({
+          type: 'stream_delta',
+          sessionId: 's1',
+          seq: 4,
+          payload: { delta: '**not markdown**' },
+        })}
+      />,
+    );
+    // stream_delta shows raw text in <span class="bubble-delta">; no MarkdownRenderer.
+    expect(container.querySelector('[data-test="md-renderer"]')).toBeNull();
+    expect(container.querySelector('span.bubble-delta')?.textContent).toBe('**not markdown**');
+  });
+
+  it('renders tool_use bubble unchanged (no markdown)', () => {
+    const { container } = render(
+      <MessageBubble
+        event={ev({
+          type: 'assistant',
+          sessionId: 's1',
+          seq: 7,
+          payload: { toolUse: { kind: 'tool_use', toolUseId: 'tu1', toolName: 'Bash', input: {} } },
+        })}
+      />,
+    );
+    expect(container.querySelector('[data-test="md-renderer"]')).toBeNull();
+    expect(container.querySelector('.bubble.tool-use')).toBeTruthy();
+  });
+
+  it('renders tool_result bubble unchanged (no markdown)', () => {
+    const { container } = render(
+      <MessageBubble
+        event={ev({
+          type: 'tool_result',
+          sessionId: 's1',
+          seq: 8,
+          payload: { toolUseId: 'tu1', output: 'ok' },
+        })}
+      />,
+    );
+    expect(container.querySelector('[data-test="md-renderer"]')).toBeNull();
+    expect(container.querySelector('.bubble.tool-result')).toBeTruthy();
+  });
+
+  it('renders result (turn complete) unchanged (no markdown)', () => {
+    const { container } = render(
+      <MessageBubble
+        event={ev({
+          type: 'result',
+          sessionId: 's1',
+          seq: 9,
+          payload: { durationMs: 100 },
+        })}
+      />,
+    );
+    expect(container.querySelector('[data-test="md-renderer"]')).toBeNull();
+    expect(container.querySelector('.bubble.system')?.textContent).toMatch(/turn complete/);
+  });
+
+  it('renders system session_created unchanged (no markdown)', () => {
+    const { container } = render(
+      <MessageBubble
+        event={ev({
+          type: 'system',
+          event: 'session_created',
+          sessionId: 's1',
+          seq: 1,
+        })}
+      />,
+    );
+    expect(container.querySelector('[data-test="md-renderer"]')).toBeNull();
+    expect(container.querySelector('.bubble.system')?.textContent).toBe('session started');
+  });
+});
+```
+
+- [ ] **Step 3: Run test — expect FAIL**
+
+```bash
+npm run web:test -- MessageBubble
+```
+
+Expected: assistant-text + user + superseded tests fail (impl doesn't import MarkdownRenderer, doesn't handle superseded). Other tests should already pass against the Phase 3 impl.
+
+- [ ] **Step 4: Edit `apps/web/src/features/chat/MessageBubble.tsx`**
 
 Add the import at the top:
 
@@ -1207,7 +1553,15 @@ if (event.type === 'user') {
 }
 ```
 
-- [ ] **Step 3: Run all web tests + typecheck + build**
+- [ ] **Step 5: Run test — expect PASS**
+
+```bash
+npm run web:test -- MessageBubble
+```
+
+Expected: 8 passed.
+
+- [ ] **Step 6: Run full web suite + typecheck + build**
 
 ```bash
 cd /Volumes/WDSSD/Code/mac-remote-terminal
@@ -1218,10 +1572,10 @@ npm run web:build 2>&1 | tail -5
 
 Expected: green; bundle ~785 KB gzipped.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add apps/web/src/features/chat/MessageBubble.tsx
+git add apps/web/src/features/chat/MessageBubble.tsx apps/web/src/features/chat/MessageBubble.test.tsx
 git commit -m "feat(web): MessageBubble renders markdown for assistant + user; hides superseded events"
 ```
 
