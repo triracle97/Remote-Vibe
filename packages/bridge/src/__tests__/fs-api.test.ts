@@ -28,8 +28,8 @@ describe('FsApi.listDirs', () => {
     expect(entries.map((e) => `${e.kind}:${e.name}`)).toEqual([
       'dir:docs',
       'dir:src',
-      'file:README.md',
       'file:a.txt',
+      'file:README.md',
     ]);
     expect(entries.find((e) => e.name === 'a.txt')!.size).toBe(2);
   });

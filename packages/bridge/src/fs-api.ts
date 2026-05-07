@@ -214,7 +214,11 @@ export class FsApi {
     }
     out.sort((a, b) => {
       if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;
-      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+      const an = a.name.toLowerCase();
+      const bn = b.name.toLowerCase();
+      if (an < bn) return -1;
+      if (an > bn) return 1;
+      return 0;
     });
     return out;
   }
