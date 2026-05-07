@@ -61,11 +61,11 @@ This task is pure scaffolding — no TDD. Verifies the deps install, the build s
 - [ ] **Step 1: Install the seven new deps**
 
 ```bash
-cd /Volumes/WDSSD/Code/mac-remote-terminal/apps/web
-npm install react-markdown@^9 remark-gfm@^4 remark-math@^6 rehype-katex@^7 shiki@^1.22 mermaid@^11 katex@^0.16
+cd /Volumes/WDSSD/Code/mac-remote-terminal
+npm install --workspace apps/web react-markdown@^9 remark-gfm@^4 remark-math@^6 rehype-katex@^7 shiki@^1.22 mermaid@^11 katex@^0.16
 ```
 
-Expected: deps added to `package.json`. Lockfile updated.
+Expected: deps added to `apps/web/package.json`. Workspace root `package-lock.json` updated. (npm workspaces keeps a single root lockfile — there is NO `apps/web/package-lock.json`.)
 
 - [ ] **Step 2: Update `apps/web/src/main.tsx`**
 
@@ -135,11 +135,17 @@ Expected: all existing tests pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/web/package.json apps/web/src/main.tsx apps/web/src/features/markdown/shiki-loader.ts apps/web/src/features/markdown/markdown.css apps/web/package-lock.json ../package-lock.json
+cd /Volumes/WDSSD/Code/mac-remote-terminal
+git add \
+  apps/web/package.json \
+  apps/web/src/main.tsx \
+  apps/web/src/features/markdown/shiki-loader.ts \
+  apps/web/src/features/markdown/markdown.css \
+  package-lock.json
 git commit -m "chore(web): install markdown rendering deps + boot CSS imports"
 ```
 
-(`../package-lock.json` is the root workspaces lockfile.)
+(Single root `package-lock.json` covers all workspaces — there is no per-package lockfile.)
 
 ---
 
