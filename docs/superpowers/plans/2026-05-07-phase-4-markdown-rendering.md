@@ -805,7 +805,7 @@ function ShikiBlock({ lang, source }: { lang: string; source: string }): JSX.Ele
 npm run web:test -- CodeBlock
 ```
 
-Expected: 9 passed.
+Expected: 8 passed.
 
 - [ ] **Step 5: Commit**
 
