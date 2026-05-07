@@ -124,11 +124,13 @@ async function handleMessage(
       }
       case 'get_history': {
         const h = mgr.getHistory(msg.sessionId, msg.since ?? 0);
+        // h is null when the session is unknown; Task 9 will handle this
+        // properly — for now fall back to empty history (Phase 1 behaviour).
         send({
           type: 'history',
           sessionId: msg.sessionId,
-          events: h.events,
-          hasMore: h.hasMore,
+          events: h?.events ?? [],
+          hasMore: h?.hasMore ?? false,
           ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
         });
         return;

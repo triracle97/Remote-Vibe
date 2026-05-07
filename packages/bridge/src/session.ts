@@ -2,6 +2,8 @@ import { EventEmitter } from 'node:events';
 import { realpath as fsRealpath } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import type { ClaudeProcess } from './claude-process.js';
+import type { TranscriptStore } from './transcript-store.js';
+import type { CodexAccount } from './accounts.js';
 import type {
   AgentEvent,
   AgentKind,
@@ -14,20 +16,37 @@ export interface SessionInfo {
   agent: AgentKind;
   projectPath: string;
   createdAt: number;
+  account?: string;
 }
 
 interface InternalSession extends SessionInfo {
-  proc: ClaudeProcess;
+  proc: AgentDriver;
   buffer: Array<ServerLifecycleMsg | ServerStreamMsg>;
   nextSeq: number;
   alive: boolean;
 }
 
+export interface AgentDriver extends EventEmitter {
+  sendUserText(text: string): void;
+  kill(): void;
+}
+
+export interface DriverFactoryArgs {
+  agent: AgentKind;
+  projectPath: string;
+  account?: CodexAccount;
+}
+
 export interface SessionManagerOpts {
   allowedDirs: string[];
   bufferCap: number;
-  spawnClaude: (projectPath: string) => ClaudeProcess;
+  /** Phase 1 back-compat: a Claude-only factory. Mutually exclusive with driverFactory. */
+  spawnClaude?: (projectPath: string) => ClaudeProcess;
+  /** Phase 2 generalised driver factory. */
+  driverFactory?: (args: DriverFactoryArgs) => AgentDriver;
   realpath?: (p: string) => Promise<string>;
+  transcriptStore?: TranscriptStore;
+  accounts?: Map<string, CodexAccount>;
 }
 
 export class PathOutsideAllowlistError extends Error {
@@ -44,19 +63,42 @@ export class SessionDeadError extends Error {
   }
 }
 
+export class UnknownAccountError extends Error {
+  code = 'unknown_account' as const;
+  constructor(message: string) {
+    super(message);
+  }
+}
+
 export class SessionManager extends EventEmitter {
   private readonly sessions = new Map<string, InternalSession>();
   private readonly allowedDirs: string[];
   private readonly bufferCap: number;
-  private readonly spawnClaude: (projectPath: string) => ClaudeProcess;
+  private readonly driverFactory: (args: DriverFactoryArgs) => AgentDriver;
   private readonly realpath: (p: string) => Promise<string>;
+  private readonly transcriptStore: TranscriptStore | undefined;
+  private readonly accounts: Map<string, CodexAccount>;
 
   constructor(opts: SessionManagerOpts) {
     super();
     this.allowedDirs = opts.allowedDirs;
     this.bufferCap = opts.bufferCap;
-    this.spawnClaude = opts.spawnClaude;
     this.realpath = opts.realpath ?? fsRealpath;
+    this.transcriptStore = opts.transcriptStore;
+    this.accounts = opts.accounts ?? new Map();
+    if (opts.driverFactory) {
+      this.driverFactory = opts.driverFactory;
+    } else if (opts.spawnClaude) {
+      const spawnClaude = opts.spawnClaude;
+      this.driverFactory = ({ agent, projectPath }) => {
+        if (agent !== 'claude') {
+          throw new Error(`agent ${agent} not supported by this SessionManager (claude-only factory)`);
+        }
+        return spawnClaude(projectPath) as unknown as AgentDriver;
+      };
+    } else {
+      throw new Error('SessionManager: either driverFactory or spawnClaude must be provided');
+    }
   }
 
   private async validatePath(projectPath: string): Promise<string> {
@@ -71,27 +113,53 @@ export class SessionManager extends EventEmitter {
     return real;
   }
 
+  private resolveAccount(agent: AgentKind, requested: string | undefined): CodexAccount | undefined {
+    if (agent !== 'codex') return undefined;
+    if (this.accounts.size === 0) {
+      throw new UnknownAccountError('No Codex accounts are configured.');
+    }
+    if (!requested) {
+      if (this.accounts.size === 1) {
+        return [...this.accounts.values()][0];
+      }
+      const names = [...this.accounts.keys()].join(', ');
+      throw new UnknownAccountError(
+        `Account is required when multiple Codex accounts exist. Configured: [${names}]`,
+      );
+    }
+    const found = this.accounts.get(requested);
+    if (!found) {
+      const names = [...this.accounts.keys()].join(', ');
+      throw new UnknownAccountError(`Unknown Codex account '${requested}'. Configured: [${names}]`);
+    }
+    return found;
+  }
+
   async create(params: {
     agent: AgentKind;
     projectPath: string;
+    account?: string;
     correlationId?: string;
   }): Promise<SessionInfo> {
-    if (params.agent !== 'claude') {
-      throw new Error(`agent ${params.agent} not supported in Phase 1`);
-    }
     const real = await this.validatePath(params.projectPath);
+    const account = this.resolveAccount(params.agent, params.account);
     const sessionId = randomUUID();
-    const proc = this.spawnClaude(real);
+    const proc = this.driverFactory({
+      agent: params.agent,
+      projectPath: real,
+      ...(account ? { account } : {}),
+    });
 
     const internal: InternalSession = {
       sessionId,
-      agent: 'claude',
+      agent: params.agent,
       projectPath: real,
       createdAt: Date.now(),
       proc,
       buffer: [],
       nextSeq: 1,
       alive: true,
+      ...(account ? { account: account.name } : {}),
     };
     this.sessions.set(sessionId, internal);
 
@@ -103,6 +171,7 @@ export class SessionManager extends EventEmitter {
       agent: internal.agent,
       projectPath: internal.projectPath,
       createdAt: internal.createdAt,
+      ...(account ? { account: account.name } : {}),
       ...(params.correlationId ? { correlationId: params.correlationId } : {}),
     });
 
@@ -114,6 +183,7 @@ export class SessionManager extends EventEmitter {
       agent: internal.agent,
       projectPath: internal.projectPath,
       createdAt: internal.createdAt,
+      ...(account ? { account: account.name } : {}),
     };
   }
 
@@ -149,7 +219,8 @@ export class SessionManager extends EventEmitter {
       this.emit('broadcast', {
         type: 'error',
         code: 'agent_not_installed',
-        message: 'claude CLI not found on PATH',
+        message: `${s.agent} CLI not found on PATH`,
+        sessionId: s.sessionId,
       });
     }
     this.appendAndBroadcast(s, {
@@ -157,13 +228,10 @@ export class SessionManager extends EventEmitter {
       event: 'session_ended',
       sessionId: s.sessionId,
       seq: s.nextSeq++,
-      // Omit exitCode entirely when the OS did not give us a numeric one
-      // (signal-terminated children — the SIGTERM/SIGKILL path — exit with
-      // code === null). The UI renders the absence as "exit ?" rather than
-      // a misleading "exit -1".
       ...(typeof code === 'number' ? { exitCode: code } : {}),
       reason: finalReason,
     });
+    this.transcriptStore?.close(s.sessionId);
     this.sessions.delete(s.sessionId);
   }
 
@@ -172,6 +240,7 @@ export class SessionManager extends EventEmitter {
     if (s.buffer.length > this.bufferCap) {
       s.buffer.splice(0, s.buffer.length - this.bufferCap);
     }
+    this.transcriptStore?.append(s.sessionId, msg);
     this.emit('broadcast', msg);
   }
 
@@ -181,28 +250,34 @@ export class SessionManager extends EventEmitter {
       agent: s.agent,
       projectPath: s.projectPath,
       createdAt: s.createdAt,
+      ...(s.account ? { account: s.account } : {}),
     }));
   }
 
-  getHistory(sessionId: string, since: number): {
-    events: Array<ServerLifecycleMsg | ServerStreamMsg>;
-    hasMore: boolean;
-  } {
+  getHistory(
+    sessionId: string,
+    since: number,
+  ):
+    | {
+        events: Array<ServerLifecycleMsg | ServerStreamMsg>;
+        hasMore: boolean;
+      }
+    | null {
     const s = this.sessions.get(sessionId);
-    if (!s) return { events: [], hasMore: false };
+    if (!s) return null;
     const minSeqInBuffer = s.buffer.length > 0 ? s.buffer[0]!.seq : s.nextSeq;
     const events = s.buffer.filter((e) => e.seq > since);
     const hasMore = since + 1 < minSeqInBuffer;
     return { events, hasMore };
   }
 
+  knowsSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
   sendInput(sessionId: string, text: string): void {
     const s = this.sessions.get(sessionId);
     if (!s || !s.alive) throw new SessionDeadError(sessionId);
-    // Broadcast the user prompt to all subscribers and append to the ring
-    // buffer BEFORE forwarding to the agent process. This makes the user side
-    // of the conversation reconstructable from history replay and ensures
-    // every UI tab sees the message at the same seq.
     this.appendAndBroadcast(s, {
       type: 'user',
       sessionId,
@@ -220,5 +295,6 @@ export class SessionManager extends EventEmitter {
 
   shutdown(): void {
     for (const s of this.sessions.values()) s.proc.kill();
+    this.transcriptStore?.closeAll();
   }
 }

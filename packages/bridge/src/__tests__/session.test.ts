@@ -198,4 +198,63 @@ describe('SessionManager', () => {
     const { mgr } = makeManager();
     expect(() => mgr.sendInput('nope', 'x')).toThrow(/session_dead/);
   });
+
+  it('forwards broadcasts to a TranscriptStore.append when one is provided', async () => {
+    const procs: FakeProc[] = [];
+    const appended: Array<{ id: string; msg: unknown }> = [];
+    const fakeTranscriptStore = {
+      append: (id: string, msg: unknown) => appended.push({ id, msg }),
+      close: () => {},
+      closeAll: () => {},
+      prune: async () => 0,
+      pathFor: () => '',
+    };
+    const mgr = new SessionManager({
+      allowedDirs: ['/Users/test'],
+      bufferCap: 100,
+      driverFactory: () => {
+        const p = new FakeProc();
+        procs.push(p);
+        return p as unknown as import('../session.js').AgentDriver;
+      },
+      realpath: async (p) => p,
+      transcriptStore: fakeTranscriptStore as unknown as import('../transcript-store.js').TranscriptStore,
+    });
+    const s = await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });
+    procs[0]!.emitEvent({ kind: 'stream_delta', delta: 'a' });
+
+    expect(appended.map((a) => a.id)).toEqual([s.sessionId, s.sessionId]);
+    // First append is session_created (lifecycle), second is the stream_delta.
+    const first = appended[0]!.msg as { type: string };
+    const second = appended[1]!.msg as { type: string };
+    expect(first.type).toBe('system');
+    expect(second.type).toBe('stream_delta');
+  });
+
+  it('calls TranscriptStore.close on session_ended', async () => {
+    const procs: FakeProc[] = [];
+    const closed: string[] = [];
+    const fakeTranscriptStore = {
+      append: () => {},
+      close: (id: string) => closed.push(id),
+      closeAll: () => {},
+      prune: async () => 0,
+      pathFor: () => '',
+    };
+    const mgr = new SessionManager({
+      allowedDirs: ['/Users/test'],
+      bufferCap: 100,
+      driverFactory: () => {
+        const p = new FakeProc();
+        procs.push(p);
+        return p as unknown as import('../session.js').AgentDriver;
+      },
+      realpath: async (p) => p,
+      transcriptStore: fakeTranscriptStore as unknown as import('../transcript-store.js').TranscriptStore,
+    });
+    const s = await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });
+    procs[0]!.emit('exit', 0);
+    await new Promise((r) => setImmediate(r));
+    expect(closed).toEqual([s.sessionId]);
+  });
 });
