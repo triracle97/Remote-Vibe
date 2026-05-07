@@ -1,9 +1,10 @@
-export type AgentKind = 'claude';
+export type AgentKind = 'claude' | 'codex';
 
 export interface ClientStartMsg {
   type: 'start';
   agent: AgentKind;
   projectPath: string;
+  account?: string;
   sessionId?: string;
   resume?: boolean;
   correlationId?: string;
@@ -34,19 +35,33 @@ export interface ClientGetHistoryMsg {
   correlationId?: string;
 }
 
+export interface ClientListAccountsMsg {
+  type: 'list_accounts';
+  correlationId?: string;
+}
+
+export interface ClientListPromptsMsg {
+  type: 'list_prompts';
+  query?: string;
+  limit?: number;
+  correlationId?: string;
+}
+
 export type ClientMsg =
   | ClientStartMsg
   | ClientInputMsg
   | ClientStopMsg
   | ClientListSessionsMsg
-  | ClientGetHistoryMsg;
+  | ClientGetHistoryMsg
+  | ClientListAccountsMsg
+  | ClientListPromptsMsg;
 
 export type AgentEvent =
   | { kind: 'assistant_text'; text: string }
   | { kind: 'stream_delta'; delta: string }
   | { kind: 'tool_use'; toolUseId: string; toolName: string; input: unknown }
   | { kind: 'tool_result'; toolUseId: string; output: unknown }
-  | { kind: 'result'; cost?: number; durationMs?: number };
+  | { kind: 'result'; cost?: number; durationMs?: number; error?: string };
 
 export interface ServerInitMsg {
   type: 'system';
@@ -58,15 +73,13 @@ export interface ServerLifecycleMsg {
   event: 'session_created' | 'session_ended';
   sessionId: string;
   seq: number;
-  // Populated only on session_created so the web client gets metadata
-  // without an extra round-trip:
+  // Populated only on session_created:
   agent?: AgentKind;
   projectPath?: string;
   createdAt?: number;
-  // Echoed only on session_created when the client's `start` carried a
-  // correlationId. Lets the UI deterministically link a `start` request
-  // to its server-assigned sessionId without racing other lifecycle
-  // events (e.g. session_list arriving with old sessions right after).
+  // Populated for codex sessions only, on session_created:
+  account?: string;
+  // Echoed only on session_created when start carried a correlationId:
   correlationId?: string;
   // Populated only on session_ended:
   reason?: string;
@@ -82,7 +95,13 @@ export interface ServerStreamMsg {
 
 export interface ServerSessionListMsg {
   type: 'session_list';
-  sessions: Array<{ sessionId: string; agent: AgentKind; projectPath: string; createdAt: number }>;
+  sessions: Array<{
+    sessionId: string;
+    agent: AgentKind;
+    projectPath: string;
+    createdAt: number;
+    account?: string;
+  }>;
   correlationId?: string;
 }
 
@@ -94,12 +113,31 @@ export interface ServerHistoryMsg {
   correlationId?: string;
 }
 
+export interface ServerAccountListMsg {
+  type: 'account_list';
+  accounts: Array<{ name: string; agent: 'codex'; isDefault: boolean }>;
+  correlationId?: string;
+}
+
+export interface ServerPromptsResultMsg {
+  type: 'prompts_result';
+  prompts: Array<{
+    text: string;
+    lastUsedAt: number;
+    projectPaths: string[];
+    agents: AgentKind[];
+  }>;
+  correlationId?: string;
+}
+
 export type ServerErrorCode =
   | 'not_authorized'
   | 'origin_mismatch'
   | 'path_outside_allowlist'
   | 'session_dead'
   | 'agent_not_installed'
+  | 'unknown_account'
+  | 'codex_session_id_missing'
   | 'message_too_large'
   | 'history_truncated'
   | 'unsupported_message';
@@ -108,6 +146,10 @@ export interface ServerErrorMsg {
   type: 'error';
   code: ServerErrorCode;
   message: string;
+  // Set only for errors emitted on behalf of an existing session
+  // (session_dead, codex_session_id_missing). Start-time errors carry
+  // correlationId instead.
+  sessionId?: string;
   correlationId?: string;
 }
 
@@ -117,4 +159,6 @@ export type ServerMsg =
   | ServerStreamMsg
   | ServerSessionListMsg
   | ServerHistoryMsg
+  | ServerAccountListMsg
+  | ServerPromptsResultMsg
   | ServerErrorMsg;
