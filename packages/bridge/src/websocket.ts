@@ -105,9 +105,15 @@ async function handleMessage(
   try {
     switch (msg.type) {
       case 'start': {
+        // Phase 6: dirs[] wins over projectPath; first dir is the primary cwd.
+        const effectivePath = msg.dirs?.[0] ?? msg.projectPath;
+        if (!effectivePath) {
+          sendError(send, 'project_path_missing', 'start requires projectPath or dirs', msg.correlationId);
+          return;
+        }
         await mgr.create({
           agent: msg.agent,
-          projectPath: msg.projectPath,
+          projectPath: effectivePath,
           ...(msg.account ? { account: msg.account } : {}),
           ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
         });

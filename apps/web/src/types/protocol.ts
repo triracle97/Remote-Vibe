@@ -3,7 +3,10 @@ export type AgentKind = 'claude' | 'codex';
 export interface ClientStartMsg {
   type: 'start';
   agent: AgentKind;
-  projectPath: string;
+  /** Phase 1-5: single working dir. Still supported for backward compat. */
+  projectPath?: string;
+  /** Phase 6: multiple working dirs (first = primary cwd). If both `dirs` and `projectPath` present, `dirs` wins. */
+  dirs?: string[];
   account?: string;
   sessionId?: string;
   resume?: boolean;
@@ -71,7 +74,14 @@ export type ClientMsg =
   | ClientListDirsMsg
   | ClientReadFileMsg
   | ClientListHistoryMsg
-  | ClientResumeSessionMsg;
+  | ClientResumeSessionMsg
+  | ClientListProfilesMsg
+  | ClientSaveProfileMsg
+  | ClientDeleteProfileMsg
+  | ClientSetDefaultProfileMsg
+  | ClientListSlashCommandsMsg
+  | ClientSearchFilesMsg
+  | ClientRenameSessionMsg;
 
 export type AgentEvent =
   | { kind: 'assistant_text'; text: string }
@@ -204,7 +214,13 @@ export type ServerErrorCode =
   | 'cli_session_id_unknown'
   | 'claude_resume_rejected'
   | 'codex_resume_rejected'
-  | 'resume_spawn_failed';
+  | 'resume_spawn_failed'
+  | 'profile_invalid_name'
+  | 'profile_dirs_disallowed'
+  | 'profile_not_found'
+  | 'session_name_invalid'
+  | 'file_search_failed'
+  | 'slash_commands_failed';
 
 export interface ServerErrorMsg {
   type: 'error';
@@ -226,7 +242,14 @@ export type ServerMsg =
   | ServerFileResultMsg
   | ServerErrorMsg
   | ServerHistoryListMsg
-  | ServerSessionResumedMsg;
+  | ServerSessionResumedMsg
+  | ServerProfileListMsg
+  | ServerProfileSavedMsg
+  | ServerProfileDeletedMsg
+  | ServerProfileDefaultSetMsg
+  | ServerSlashCommandsListMsg
+  | ServerFileSearchResultsMsg
+  | ServerSessionRenamedMsg;
 
 // Phase 5 — history viewer + session resume
 
@@ -281,5 +304,132 @@ export interface ServerSessionResumedMsg {
   type: 'session_resumed';
   webSessionId: string;
   alive: true;
+  correlationId: string;
+}
+
+// Phase 6 — slash + multi-dir/profiles + @-tag + telegram
+
+export interface Profile {
+  /** Unique within (agent); regex `[A-Za-z0-9 _-]{1,40}` */
+  name: string;
+  agent: 'claude' | 'codex';
+  /** Working dirs in order; dirs[0] = primary cwd, dirs[1..] = --add-dir for Claude. Non-empty. */
+  dirs: string[];
+  /** Codex profile name; null for Claude. */
+  account: string | null;
+  /** One profile per agent can have default: true. */
+  default: boolean;
+  /** Server-set on load when validation fails (e.g. dirs[i] outside allowlist). UI greys out invalid entries. */
+  valid?: boolean;
+}
+
+export interface SlashCommand {
+  /** Includes leading `/`. */
+  name: string;
+  /** Empty string when none. */
+  description: string;
+  source: 'builtin' | 'user' | 'project';
+  /** `'both'` for shared commands; otherwise scoped. */
+  agent: 'claude' | 'codex' | 'both';
+}
+
+export interface SearchHit {
+  /** Already formatted for textarea insertion (with @ prefix). */
+  insertText: string;
+  /** Absolute path for tooltip display. */
+  fullPath: string;
+  /** 0 = primary, 1..N = index into session.additionalDirs. */
+  dirIndex: number;
+  mtime: number;
+}
+
+export interface ClientListProfilesMsg {
+  type: 'list_profiles';
+  correlationId: string;
+}
+
+export interface ClientSaveProfileMsg {
+  type: 'save_profile';
+  profile: Profile;
+  correlationId: string;
+}
+
+export interface ClientDeleteProfileMsg {
+  type: 'delete_profile';
+  name: string;
+  agent: 'claude' | 'codex';
+  correlationId: string;
+}
+
+export interface ClientSetDefaultProfileMsg {
+  type: 'set_default_profile';
+  name: string;
+  agent: 'claude' | 'codex';
+  correlationId: string;
+}
+
+export interface ClientListSlashCommandsMsg {
+  type: 'list_slash_commands';
+  sessionId: string;
+  correlationId: string;
+}
+
+export interface ClientSearchFilesMsg {
+  type: 'search_files';
+  sessionId: string;
+  query: string;
+  correlationId: string;
+}
+
+export interface ClientRenameSessionMsg {
+  type: 'rename_session';
+  sessionId: string;
+  name: string;
+  correlationId: string;
+}
+
+export interface ServerProfileListMsg {
+  type: 'profile_list';
+  profiles: Profile[];
+  correlationId: string;
+}
+
+export interface ServerProfileSavedMsg {
+  type: 'profile_saved';
+  profile: Profile;
+  correlationId: string;
+}
+
+export interface ServerProfileDeletedMsg {
+  type: 'profile_deleted';
+  name: string;
+  agent: 'claude' | 'codex';
+  correlationId: string;
+}
+
+export interface ServerProfileDefaultSetMsg {
+  type: 'profile_default_set';
+  name: string;
+  agent: 'claude' | 'codex';
+  correlationId: string;
+}
+
+export interface ServerSlashCommandsListMsg {
+  type: 'slash_commands_list';
+  commands: SlashCommand[];
+  correlationId: string;
+}
+
+export interface ServerFileSearchResultsMsg {
+  type: 'file_search_results';
+  hits: SearchHit[];
+  truncated: boolean;
+  correlationId: string;
+}
+
+export interface ServerSessionRenamedMsg {
+  type: 'session_renamed';
+  sessionId: string;
+  name: string;
   correlationId: string;
 }
