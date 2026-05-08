@@ -9,6 +9,7 @@ import { usePromptHistoryStore } from '../store/prompt-history';
 import { useFileExplorerStore } from '../store/file-explorer';
 import { useHistoryStore } from '../features/history/historyStore';
 import { useProfileStore } from '../features/profiles/profileStore';
+import { useProjectsStore } from '../features/projects/projectsStore';
 import { useSlashCommandStore } from '../features/chat/slashCommandStore';
 import { useFileSearchStore } from '../features/chat/fileSearchStore';
 import { ThemeProvider } from './ThemeProvider';
@@ -114,6 +115,16 @@ export function AppShell(): JSX.Element {
       client.close();
     };
   }, [client, setStatus, setError, apply, markTranscriptOnly, applyAccountList]);
+
+  useEffect(() => {
+    const unsub = useSessionsStore.subscribe((state) => {
+      const projectStore = useProjectsStore.getState();
+      for (const s of Object.values(state.sessions)) {
+        if (s && s.projectPath) projectStore.add(s.projectPath);
+      }
+    });
+    return () => unsub();
+  }, []);
 
   const onSessionPage = location.pathname.startsWith('/session/');
 
