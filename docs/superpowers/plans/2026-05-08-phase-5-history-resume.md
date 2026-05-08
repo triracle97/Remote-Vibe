@@ -1035,12 +1035,10 @@ export class HistoryScanner {
     return { sessionId, cwd, firstPrompt };
   }
 
-  private async isAllowed(cwd: string): Promise<boolean> {
-    // Spec §9 requires realpath + Phase 3 fs-api allowlist + denylist for
-    // history scan. Re-use the Phase 3 helper directly — single SSOT for
-    // the gate logic, so any future denylist tightening flows through here.
-    return this.allowlistGate(cwd);
-  }
+  // (No internal isAllowed helper — the gate is invoked inline at the two
+  // scan-loop sites via `await this.opts.allowlistGate(parsed.cwd)`. Single
+  // SSOT for the security check; any future denylist tightening flows
+  // through the injected gate from `fs-api.ts`.)
 }
 ```
 
@@ -2238,7 +2236,6 @@ npm run web:test -- HistoryPanel
 - [ ] **Step 3: Implement `apps/web/src/features/history/HistoryRow.tsx`**
 
 ```tsx
-import { basename } from 'path-browserify'; // tiny dep already present, or inline a basename impl
 import type { HistoryEntry } from '../../types/protocol';
 
 interface HistoryRowProps {
@@ -2281,7 +2278,7 @@ export function HistoryRow({ entry, onClick }: HistoryRowProps): JSX.Element {
 }
 ```
 
-If `path-browserify` is NOT already a dep, inline `basenameSafe` and remove the import. Easier: just inline. Updated above already inlines.
+(`basenameSafe` is inlined to avoid adding a `path-browserify` dependency — Phase 5 ships zero new web deps.)
 
 - [ ] **Step 4: Implement `apps/web/src/features/history/HistoryPanel.tsx`**
 
@@ -2862,20 +2859,35 @@ The pattern: InputBox accepts a new prop `alive: boolean` and `onResume: () => P
 const onSubmit = async (e: FormEvent) => {
   e.preventDefault();
   if (!alive) {
+    // Capture the message-as-of-submit-time. Subsequent typing won't be sent.
+    setQueuedMessage(text);
     setShowResumePromptInline(true);
     return; // do NOT call onSendMessage yet
   }
-  await onSendMessage(text);
+  const captured = text;
   setText('');
+  await onSendMessage(captured);
 };
 
 const onResumeAndSend = async () => {
+  // Capture the queued message; whatever the user types AFTER this point
+  // stays in the textarea (does NOT auto-send).
+  const captured = queuedMessage;
   setShowResumePromptInline(false);
-  await onResume();        // awaits the resume action
-  await onSendMessage(text);
-  setText('');
+  setQueuedMessage('');
+  // Strip the captured prefix from the live textarea ONLY if it's still
+  // there. If user has erased + retyped, leave their current text alone.
+  if (text.startsWith(captured)) {
+    setText(text.slice(captured.length));
+  }
+  await onResume();
+  await onSendMessage(captured);
+  // Do NOT clear setText() here — anything still in the textarea is the
+  // user's NEXT message (queued during resume), which they will send manually.
 };
 ```
+
+The `queuedMessage` state preserves the at-submit-time content, allowing the captured-vs-live divergence the spec requires.
 
 Render the inline ResumePrompt with the "Resume + send" variant when `showResumePromptInline === true`.
 
