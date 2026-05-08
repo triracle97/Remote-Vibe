@@ -626,6 +626,98 @@ describe('SessionManager', () => {
       expect(entry?.codexSessionId).toBeNull();
     });
 
+    it('attachSession emits synthesized session_created BEFORE wiring driver listeners (seq ordering)', async () => {
+      // Regression test for I1: if the driver flushes stdout synchronously
+      // the moment listeners are wired, the real event must NOT steal seq=1
+      // from the synthesized session_created. Fix: emit session_created
+      // BEFORE wireDriverListeners(). Verify by having the driver emit an
+      // assistant event on the next microtask after spawn — it should land
+      // in the buffer with seq=2, behind the synthesized session_created.
+      const { mgr, registry, drivers } = makeMgrWithRegistry({
+        claudeResumeSettleMs: 100,
+        onSpawn: (driver) => {
+          // Schedule a synchronous-as-possible event emission. Microtask
+          // fires after the current synchronous frame (which includes
+          // attachSession's full synchronous body). Without the fix, this
+          // event would be lost or steal seq=1; with the fix it gets seq=2.
+          queueMicrotask(() => {
+            driver.emit('event', { kind: 'assistant_text', text: 'hello' } satisfies AgentEvent);
+          });
+        },
+      });
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-seq',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-seq.jsonl',
+        claudeSessionId: 'claude-uuid-seq',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+      });
+      await mgr.resume('web-seq');
+      // Pull replay history — buffer order is the source of truth for the wire.
+      const h = mgr.getHistory('web-seq', 0);
+      expect(h).not.toBeNull();
+      expect(h!.events.length).toBe(2);
+      const first = h!.events[0] as ServerLifecycleMsg;
+      const second = h!.events[1] as ServerStreamMsg;
+      expect(first.type).toBe('system');
+      expect(first.event).toBe('session_created');
+      expect(first.seq).toBe(1);
+      expect(second.type).toBe('assistant');
+      expect(second.seq).toBe(2);
+      // Sanity: the driver did fire — guard against a future refactor that
+      // silently swallows the event.
+      expect(drivers[0]!.listenerCount('event')).toBeGreaterThan(0);
+    });
+
+    it('events emitted during the Claude resume settle window land in the buffer (C1)', async () => {
+      // Regression test for C1: previously, listeners were wired AFTER
+      // waitForEarlyExitOrSettle's ~1500ms window, so any stdout from a
+      // fast-responding resumed Claude during that window was dropped on a
+      // listener-less EventEmitter. Fix: attachSession is now called
+      // BEFORE the settle race so listeners are wired from t=0.
+      // Verify by emitting an event 50ms after spawn with settleMs=300; the
+      // resume completes after the settle timeout fires (no early exit) and
+      // the buffer should contain BOTH the synthesized session_created and
+      // the assistant event.
+      const { mgr, registry } = makeMgrWithRegistry({
+        claudeResumeSettleMs: 300,
+        onSpawn: (driver) => {
+          setTimeout(() => {
+            driver.emit('event', { kind: 'assistant_text', text: 'mid-settle' } satisfies AgentEvent);
+          }, 50);
+        },
+      });
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-settle',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-settle.jsonl',
+        claudeSessionId: 'claude-uuid-settle',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+      });
+      await mgr.resume('web-settle');
+      const h = mgr.getHistory('web-settle', 0);
+      expect(h).not.toBeNull();
+      // Two events: session_created + assistant_text
+      expect(h!.events.length).toBe(2);
+      const created = h!.events[0] as ServerLifecycleMsg;
+      const assistant = h!.events[1] as ServerStreamMsg;
+      expect(created.event).toBe('session_created');
+      expect(created.seq).toBe(1);
+      expect(assistant.type).toBe('assistant');
+      expect(assistant.seq).toBe(2);
+      expect((assistant.payload as { text: string }).text).toBe('mid-settle');
+    });
+
     it('attachSession synthesizes a session_created lifecycle event so web learns of resumed webSessionId', async () => {
       const { mgr, registry } = makeMgrWithRegistry();
       mkdirSync(join(tmp, 'proj'), { recursive: true });

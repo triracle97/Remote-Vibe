@@ -383,14 +383,32 @@ export class SessionManager extends EventEmitter {
         `Spawn failed: ${(err as Error).message}`,
       );
     }
-    // Watch for an immediate exit-with-rejection during the first event
-    // window. If the child exits inside the settle window AND stderr matches
-    // a known rejection phrasing, throw `claude_resume_rejected`. If it
-    // exits but stderr is something else (segfault, perm error), throw
-    // `resume_spawn_failed`. Otherwise the driver settles as alive and we
-    // attach normally.
+    // CRITICAL: register + wire listeners IMMEDIATELY so any stdout that
+    // arrives during the settle window is captured into s.buffer (Phase 1
+    // ring buffer + transcript) instead of being dropped on a listener-less
+    // EventEmitter. Without this, a fast-responding resumed Claude can lose
+    // its first assistant chunks during the ~1500ms settle race below.
+    this.attachSession(entry.webSessionId, driver, entry);
+    // Now race the early-exit detection. If Claude rejects the resume in the
+    // first ~claudeResumeSettleMs, tear down the InternalSession we just
+    // registered and throw the typed error. If the child exits inside the
+    // settle window AND stderr matches a known rejection phrasing, throw
+    // `claude_resume_rejected`. If it exits but stderr is something else
+    // (segfault, perm error), throw `resume_spawn_failed`. Otherwise the
+    // driver settles as alive and we leave the attached session in place.
     const earlyExit = await this.waitForEarlyExitOrSettle(driver);
     if (earlyExit !== null) {
+      // Tear down what we registered; the driver already exited so it can't
+      // emit further events, but make sure the manager's session map and
+      // alive flag reflect that. We don't roll back the registry entry —
+      // the registry entry pre-existed the resume call (Path 1 looked it up;
+      // Path 2 wrote it before calling resume()). It's still useful for a
+      // future retry once the user fixes the underlying problem.
+      const s = this.sessions.get(entry.webSessionId);
+      if (s) {
+        s.alive = false;
+        this.sessions.delete(entry.webSessionId);
+      }
       if (this.isClaudeResumeRejection(earlyExit.stderr)) {
         throw resumeError(
           'claude_resume_rejected',
@@ -402,7 +420,7 @@ export class SessionManager extends EventEmitter {
         earlyExit.stderr || `claude exited with code ${earlyExit.code ?? '?'}`,
       );
     }
-    this.attachSession(entry.webSessionId, driver, entry);
+    // Settled into a normal running state — already attached, nothing more.
   }
 
   /**
@@ -493,8 +511,19 @@ export class SessionManager extends EventEmitter {
       alive: true,
       ...(entry.account ? { account: entry.account } : {}),
     };
-    this.registerInternalSession(internal);
+    // Insert into the session map FIRST so appendAndBroadcast (and any
+    // observers reacting to broadcast events) can find it.
+    this.sessions.set(internal.sessionId, internal);
+    // Synthesized session_created MUST fire BEFORE driver listeners are
+    // wired so it takes seq=1; the first real driver event will then
+    // naturally take seq=2. If we wired listeners first and the driver
+    // flushed stdout synchronously, the real event would steal seq=1 and
+    // arrive on the wire before session_created — wrong order.
     this.emitSynthesizedSessionCreated(internal);
+    // NOW wire the driver event/exit/cli_session_id listeners. Any
+    // subsequent events from the driver flow through onProcEvent +
+    // onCliSessionId, with seq starting at 2.
+    this.wireDriverListeners(internal);
     this.emit('session_resumed', { webSessionId, alive: true });
   }
 
@@ -512,13 +541,26 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Shared registration logic used by BOTH fresh-spawn (`create`) and resume
-   * (`attachSession`) paths. Inserts the InternalSession into the map and
-   * wires the driver event handlers (event/exit/cli_session_id). Caller is
-   * responsible for any lifecycle event broadcast.
+   * Fresh-spawn registration helper used by `create()`. Inserts the
+   * InternalSession into the map and wires the driver event handlers in a
+   * single step. The resume/`attachSession` path does NOT use this helper —
+   * it inserts into the map, emits the synthesized session_created (seq=1),
+   * THEN wires listeners separately via `wireDriverListeners`, so any
+   * synchronous-stdout-flush from the driver doesn't steal seq=1.
    */
   private registerInternalSession(internal: InternalSession): void {
     this.sessions.set(internal.sessionId, internal);
+    this.wireDriverListeners(internal);
+  }
+
+  /**
+   * Attach the event/exit/cli_session_id listeners to the driver. Split out
+   * of `registerInternalSession` so `attachSession` (resume path) can defer
+   * listener wiring until AFTER it has emitted the synthesized
+   * session_created — preventing a synchronous driver stdout flush from
+   * stealing seq=1 from session_created.
+   */
+  private wireDriverListeners(internal: InternalSession): void {
     internal.proc.on('event', (e: AgentEvent) => this.onProcEvent(internal, e));
     internal.proc.on('exit', (code: number | null, reason?: string) =>
       this.onProcExit(internal, code, reason),
