@@ -272,7 +272,7 @@ interface ServerErrorMsg {
 
 ### Existing protocol changes
 
-- New error code `'resume_failed'` on `ServerErrorMsg`.
+- New typed error codes on `ServerErrorMsg` (see the `ServerErrorMsg` interface above for the full list).
 - Existing `error: session_dead` is unchanged on the wire; web routes it differently (per-session `alive=false` instead of global error banner).
 
 ## 5. History scan
@@ -417,7 +417,7 @@ Click handler                                             ⇣
 | Bridge-known resume against a registry entry whose CLI session id was never captured (rare: child died during init) | `error: code='cli_session_id_unknown', message: "Bridge never captured the CLI session id for this entry"`. Inline "[Open new session]" CTA. |
 | Double-click Resume | Bridge dedupes: in-flight resume returns the same promise; second WS reply mirrors the first. |
 | Bridge restart mid-session | Registry persists; on startup all sessions load with `alive: false`. Existing reconnect-replay uses transcript fallback. User clicks Resume to continue. |
-| History entry's CLI session file deleted between scan and click | Bridge stat-checks JSONL existence at resume time. Missing → `resume_failed: "session file no longer exists"`. Tell user; auto-refresh history. |
+| History entry's CLI session file deleted between scan and click | Bridge re-validates the (agent, sessionId) → file mapping at resume time. Missing → `error: code='history_session_not_found', message: "session file no longer exists"`. Tell user; auto-refresh history. |
 | Two concurrent Claude resumes for same project | Allowed. Each spawns its own bridge child + webSessionId. |
 | Scanner can't read one file (permissions / partial / corrupt) | Skip; continue. Reply still has the rest. Log to bridge stderr. |
 | Codex `session_meta` line malformed | Skip entry. |
@@ -468,7 +468,7 @@ Click handler                                             ⇣
 
 - **`session-manager.test.ts`** (modified) — `resume(webSessionId)` for Claude spawns with `--resume <claudeSessionId>` and `cwd: projectPath`; Codex resume flips alive=true without spawn; resume-failed propagates spawn-exit-nonzero stderr; resume against non-existent projectPath rejects with typed error; concurrent-resume dedup returns same promise.
 
-- **`ws-protocol.test.ts`** (modified) — `list_history` → `history_list` reply; `resume_session` happy path → `session_resumed`; `resume_session` with bad payload → `error: invalid_request`; new error code `'resume_failed'` is preserved across the wire.
+- **`ws-protocol.test.ts`** (modified) — `list_history` → `history_list` reply; `resume_session` happy path → `session_resumed`; `resume_session` with bad payload → `error: invalid_request`; each new typed error code (`history_session_not_found`, `project_path_disallowed`, `project_path_missing`, `cli_session_id_unknown`, `claude_resume_rejected`, `codex_resume_rejected`, `resume_spawn_failed`) is preserved verbatim across the wire.
 
 ### Web unit tests
 
