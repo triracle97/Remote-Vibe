@@ -12,9 +12,9 @@ describe('mobile responsive CSS contract', () => {
   it('stacks the root layout and major panels at phone widths', () => {
     const css = [
       readCss('src/App.css'),
-      readCss('src/features/chat/Chat.css'),
       readCss('src/features/file-explorer/FileExplorer.css'),
       // ProjectPicker.css deleted — picker now uses Modal primitive with Tailwind
+      // Chat.css deleted — chat shell now uses Tailwind; base rules moved to App.css
     ].join('\n');
 
     expect(css).toContain('@media (max-width: 720px)');
@@ -30,7 +30,7 @@ describe('mobile responsive CSS contract', () => {
     const appCss = readCss('src/App.css');
     const css = [
       appCss,
-      readCss('src/features/chat/Chat.css'),
+      // Chat.css deleted — chat shell now uses Tailwind; base rules moved to App.css
       readCss('src/features/file-explorer/FileExplorer.css'),
     ].join('\n');
 

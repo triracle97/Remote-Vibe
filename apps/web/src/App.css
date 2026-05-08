@@ -205,11 +205,25 @@ body { margin: 0; }
   overflow-y: auto;
 }
 
+/* Chat shell base rules (referenced by responsive-css.test) */
+.chat-mobile-menu {
+  display: none;
+}
+.chat {
+  height: 100dvh;
+}
+
 @media (max-width: 720px) {
   body { overflow-x: hidden; }
   #root {
     min-height: 100dvh;
     flex-direction: column;
+  }
+  .chat {
+    min-height: 100dvh;
+  }
+  .input-box {
+    padding-bottom: calc(0.65rem + env(safe-area-inset-bottom));
   }
   .home-main {
     flex: none;
