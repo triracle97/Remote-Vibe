@@ -1944,14 +1944,14 @@ To add Phase 5 handlers:
 case 'list_history': {
   try {
     const result = await historyScanner.list();
-    send(ws, {
+    send({
       type: 'history_list',
       claude: result.claude,
       codex: result.codex,
       correlationId: msg.correlationId,
     });
   } catch (err) {
-    send(ws, {
+    send({
       type: 'error',
       code: 'resume_spawn_failed', // or invent a list_history_failed if you prefer
       message: (err as Error).message,
@@ -1978,7 +1978,7 @@ case 'resume_session': {
       // returns undefined if either lookup fails.
       const entry = await historyScanner.findEntry(msg.agent, msg.sessionId);
       if (!entry) {
-        send(ws, {
+        send({
           type: 'error',
           code: 'history_session_not_found',
           message: `No history session found for ${msg.agent}:${msg.sessionId}`,
@@ -1991,7 +1991,7 @@ case 'resume_session': {
       webSessionId = await sessionManager.resumeFromHistoryEntry(entry, msg.account ?? null);
       historyScanner.invalidateCache();
     }
-    send(ws, {
+    send({
       type: 'session_resumed',
       webSessionId,
       alive: true,
@@ -2001,7 +2001,7 @@ case 'resume_session': {
     const code = (err as { code?: string }).code ?? 'resume_spawn_failed';
     // exactOptionalPropertyTypes-safe: conditional spread instead of
     // `sessionId: undefined`.
-    send(ws, {
+    send({
       type: 'error',
       code: code as never,
       message: (err as Error).message,
