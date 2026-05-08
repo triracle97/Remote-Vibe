@@ -24,7 +24,7 @@ function SessionRow({
   session: SessionView;
   activeId: string | null;
   onSelect: (id: string) => void;
-  onAfterSelect?: () => void;
+  onAfterSelect?: (() => void) | undefined;
 }): JSX.Element {
   const [renaming, setRenaming] = useState(false);
 

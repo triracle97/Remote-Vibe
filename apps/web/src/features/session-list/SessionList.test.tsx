@@ -110,6 +110,9 @@ describe('SessionList', () => {
     fireEvent.click(btn);
     expect(onSelect).toHaveBeenCalledWith('s1');
     expect(onAfterSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect.mock.invocationCallOrder[0]!).toBeLessThan(
+      onAfterSelect.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('marks active row when activeId matches', () => {
