@@ -107,6 +107,88 @@ body { margin: 0; }
   .resume-prompt-button {
     min-height: 2.5rem;
   }
+  .mobile-nav-shell {
+    display: block;
+  }
+  body:has(.mobile-nav-shell) {
+    overflow: hidden;
+  }
+  .mobile-nav-content .session-list,
+  .mobile-nav-content .history-panel {
+    display: block;
+    width: 100%;
+    max-height: none;
+    border-bottom: 0;
+  }
+}
+
+.mobile-nav-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: none;
+}
+.mobile-nav-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  border: 0;
+  padding: 0;
+}
+.mobile-nav-drawer {
+  position: relative;
+  width: min(88vw, 24rem);
+  height: 100dvh;
+  background: #181818;
+  color: #ddd;
+  border-right: 1px solid #2a2a2a;
+  box-shadow: 0.5rem 0 1.5rem rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.mobile-nav-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 3rem;
+  padding: 0 0.75rem;
+  border-bottom: 1px solid #2a2a2a;
+  font-weight: 600;
+}
+.mobile-nav-header button {
+  min-width: 44px;
+  min-height: 44px;
+  background: transparent;
+  color: #ddd;
+  border: 0;
+  cursor: pointer;
+  font-size: 1.2rem;
+}
+.mobile-nav-tabs {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid #2a2a2a;
+}
+.mobile-nav-tabs button {
+  flex: 1;
+  min-height: 44px;
+  background: #1f1f1f;
+  color: #aaa;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.mobile-nav-tabs button.active {
+  background: #1c2a44;
+  color: #fff;
+  border-color: #2d6cdf;
+}
+.mobile-nav-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* Session rename inline (T13) */

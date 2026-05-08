@@ -27,4 +27,20 @@ describe('mobile responsive CSS contract', () => {
     expect(css).toMatch(/\.file-explorer\s*{[^}]*width:\s*100%/s);
     expect(css).toMatch(/\.picker\s*{[^}]*max-height:\s*calc\(100dvh - 1rem\)/s);
   });
+
+  it('defines the mobile chat shell overlay contract', () => {
+    const css = [
+      readCss('src/App.css'),
+      readCss('src/features/chat/Chat.css'),
+      readCss('src/features/file-explorer/FileExplorer.css'),
+    ].join('\n');
+
+    expect(css).toMatch(/\.mobile-nav-shell\s*{[^}]*position:\s*fixed/s);
+    expect(css).toMatch(/\.mobile-nav-backdrop\s*{[^}]*position:\s*absolute/s);
+    expect(css).toMatch(/\.mobile-nav-drawer\s*{[^}]*position:\s*relative/s);
+    expect(css).toMatch(/\.chat-mobile-menu\s*{[^}]*display:\s*none/s);
+    expect(css).toMatch(/\.chat\s*{[^}]*height:\s*100dvh/s);
+    expect(css).toMatch(/\.input-box\s*{[^}]*padding-bottom:\s*calc\(0\.65rem \+ env\(safe-area-inset-bottom\)\)/s);
+    expect(css).toMatch(/\.file-explorer\s*{[^}]*position:\s*fixed/s);
+  });
 });
