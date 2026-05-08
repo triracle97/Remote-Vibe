@@ -1937,13 +1937,13 @@ Expected: 6 new failures.
 To add Phase 5 handlers:
 
 1. Add `historyScanner: HistoryScanner;` to `AttachWsOpts`.
-2. Add a `historyScanner` parameter to `handleMessage` and pass it through from `attachWebSocket` (around line 73 — adjust the existing `void handleMessage(ws, raw, opts.sessionManager, ...)` call to also pass `opts.historyScanner`).
-3. Inside `handleMessage`, add the two new arms to the existing message-dispatch switch:
+2. Add a `historyScanner: HistoryScanner` parameter to `handleMessage` and thread it through from `attachWebSocket` (around line 73 — adjust the existing `void handleMessage(ws, raw, opts.sessionManager, ...)` call to also pass `opts.historyScanner`). Inside `handleMessage`, the existing positional `sessionManager` parameter is local; the new `historyScanner` is also local. There is NO `opts` variable in `handleMessage`'s scope — use the bare parameter names.
+3. Inside `handleMessage`, add the two new arms to the existing message-dispatch switch (use `sessionManager` and `historyScanner` directly — they are the local parameter names, not `opts.*`):
 
 ```ts
 case 'list_history': {
   try {
-    const result = await opts.historyScanner.list();
+    const result = await historyScanner.list();
     send(ws, {
       type: 'history_list',
       claude: result.claude,
@@ -1962,22 +1962,21 @@ case 'list_history': {
 }
 
 case 'resume_session': {
-  // websocket.ts is function-based: `opts` is AttachWsOpts (extend it to
-  // include `historyScanner`); `send` is the local helper passed into
-  // handleMessage; `mgr` is the local alias for opts.sessionManager (or
-  // call opts.sessionManager directly).
+  // Inside handleMessage: `sessionManager` (or its existing local alias)
+  // and the new `historyScanner` are positional parameters; `send` is the
+  // local helper. There is no `opts` variable here.
   try {
     let webSessionId: string;
     if ('webSessionId' in msg) {
       // Path 1: bridge-known. SessionManager.resume() looks up registry,
       // re-validates path, spawns Claude / re-instantiates Codex driver.
       webSessionId = msg.webSessionId;
-      await opts.sessionManager.resume(webSessionId);
+      await sessionManager.resume(webSessionId);
     } else {
       // Path 2: native history first-resume. Verify the (agent, sessionId)
       // pair via the scanner cache + re-stat the backing file. The scanner
       // returns undefined if either lookup fails.
-      const entry = await opts.historyScanner.findEntry(msg.agent, msg.sessionId);
+      const entry = await historyScanner.findEntry(msg.agent, msg.sessionId);
       if (!entry) {
         send(ws, {
           type: 'error',
@@ -1989,8 +1988,8 @@ case 'resume_session': {
       }
       // SessionManager.resumeFromHistoryEntry() handles allowlist re-check,
       // webSessionId minting, registry add, and Path 1 spawn/instantiate.
-      webSessionId = await opts.sessionManager.resumeFromHistoryEntry(entry, msg.account ?? null);
-      opts.historyScanner.invalidateCache();
+      webSessionId = await sessionManager.resumeFromHistoryEntry(entry, msg.account ?? null);
+      historyScanner.invalidateCache();
     }
     send(ws, {
       type: 'session_resumed',
