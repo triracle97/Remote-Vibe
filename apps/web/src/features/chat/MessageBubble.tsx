@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import type { SessionEvent } from '../../store/sessions';
+import { MarkdownRenderer } from '../markdown/MarkdownRenderer';
 
 interface MessageBubbleProps {
   event: SessionEvent;
 }
 
 export function MessageBubble({ event }: MessageBubbleProps): JSX.Element | null {
+  if ((event as { superseded?: boolean }).superseded) return null;
   if (event.type === 'system' && event.event === 'session_created') {
     return <div className="bubble system">session started</div>;
   }
@@ -24,7 +26,11 @@ export function MessageBubble({ event }: MessageBubbleProps): JSX.Element | null
   if (event.type === 'assistant') {
     const payload = event.payload as { text?: string; toolUse?: { toolName: string; input: unknown } };
     if (payload.text) {
-      return <div className="bubble assistant">{payload.text}</div>;
+      return (
+        <div className="bubble assistant">
+          <MarkdownRenderer source={payload.text} />
+        </div>
+      );
     }
     if (payload.toolUse) {
       return <ToolUseBubble toolName={payload.toolUse.toolName} input={payload.toolUse.input} />;
@@ -37,7 +43,11 @@ export function MessageBubble({ event }: MessageBubbleProps): JSX.Element | null
   }
   if (event.type === 'user') {
     const payload = event.payload as { text?: string };
-    return <div className="bubble user">{payload.text ?? ''}</div>;
+    return (
+      <div className="bubble user">
+        <MarkdownRenderer source={payload.text ?? ''} />
+      </div>
+    );
   }
   if (event.type === 'result') {
     const payload = event.payload as { cost?: number; durationMs?: number };
