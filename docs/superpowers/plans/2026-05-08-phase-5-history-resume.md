@@ -1586,14 +1586,41 @@ private instantiateCodexWithResumeSeed(entry: RegistryEntry, codexSessionId: str
 }
 
 private attachSession(webSessionId: string, session: AgentDriver, entry: RegistryEntry): void {
-  // Subscribe to cli_session_id for registry update.
+  // The in-memory session shape is `InternalSession` (sessionId/proc/buffer/nextSeq
+  // + alive flag), NOT the registry-entry shape. Reuse the SAME helper the
+  // existing fresh-spawn path already calls to insert a new driver into
+  // `this.sessions` — likely `this.registerInternalSession(...)` or whatever
+  // the existing `spawnSession()` factory uses. The contract: subsequent
+  // driver events flow into the same webSessionId ring buffer + transcript
+  // file. Read the existing `session.ts` to find that helper and call it
+  // here with the resumed driver.
+  //
+  // Subscribe to cli_session_id for registry update:
   session.on('cli_session_id', async (id: string) => {
     const patch = entry.agent === 'claude' ? { claudeSessionId: id } : { codexSessionId: id };
     await this.registry.update(webSessionId, patch);
   });
-  // Wire other existing events the same way the initial-spawn path does.
-  this.sessions.set(webSessionId, { ...entry, alive: true, driver: session });
+  // Insert into the in-memory session map using whatever existing helper
+  // does this on fresh spawn. (Pseudocode — adapt to your real helper.)
+  this.registerInternalSession(webSessionId, session, entry);
   this.emit('session_resumed', { webSessionId, alive: true });
+}
+
+/**
+ * Wraps the existing fresh-spawn registration logic. The fresh-spawn flow
+ * already does this — extract the shared steps into a helper and call it
+ * from BOTH the spawn path and the resume path. Steps the existing flow
+ * already performs:
+ *   1. Build the InternalSession shape (sessionId, proc, buffer, nextSeq, alive)
+ *   2. Insert into `this.sessions` map
+ *   3. Wire driver event handlers (`event`, `exit`, etc.) for transcript writes
+ *      and ring-buffer broadcast
+ *   4. Mark alive
+ * The implementer's task is to refactor whatever existing function does this
+ * into a shared private helper, not duplicate the wiring inline.
+ */
+private registerInternalSession(_webSessionId: string, _driver: AgentDriver, _entry: RegistryEntry): void {
+  // implementer extracts from existing spawnSession() body
 }
 ```
 
@@ -1877,13 +1904,16 @@ Identify where SessionManager is constructed and where the WS server is wired.
 
 - [ ] **Step 2: Edit `packages/bridge/src/index.ts`**
 
-Add the imports near the top:
+Add the imports at the TOP of the file, alongside other existing top-level imports (NOT inside any function — ESM imports must be top-level):
 
 ```ts
 import { SessionRegistry } from './session-registry.js';
 import { HistoryScanner } from './history-scanner.js';
 import { homedir } from 'node:os';
+import { isProjectPathAllowed } from './fs-api.js'; // adjust to whatever the actual export name is
 ```
+
+(The exact `fs-api.js` export name depends on the existing Phase 3 surface — `grep -n 'export' packages/bridge/src/fs-api.ts` to find the correct symbol. Common patterns: `isPathAllowed`, `validateAllowed`, `assertAllowed`. If the existing helper throws on rejection rather than returning a boolean, wrap it: `(cwd) => assertAllowed(cwd, dirs).then(() => true).catch(() => false)`.)
 
 In the boot function (likely `async function main()`), add immediately before SessionManager construction:
 
@@ -1891,14 +1921,9 @@ In the boot function (likely `async function main()`), add immediately before Se
 const registry = new SessionRegistry(join('.bridge', 'sessions.json'));
 await registry.load();
 
-// Wire the Phase 3 fs-api allowlist+denylist gate. The exact import depends
-// on what `fs-api.ts` exports — it likely has a helper shaped roughly like
-// `validateProjectPath(cwd, allowedDirs) → Promise<boolean>` or a function
-// that throws on rejection. Adapt the export name; the contract is
-// "return true iff the path passes BOTH allowlist prefix check AND Phase 3
-// denylist patterns, using realpath where applicable."
-import { isProjectPathAllowed } from './fs-api.js'; // adjust if the export uses a different name
-
+// `isProjectPathAllowed` is imported at the top of the file (Step 2). If
+// the existing fs-api helper has a different name or throws-on-rejection
+// rather than returning a boolean, adapt the wrapping function.
 const historyScanner = new HistoryScanner({
   homeDir: homedir(),
   allowedDirs: env.BRIDGE_ALLOWED_DIRS,
@@ -2822,13 +2847,19 @@ git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(web): render Resu
 
 **Files:**
 - Modify: `apps/web/src/features/chat/InputBox.tsx`
+- Modify: `apps/web/src/features/chat/Chat.tsx` (REMOVE the existing dead-session disable)
 - Modify: `apps/web/src/features/chat/InputBox.test.tsx` (or create if doesn't exist)
 
-- [ ] **Step 1: Read existing InputBox**
+The existing `Chat.tsx` disables `InputBox` when the session is dead (`disabled={!alive}` or equivalent — currently around line 96 of that file). For the auto-prompt-on-send flow to fire, InputBox must STAY ENABLED on dead sessions; the interception happens inside `onSubmit`.
+
+- [ ] **Step 1: Read existing InputBox + Chat.tsx**
 
 ```bash
 cat /Volumes/WDSSD/Code/mac-remote-terminal/apps/web/src/features/chat/InputBox.tsx
+cat /Volumes/WDSSD/Code/mac-remote-terminal/apps/web/src/features/chat/Chat.tsx
 ```
+
+Identify the existing `disabled={!alive}` (or equivalent) prop on the InputBox call site. That wiring must be REMOVED so the user can type + submit on dead sessions; submit is intercepted inside InputBox.
 
 - [ ] **Step 2: Append/create failing test for auto-prompt-on-send**
 
@@ -2897,10 +2928,24 @@ Render the inline ResumePrompt with the "Resume + send" variant when `showResume
 npm run web:test -- InputBox
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Edit Chat.tsx to remove dead-session disable**
+
+Locate the call site that passes `disabled={!alive}` (or any equivalent disabling prop) to `<InputBox />` and REMOVE that wiring. InputBox itself now decides what to do on submit-while-dead. Pass `alive` and `onResume` instead:
+
+```tsx
+<InputBox
+  // ... existing props
+  alive={alive}
+  onResume={async () => useSessionsStore.getState().resume(sessionId)}
+/>
+```
+
+Update `InputBox`'s prop type to accept the new fields (and drop any `disabled` parameter wiring you removed).
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git -C /Volumes/WDSSD/Code/mac-remote-terminal add apps/web/src/features/chat/InputBox.tsx apps/web/src/features/chat/InputBox.test.tsx
+git -C /Volumes/WDSSD/Code/mac-remote-terminal add apps/web/src/features/chat/InputBox.tsx apps/web/src/features/chat/Chat.tsx apps/web/src/features/chat/InputBox.test.tsx
 git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(web): InputBox auto-prompt-on-send for dead sessions"
 ```
 
