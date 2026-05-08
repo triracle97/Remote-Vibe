@@ -11,7 +11,7 @@ interface MarkdownRendererProps {
 
 function MarkdownRendererImpl({ source }: MarkdownRendererProps): JSX.Element {
   return (
-    <div className="md-rendered">
+    <div className="markdown">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[
