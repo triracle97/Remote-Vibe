@@ -12,8 +12,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.2.4",
     "katex": "^0.16.45",
+    "lucide-react": "^1.14.0",
     "mermaid": "^11.14.0",
+    "motion": "^12.38.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.1.0",
@@ -22,6 +25,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "shiki": "^1.29.2",
+    "tailwindcss": "^4.2.4",
     "zustand": "^4.5.4"
   },
   "devDependencies": {
