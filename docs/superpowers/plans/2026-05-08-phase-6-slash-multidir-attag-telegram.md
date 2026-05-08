@@ -1687,21 +1687,25 @@ it('spawnSession with codex + multiple dirs uses only dirs[0] (with warning)', a
 });
 
 it('first user input auto-sets session.name (truncated 60)', async () => {
-  const mgr = makeMgr();
+  // Use external registry fixture so tests can read it directly. The mgr's
+  // own `registry` field is private; pass the SAME registry instance to
+  // makeMgr() and assert via the external reference.
+  const registry = await makeRegistry();
+  const mgr = makeMgr({ registry });
   const sess = await mgr.spawnSession({ agent: 'claude', dirs: ['/tmp/x'] });
-  // Simulate first input event
   await mgr.handleInput(sess.webSessionId, 'fix login bug in OAuth flow that was reported by QA team');
-  const entry = mgr.registry.get(sess.webSessionId);
+  const entry = registry.get(sess.webSessionId);
   expect(entry?.name).toBe('fix login bug in OAuth flow that was reported by QA team'.slice(0, 60));
 });
 
 it('renameSession validates + persists + broadcasts', async () => {
-  const mgr = makeMgr();
+  const registry = await makeRegistry();
+  const mgr = makeMgr({ registry });
   const sess = await mgr.spawnSession({ agent: 'claude', dirs: ['/tmp/x'] });
   const events: { type: string }[] = [];
   mgr.on('broadcast', (e) => events.push(e));
   await mgr.renameSession(sess.webSessionId, 'my session');
-  expect(mgr.registry.get(sess.webSessionId)?.name).toBe('my session');
+  expect(registry.get(sess.webSessionId)?.name).toBe('my session');
   expect(events.some((e) => e.type === 'session_renamed')).toBe(true);
 });
 
@@ -1952,7 +1956,11 @@ case 'set_default_profile': {
 
 case 'list_slash_commands': {
   try {
-    const session = sessionManager.getSessionInfo(msg.sessionId);
+    // SessionManager has no single-id getter; use the existing listSessions()
+    // public method (returns SessionInfo[]) and find by id. If you'd prefer
+    // a direct accessor, add `getSessionInfo(id: string): SessionInfo | undefined`
+    // to SessionManager and use it here.
+    const session = sessionManager.listSessions().find((s) => s.sessionId === msg.sessionId);
     if (!session) {
       send({
         type: 'error',
