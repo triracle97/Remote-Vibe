@@ -1,27 +1,18 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { useNavigate, useParams, useOutletContext } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { useSessionsStore } from '../store/sessions';
 import { useConnectionStore } from '../store/connection';
 import { useFileExplorerStore } from '../store/file-explorer';
-import type { BridgeClient } from '../services/bridge-client';
-import { SessionList } from '../features/session-list/SessionList';
+import type { AppShellOutletContext } from '../shell/AppShell';
 import { Chat } from '../features/chat/Chat';
 import { useNewSession } from '../features/project-picker/useNewSession';
 import { streamTranscript } from '../services/transcript-fetcher';
 import { FileExplorer } from '../features/file-explorer/FileExplorer';
+import { SessionList } from '../features/session-list/SessionList';
 import { HistoryPanel } from '../features/history/HistoryPanel';
-import type { AppShellOutletContext } from '../shell/AppShell';
+import { BottomSheet } from '../shell/BottomSheet';
 
 type MobileNavTab = 'sessions' | 'history';
-
-const focusableSelector = [
-  'a[href]',
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
 
 export function Session(): JSX.Element {
   const { client } = useOutletContext<AppShellOutletContext>();
@@ -38,8 +29,6 @@ export function Session(): JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileNavTab, setMobileNavTab] = useState<MobileNavTab>('sessions');
-  const mobileNavDrawerRef = useRef<HTMLElement | null>(null);
-  const mobileNavCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const mobileNavReturnFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -55,7 +44,6 @@ export function Session(): JSX.Element {
     };
   }, [session?.name]);
 
-  // Reset file-explorer state when switching sessions.
   useEffect(() => {
     resetExplorer();
     setDrawerOpen(false);
@@ -96,72 +84,40 @@ export function Session(): JSX.Element {
     };
   }, [id, transcriptOnly, apply]);
 
-  const sessions = order.map((sid) => sessionsMap[sid]!).filter((s) => s !== undefined);
+  const sessions = order
+    .map((sid) => sessionsMap[sid]!)
+    .filter((s): s is NonNullable<typeof s> => s !== undefined);
+
   const closeMobileNav = (): void => {
-    const shouldRestoreFocus = mobileNavOpen;
     setMobileNavOpen(false);
     const returnTarget = mobileNavReturnFocusRef.current;
-    if (shouldRestoreFocus && returnTarget && document.contains(returnTarget)) {
-      returnTarget.focus();
-    }
+    if (returnTarget && document.contains(returnTarget)) returnTarget.focus();
   };
   const openMobileNav = (opener?: HTMLElement): void => {
     mobileNavReturnFocusRef.current = opener ?? null;
     setMobileNavTab('sessions');
     setMobileNavOpen(true);
   };
-  const handleMobileNavKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeMobileNav();
-      return;
-    }
-    if (event.key !== 'Tab') return;
-
-    const drawer = mobileNavDrawerRef.current;
-    if (!drawer) return;
-    const focusable = Array.from(drawer.querySelectorAll<HTMLElement>(focusableSelector));
-    if (focusable.length === 0) {
-      event.preventDefault();
-      drawer.focus();
-      return;
-    }
-
-    const first = focusable[0]!;
-    const last = focusable[focusable.length - 1]!;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
-  useEffect(() => {
-    if (!mobileNavOpen) return;
-    mobileNavCloseButtonRef.current?.focus();
-  }, [mobileNavOpen]);
 
   if (!session && !transcriptOnly) {
     return (
-      <main className="home-main">
-        <p>Session not found.</p>
-        <button onClick={() => navigate('/')}>Home</button>
+      <main className="flex-1 flex items-center justify-center p-4 text-[var(--color-text-dim)]">
+        <div className="flex flex-col gap-3 items-center">
+          <p>Session not found.</p>
+          <button
+            type="button"
+            onClick={() => navigate('/')}
+            className="px-4 py-2 min-h-[44px] bg-[var(--color-accent)] text-white rounded-lg"
+          >
+            Home
+          </button>
+        </div>
       </main>
     );
   }
 
   return (
     <>
-      <SessionList
-        sessions={sessions}
-        activeId={id ?? null}
-        onSelect={(nid) => navigate(`/session/${nid}`)}
-        onNewSession={newSession.open}
-        onAfterSelect={closeMobileNav}
-      />
-      <HistoryPanel />
       {session && (
         <Chat
           session={session}
@@ -191,68 +147,58 @@ export function Session(): JSX.Element {
           inputDisabled={transcriptOnly}
         />
       )}
-      {mobileNavOpen && (
-        <div className="mobile-nav-shell">
-          <div
-            className="mobile-nav-backdrop"
-            tabIndex={-1}
-            onClick={closeMobileNav}
-          />
-          <aside
-            ref={mobileNavDrawerRef}
-            className="mobile-nav-drawer"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Mobile navigation"
-            tabIndex={-1}
-            onKeyDown={handleMobileNavKeyDown}
+
+      <BottomSheet
+        open={mobileNavOpen}
+        onClose={closeMobileNav}
+        ariaLabel="Sessions and history"
+      >
+        <div className="flex border-b border-[var(--color-border)]">
+          <button
+            type="button"
+            onClick={() => setMobileNavTab('sessions')}
+            className={[
+              'flex-1 min-h-[44px] py-2 text-sm transition-colors',
+              mobileNavTab === 'sessions'
+                ? 'text-[var(--color-accent)] border-b-2 border-[var(--color-accent)]'
+                : 'text-[var(--color-text-dim)] hover:text-[var(--color-text)]',
+            ].join(' ')}
           >
-            <div className="mobile-nav-header">
-              <span>Navigation</span>
-              <button
-                ref={mobileNavCloseButtonRef}
-                type="button"
-                onClick={closeMobileNav}
-                aria-label="Close mobile navigation"
-              >
-                ×
-              </button>
-            </div>
-            <div className="mobile-nav-tabs" aria-label="Mobile navigation sections">
-              <button
-                type="button"
-                className={mobileNavTab === 'sessions' ? 'active' : ''}
-                onClick={() => setMobileNavTab('sessions')}
-              >
-                Sessions
-              </button>
-              <button
-                type="button"
-                className={mobileNavTab === 'history' ? 'active' : ''}
-                onClick={() => setMobileNavTab('history')}
-              >
-                History
-              </button>
-            </div>
-            <div className="mobile-nav-content">
-              {mobileNavTab === 'sessions' ? (
-                <SessionList
-                  sessions={sessions}
-                  activeId={id ?? null}
-                  onSelect={(nid) => navigate(`/session/${nid}`)}
-                  onNewSession={newSession.open}
-                  onAfterSelect={closeMobileNav}
-                />
-              ) : (
-                <HistoryPanel defaultOpen onAfterResume={closeMobileNav} />
-              )}
-            </div>
-          </aside>
+            Sessions
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileNavTab('history')}
+            className={[
+              'flex-1 min-h-[44px] py-2 text-sm transition-colors',
+              mobileNavTab === 'history'
+                ? 'text-[var(--color-accent)] border-b-2 border-[var(--color-accent)]'
+                : 'text-[var(--color-text-dim)] hover:text-[var(--color-text)]',
+            ].join(' ')}
+          >
+            History
+          </button>
         </div>
-      )}
+        <div className="p-2">
+          {mobileNavTab === 'sessions' ? (
+            <SessionList
+              sessions={sessions}
+              activeId={id ?? null}
+              onSelect={(nid) => {
+                navigate(`/session/${nid}`);
+                closeMobileNav();
+              }}
+              onNewSession={newSession.open}
+            />
+          ) : (
+            <HistoryPanel defaultOpen onAfterResume={closeMobileNav} />
+          )}
+        </div>
+      </BottomSheet>
+
       {!session && transcriptOnly && (
-        <main className="home-main">
-          <p>Loading transcript…</p>
+        <main className="flex-1 flex items-center justify-center text-[var(--color-text-dim)]">
+          Loading transcript…
         </main>
       )}
       {drawerOpen && session && (

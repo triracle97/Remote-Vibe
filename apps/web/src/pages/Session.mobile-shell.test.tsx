@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { cleanup, fireEvent, render, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, Outlet } from 'react-router-dom';
 import { Session } from './Session';
 import { useSessionsStore } from '../store/sessions';
@@ -111,7 +111,7 @@ function renderSession(path = '/session/s1') {
   );
 }
 
-describe('Session mobile shell', () => {
+describe('Session mobile shell (BottomSheet)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useSessionsStore.setState({
@@ -129,65 +129,124 @@ describe('Session mobile shell', () => {
     cleanup();
   });
 
-  it('opens the mobile drawer from the chat trigger', () => {
-    const { container, getByLabelText, getByRole } = renderSession();
-    fireEvent.click(getByLabelText(/open sessions and history/i));
-    const drawer = getByRole('dialog', { name: /mobile navigation/i });
-    expect(drawer.getAttribute('aria-modal')).toBe('true');
-    expect(document.activeElement).toBe(
-      within(drawer).getByRole('button', { name: /close mobile navigation/i }),
-    );
-    expect(container.querySelector('.mobile-nav-backdrop')?.getAttribute('tabindex')).toBe('-1');
+  it('opens the sessions sheet when Menu pressed', async () => {
+    renderSession();
+    fireEvent.click(screen.getByRole('button', { name: /open sessions and history/i }));
+    await waitFor(() => {
+      const dialogs = screen.getAllByRole('dialog');
+      expect(
+        dialogs.find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeDefined();
+    });
   });
 
-  it('switches between sessions and history tabs', () => {
-    const { getByLabelText, getByRole } = renderSession();
-    fireEvent.click(getByLabelText(/open sessions and history/i));
-    const drawer = getByRole('dialog', { name: /mobile navigation/i });
-    expect(within(drawer).getByTestId('session-list')).toBeTruthy();
-    fireEvent.click(within(drawer).getByRole('button', { name: /history/i }));
-    expect(within(drawer).getByTestId('history-panel').textContent).toMatch(/open history/);
+  it('switches between sessions and history tabs', async () => {
+    renderSession();
+    fireEvent.click(screen.getByRole('button', { name: /open sessions and history/i }));
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('dialog').find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeDefined();
+    });
+    const sheet = screen
+      .getAllByRole('dialog')
+      .find((d) => d.getAttribute('aria-label') === 'Sessions and history')!;
+    expect(within(sheet).getByTestId('session-list')).toBeTruthy();
+    fireEvent.click(within(sheet).getByRole('button', { name: /history/i }));
+    expect(within(sheet).getByTestId('history-panel').textContent).toMatch(/open history/);
   });
 
-  it('closes the drawer after selecting a session', () => {
-    const { getByLabelText, getByRole, queryByRole } = renderSession();
-    fireEvent.click(getByLabelText(/open sessions and history/i));
-    const drawer = getByRole('dialog', { name: /mobile navigation/i });
-    fireEvent.click(within(drawer).getByRole('button', { name: /session two/i }));
-    expect(queryByRole('dialog', { name: /mobile navigation/i })).toBeNull();
+  it('closes the sheet after selecting a session', async () => {
+    renderSession();
+    fireEvent.click(screen.getByRole('button', { name: /open sessions and history/i }));
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('dialog').find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeDefined();
+    });
+    const sheet = screen
+      .getAllByRole('dialog')
+      .find((d) => d.getAttribute('aria-label') === 'Sessions and history')!;
+    fireEvent.click(within(sheet).getByRole('button', { name: /session two/i }));
+    await waitFor(() => {
+      expect(
+        screen
+          .queryAllByRole('dialog')
+          .find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeUndefined();
+    });
   });
 
-  it('closes the drawer after history resume callback', () => {
-    const { getByLabelText, getByRole, queryByRole } = renderSession();
-    fireEvent.click(getByLabelText(/open sessions and history/i));
-    const drawer = getByRole('dialog', { name: /mobile navigation/i });
-    fireEvent.click(within(drawer).getByRole('button', { name: /history/i }));
-    fireEvent.click(within(drawer).getByRole('button', { name: /resume row/i }));
-    expect(queryByRole('dialog', { name: /mobile navigation/i })).toBeNull();
+  it('closes the sheet after history resume callback', async () => {
+    renderSession();
+    fireEvent.click(screen.getByRole('button', { name: /open sessions and history/i }));
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('dialog').find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeDefined();
+    });
+    const sheet = screen
+      .getAllByRole('dialog')
+      .find((d) => d.getAttribute('aria-label') === 'Sessions and history')!;
+    fireEvent.click(within(sheet).getByRole('button', { name: /history/i }));
+    fireEvent.click(within(sheet).getByRole('button', { name: /resume row/i }));
+    await waitFor(() => {
+      expect(
+        screen
+          .queryAllByRole('dialog')
+          .find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeUndefined();
+    });
   });
 
-  it('closes with Escape and restores focus to the chat trigger', () => {
-    const { getByLabelText, getByRole, queryByRole } = renderSession();
-    const trigger = getByLabelText(/open sessions and history/i);
+  it('closes with Escape and restores focus to the chat trigger', async () => {
+    renderSession();
+    const trigger = screen.getByRole('button', { name: /open sessions and history/i });
     fireEvent.click(trigger);
-    const drawer = getByRole('dialog', { name: /mobile navigation/i });
-    fireEvent.keyDown(drawer, { key: 'Escape' });
-    expect(queryByRole('dialog', { name: /mobile navigation/i })).toBeNull();
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('dialog').find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeDefined();
+    });
+    const sheet = screen
+      .getAllByRole('dialog')
+      .find((d) => d.getAttribute('aria-label') === 'Sessions and history')!;
+    fireEvent.keyDown(sheet, { key: 'Escape' });
+    await waitFor(() => {
+      expect(
+        screen
+          .queryAllByRole('dialog')
+          .find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeUndefined();
+    });
     expect(document.activeElement).toBe(trigger);
   });
 
-  it('keeps tab focus inside the open drawer', () => {
-    const { getByLabelText, getByRole } = renderSession();
-    fireEvent.click(getByLabelText(/open sessions and history/i));
-    const drawer = getByRole('dialog', { name: /mobile navigation/i });
-    const closeButton = within(drawer).getByRole('button', { name: /close mobile navigation/i });
-    const lastSessionButton = within(drawer).getByRole('button', { name: /session two/i });
+  it('keeps tab focus inside the open sheet', async () => {
+    renderSession();
+    fireEvent.click(screen.getByRole('button', { name: /open sessions and history/i }));
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('dialog').find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeDefined();
+    });
+    const sheet = screen
+      .getAllByRole('dialog')
+      .find((d) => d.getAttribute('aria-label') === 'Sessions and history')!;
 
-    closeButton.focus();
-    fireEvent.keyDown(drawer, { key: 'Tab', shiftKey: true });
-    expect(document.activeElement).toBe(lastSessionButton);
+    // Get focusable buttons inside the sheet (tabs + session rows)
+    const focusableButtons = within(sheet).getAllByRole('button');
+    const firstButton = focusableButtons[0]!;
+    const lastButton = focusableButtons[focusableButtons.length - 1]!;
 
-    fireEvent.keyDown(drawer, { key: 'Tab' });
-    expect(document.activeElement).toBe(closeButton);
+    // Focus first button, then Shift+Tab should wrap to last
+    firstButton.focus();
+    fireEvent.keyDown(sheet, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(lastButton);
+
+    // Focus last button, Tab should wrap to first
+    lastButton.focus();
+    fireEvent.keyDown(sheet, { key: 'Tab' });
+    expect(document.activeElement).toBe(firstButton);
   });
 });
