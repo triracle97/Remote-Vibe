@@ -35,6 +35,8 @@ describe('SessionRegistry', () => {
       codexSessionId: null,
       createdAt: 1000,
       account: null,
+      name: null,
+      additionalDirs: [],
     });
     const raw = JSON.parse(readFileSync(registryPath, 'utf-8'));
     expect(raw.sessions['web-1'].agent).toBe('claude');
@@ -53,6 +55,8 @@ describe('SessionRegistry', () => {
       codexSessionId: null,
       createdAt: 1000,
       account: null,
+      name: null,
+      additionalDirs: [],
     });
     await reg.update('web-1', { claudeSessionId: 'abc-123' });
     const entry = reg.get('web-1');
@@ -73,6 +77,8 @@ describe('SessionRegistry', () => {
       codexSessionId: 'codex-uuid',
       createdAt: 2000,
       account: 'default',
+      name: null,
+      additionalDirs: [],
     });
     const reg2 = new SessionRegistry(registryPath);
     await reg2.load();
@@ -91,6 +97,8 @@ describe('SessionRegistry', () => {
       codexSessionId: null,
       createdAt: 1000,
       account: null,
+      name: null,
+      additionalDirs: [],
     });
     // Fire 50 concurrent updates each with a different value.
     const writes = Array.from({ length: 50 }, (_, i) =>
@@ -115,6 +123,8 @@ describe('SessionRegistry', () => {
       codexSessionId: null,
       createdAt: 0,
       account: null,
+      name: null,
+      additionalDirs: [],
     });
     const stat = statSync(registryPath);
     expect((stat.mode & 0o777).toString(8)).toBe('600');
@@ -139,10 +149,57 @@ describe('SessionRegistry', () => {
       codexSessionId: null,
       createdAt: 0,
       account: null,
+      name: null,
+      additionalDirs: [],
     });
     await reg.remove('web-1');
     expect(reg.get('web-1')).toBeUndefined();
     const raw = JSON.parse(readFileSync(registryPath, 'utf-8'));
     expect(raw.sessions['web-1']).toBeUndefined();
+  });
+
+  it('migrates legacy entries (no name / additionalDirs) on load', async () => {
+    // Write a legacy-shape file by hand
+    writeFileSync(registryPath, JSON.stringify({
+      sessions: {
+        'web-1': {
+          webSessionId: 'web-1',
+          agent: 'claude',
+          projectPath: '/tmp/p',
+          transcriptPath: '/tmp/t',
+          claudeSessionId: null,
+          codexSessionId: null,
+          createdAt: 0,
+          account: null,
+          // No name / additionalDirs
+        },
+      },
+    }, null, 2), { mode: 0o600 });
+    const reg = new SessionRegistry(registryPath);
+    await reg.load();
+    const entry = reg.get('web-1');
+    expect(entry?.name).toBe(null);
+    expect(entry?.additionalDirs).toEqual([]);
+  });
+
+  it('persists new fields name + additionalDirs', async () => {
+    const reg = new SessionRegistry(registryPath);
+    await reg.load();
+    await reg.add({
+      webSessionId: 'web-1',
+      agent: 'claude',
+      projectPath: '/tmp/a',
+      transcriptPath: '/tmp/t',
+      claudeSessionId: null,
+      codexSessionId: null,
+      createdAt: 1000,
+      account: null,
+      name: 'fix login',
+      additionalDirs: ['/tmp/b', '/tmp/c'],
+    });
+    const reg2 = new SessionRegistry(registryPath);
+    await reg2.load();
+    expect(reg2.get('web-1')?.name).toBe('fix login');
+    expect(reg2.get('web-1')?.additionalDirs).toEqual(['/tmp/b', '/tmp/c']);
   });
 });

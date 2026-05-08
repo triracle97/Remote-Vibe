@@ -7,13 +7,6 @@ interface NotifierOpts {
   publicUrl?: string;
 }
 
-// Phase 6 adds name + additionalDirs to RegistryEntry; until T6 lands we
-// accept an extended shape here so the Notifier compiles standalone.
-type SessionEntry = RegistryEntry & {
-  name?: string | null;
-  additionalDirs?: string[];
-};
-
 export class Notifier {
   private readonly enabled: boolean;
   private turnStart = new Map<string, number>();
@@ -33,7 +26,7 @@ export class Notifier {
     this.failureCounter.delete(sessionId);
   }
 
-  async noteResult(session: SessionEntry): Promise<void> {
+  async noteResult(session: RegistryEntry): Promise<void> {
     if (!this.enabled) return;
     const start = this.turnStart.get(session.webSessionId);
     this.turnStart.delete(session.webSessionId);
@@ -66,7 +59,7 @@ export class Notifier {
     }
   }
 
-  private buildText(session: SessionEntry, duration: number): string {
+  private buildText(session: RegistryEntry, duration: number): string {
     const name = session.name ?? '(unnamed session)';
     const dur = formatDuration(duration);
     const lines = [`Session '${name}' completed`, `took ${dur}`];

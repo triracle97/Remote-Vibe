@@ -13,6 +13,10 @@ export interface RegistryEntry {
   createdAt: number;
   /** Codex profile name, if any. */
   account: string | null;
+
+  // Phase 6 additions
+  name: string | null;
+  additionalDirs: string[];
 }
 
 interface RegistryFile {
@@ -33,6 +37,22 @@ export class SessionRegistry {
       const parsed = JSON.parse(buf) as RegistryFile;
       if (parsed && typeof parsed === 'object' && parsed.sessions && typeof parsed.sessions === 'object') {
         this.state = parsed;
+        // Migration: normalize each entry to ensure Phase 6 fields are present.
+        for (const [id, raw] of Object.entries(this.state.sessions)) {
+          const entry = raw as Partial<RegistryEntry>;
+          this.state.sessions[id] = {
+            webSessionId: entry.webSessionId ?? id,
+            agent: entry.agent!,
+            projectPath: entry.projectPath!,
+            transcriptPath: entry.transcriptPath!,
+            claudeSessionId: entry.claudeSessionId ?? null,
+            codexSessionId: entry.codexSessionId ?? null,
+            createdAt: entry.createdAt ?? 0,
+            account: entry.account ?? null,
+            name: entry.name ?? null,
+            additionalDirs: entry.additionalDirs ?? [],
+          };
+        }
       } else {
         this.state = { sessions: {} };
       }
