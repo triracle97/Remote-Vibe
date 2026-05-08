@@ -43,4 +43,14 @@ describe('mobile responsive CSS contract', () => {
     expect(css).toMatch(/\.input-box\s*{[^}]*padding-bottom:\s*calc\(0\.65rem \+ env\(safe-area-inset-bottom\)\)/s);
     expect(css).toMatch(/\.file-explorer\s*{[^}]*position:\s*fixed/s);
   });
+
+  it('orders mobile nav shell display rules so the mobile override wins', () => {
+    const css = readCss('src/App.css');
+    const baseHiddenIndex = css.search(/\.mobile-nav-shell\s*{[^}]*display:\s*none/s);
+    const mobileVisibleIndex = css.search(/@media\s*\(max-width:\s*720px\)[\s\S]*?\.mobile-nav-shell\s*{[^}]*display:\s*block/s);
+
+    expect(baseHiddenIndex).toBeGreaterThanOrEqual(0);
+    expect(mobileVisibleIndex).toBeGreaterThanOrEqual(0);
+    expect(baseHiddenIndex).toBeLessThan(mobileVisibleIndex);
+  });
 });

@@ -85,43 +85,6 @@ body { margin: 0; }
   }
 }
 
-@media (max-width: 720px) {
-  body { overflow-x: hidden; }
-  #root {
-    min-height: 100dvh;
-    flex-direction: column;
-  }
-  .home-main {
-    flex: none;
-    padding: 1rem;
-  }
-  .error-banner {
-    overflow-wrap: anywhere;
-  }
-  .resume-prompt {
-    align-items: stretch;
-    flex-direction: column;
-    margin: 0.5rem;
-    text-align: center;
-  }
-  .resume-prompt-button {
-    min-height: 2.5rem;
-  }
-  .mobile-nav-shell {
-    display: block;
-  }
-  body:has(.mobile-nav-shell) {
-    overflow: hidden;
-  }
-  .mobile-nav-content .session-list,
-  .mobile-nav-content .history-panel {
-    display: block;
-    width: 100%;
-    max-height: none;
-    border-bottom: 0;
-  }
-}
-
 .mobile-nav-shell {
   position: fixed;
   inset: 0;
@@ -189,6 +152,43 @@ body { margin: 0; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+
+@media (max-width: 720px) {
+  body { overflow-x: hidden; }
+  #root {
+    min-height: 100dvh;
+    flex-direction: column;
+  }
+  .home-main {
+    flex: none;
+    padding: 1rem;
+  }
+  .error-banner {
+    overflow-wrap: anywhere;
+  }
+  .resume-prompt {
+    align-items: stretch;
+    flex-direction: column;
+    margin: 0.5rem;
+    text-align: center;
+  }
+  .resume-prompt-button {
+    min-height: 2.5rem;
+  }
+  .mobile-nav-shell {
+    display: block;
+  }
+  body:has(.mobile-nav-shell) {
+    overflow: hidden;
+  }
+  .mobile-nav-content .session-list,
+  .mobile-nav-content .history-panel {
+    display: block;
+    width: 100%;
+    max-height: none;
+    border-bottom: 0;
+  }
 }
 
 /* Session rename inline (T13) */
