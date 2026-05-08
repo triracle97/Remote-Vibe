@@ -7,7 +7,7 @@ interface MessageBubbleProps {
 }
 
 export function MessageBubble({ event }: MessageBubbleProps): JSX.Element | null {
-  if ((event as { superseded?: boolean }).superseded) return null;
+  if (event.superseded) return null;
   if (event.type === 'system' && event.event === 'session_created') {
     return <div className="bubble system">session started</div>;
   }

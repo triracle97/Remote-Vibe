@@ -42,7 +42,7 @@ apps/web/src/features/markdown/
 | `apps/web/src/store/sessions.ts` | `SessionEvent` augmented with optional `superseded?: true`. New private helper `applySupersessionWalk(events)` re-derives flags from event order in one pass — for each `assistant` with non-empty text payload, walks backwards flagging stream_delta events until the first non-`stream_delta` boundary. Idempotent + order-only so reload-replay reaches the same flag set as live. Invoked in BOTH the live `assistant` append path AND the `history` bulk-merge path. |
 | `apps/web/src/store/sessions.test.ts` | 4 new test cases for the supersession walk (including reload-replay parity). |
 | `apps/web/src/features/chat/MessageBubble.test.tsx` | New file — TDD additions per spec §8: assistant text + user bubbles render `<MarkdownRenderer />` (mocked), tool-use/tool-result/result/system branches unchanged, `superseded === true` returns `null`. |
-| `apps/web/src/features/chat/MessageBubble.tsx` | Top-of-function: `if ((event as { superseded?: boolean }).superseded) return null;`. `event.type === 'assistant'` text branch wraps in `<MarkdownRenderer source={text} />` instead of plain text. `event.type === 'user'` likewise. Other branches unchanged. |
+| `apps/web/src/features/chat/MessageBubble.tsx` | Top-of-function: `if (event.superseded) return null;`. `event.type === 'assistant'` text branch wraps in `<MarkdownRenderer source={text} />` instead of plain text. `event.type === 'user'` likewise. Other branches unchanged. |
 
 ### Bridge
 
@@ -1523,7 +1523,7 @@ import { MarkdownRenderer } from '../markdown/MarkdownRenderer';
 Add the early return as the very first line inside the `MessageBubble` function body:
 
 ```tsx
-if ((event as { superseded?: boolean }).superseded) return null;
+if (event.superseded) return null;
 ```
 
 Locate the `event.type === 'assistant'` branch where text is rendered. Replace:
