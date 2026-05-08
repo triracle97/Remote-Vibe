@@ -25,7 +25,11 @@ const SURFACE_CAP = 50;
 // often sits at line ~6 of the file — so 4 KB was too small. 64 KB covers
 // realistic session shapes without reading large 10+ MB files in full.
 const CLAUDE_HEAD_BYTES = 65536;
-const FORWARD_SCAN_BYTES = 16384;
+// Codex `session_meta` (the first JSONL line) carries the full system prompt
+// inline. In Codex 0.121+ this single line can be 20 KB+ — 16 KB was too
+// small and truncated the parse. 64 KB matches Claude and covers realistic
+// system-prompt sizes without reading large multi-MB files in full.
+const FORWARD_SCAN_BYTES = 65536;
 const PROMPT_TRUNCATE = 80;
 const CACHE_TTL_MS = 60_000;
 
