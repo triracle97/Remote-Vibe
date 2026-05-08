@@ -1644,6 +1644,36 @@ private instantiateCodexWithResumeSeed(entry: RegistryEntry, codexSessionId: str
   this.attachSession(entry.webSessionId, session, entry);
 }
 
+/**
+ * After a successful resume (Path 1 OR Path 2), emit a synthesized
+ * `system: session_created` lifecycle event so the web sessions store
+ * creates / refreshes the SessionView. This matters most for Path 2
+ * (native-history first-resume): the bridge issues a brand-new
+ * webSessionId, and without this synthesized event the web has no
+ * SessionView for that id when the user's resume_session reply arrives,
+ * causing the route to show "session not found".
+ *
+ * For Claude resumes the parser will ALSO emit Claude's own system init
+ * event when the spawned process publishes it — that's a second
+ * session_created from the parser path. The web reducer is idempotent
+ * (existing Phase 1 behavior: re-applying session_created with the same
+ * sessionId is a no-op merge of fields). For Codex resumes, the spawn
+ * doesn't fire until first send, so this synthesized event is the ONLY
+ * way the web learns about the new session for native-history Codex.
+ */
+private emitSynthesizedSessionCreated(webSessionId: string, entry: RegistryEntry): void {
+  this.broadcast({
+    type: 'system',
+    event: 'session_created',
+    sessionId: webSessionId,
+    seq: 1, // bridge's existing seq mechanism handles uniqueness; adapt to actual API
+    agent: entry.agent,
+    projectPath: entry.projectPath,
+    createdAt: entry.createdAt,
+    ...(entry.account ? { account: entry.account } : {}),
+  });
+}
+
 private attachSession(webSessionId: string, session: AgentDriver, entry: RegistryEntry): void {
   // The in-memory session shape is `InternalSession` (sessionId/proc/buffer/nextSeq
   // + alive flag), NOT the registry-entry shape. Reuse the SAME helper the
@@ -1662,6 +1692,9 @@ private attachSession(webSessionId: string, session: AgentDriver, entry: Registr
   // Insert into the in-memory session map using whatever existing helper
   // does this on fresh spawn. (Pseudocode — adapt to your real helper.)
   this.registerInternalSession(webSessionId, session, entry);
+  // Synthesize the session_created lifecycle event so the web learns about
+  // the new webSessionId (critical for Path 2 — native-history first-resume).
+  this.emitSynthesizedSessionCreated(webSessionId, entry);
   this.emit('session_resumed', { webSessionId, alive: true });
 }
 
