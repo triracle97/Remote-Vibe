@@ -42,6 +42,12 @@ describe('HistoryPanel', () => {
     expect(container.textContent).toMatch(/no past sessions/i);
   });
 
+  it('can render open by default for mobile drawer use', () => {
+    const { container } = render(<HistoryPanel defaultOpen />);
+    expect(container.querySelector('.history-body')).toBeTruthy();
+    expect(container.textContent).toMatch(/no past sessions/i);
+  });
+
   it('renders Claude rows when claude list is populated', () => {
     useHistoryStore.setState({
       claude: [{
@@ -89,6 +95,29 @@ describe('HistoryPanel', () => {
     const row = container.querySelector('button.history-row') as HTMLButtonElement;
     fireEvent.click(row);
     expect(resumeFromHistory).toHaveBeenCalledWith(entry);
+  });
+
+  it('calls onAfterResume after a successful history resume', async () => {
+    const resumeFromHistory = vi.fn().mockResolvedValue('new-id');
+    const onAfterResume = vi.fn();
+    (useSessionsStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({ resumeFromHistory });
+    const entry = {
+      agent: 'claude' as const,
+      sessionId: 'a',
+      projectPath: '/x/proj',
+      mtime: Date.now(),
+      firstPrompt: 'hi',
+    };
+    useHistoryStore.setState({ claude: [entry], codex: [], loading: false, lastFetched: Date.now() });
+    const { container } = render(<HistoryPanel defaultOpen onAfterResume={onAfterResume} />);
+    const row = container.querySelector('button.history-row') as HTMLButtonElement;
+    fireEvent.click(row);
+    await vi.waitFor(() => expect(onAfterResume).toHaveBeenCalledTimes(1));
+  });
+
+  it('stays collapsed by default when defaultOpen is omitted', () => {
+    const { container } = render(<HistoryPanel />);
+    expect(container.querySelector('.history-body')).toBeNull();
   });
 
   it('renders 50 rows max', () => {

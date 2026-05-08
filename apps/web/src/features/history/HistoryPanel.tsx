@@ -7,8 +7,16 @@ import type { HistoryEntry } from '../../types/protocol';
 
 type Tab = 'claude' | 'codex';
 
-export function HistoryPanel(): JSX.Element {
-  const [open, setOpen] = useState(false);
+interface HistoryPanelProps {
+  defaultOpen?: boolean;
+  onAfterResume?(): void;
+}
+
+export function HistoryPanel({
+  defaultOpen = false,
+  onAfterResume,
+}: HistoryPanelProps = {}): JSX.Element {
+  const [open, setOpen] = useState(defaultOpen);
   const [tab, setTab] = useState<Tab>('claude');
   const [resumeError, setResumeError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -26,6 +34,7 @@ export function HistoryPanel(): JSX.Element {
     try {
       const webSessionId = await useSessionsStore.getState().resumeFromHistory(entry);
       navigate(`/session/${webSessionId}`);
+      onAfterResume?.();
     } catch (err) {
       const e = err as { code?: string; message?: string };
       setResumeError(e.message ?? 'Resume failed');
