@@ -46,6 +46,7 @@ export function useNewSession(client: BridgeClient): {
         client.send({
           type: 'start',
           agent: selection.agent,
+          dirs: selection.dirs,
           projectPath: selection.projectPath,
           ...(selection.account ? { account: selection.account } : {}),
           correlationId,
