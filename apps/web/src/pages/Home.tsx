@@ -4,6 +4,7 @@ import { useConnectionStore } from '../store/connection';
 import type { BridgeClient } from '../services/bridge-client';
 import { SessionList } from '../features/session-list/SessionList';
 import { useNewSession } from '../features/project-picker/useNewSession';
+import { HistoryPanel } from '../features/history/HistoryPanel';
 
 interface HomeProps {
   client: BridgeClient;
@@ -27,6 +28,7 @@ export function Home({ client }: HomeProps): JSX.Element {
         onSelect={(id) => navigate(`/session/${id}`)}
         onNewSession={newSession.open}
       />
+      <HistoryPanel />
       <main className="home-main">
         <h1>mac-remote-terminal</h1>
         <p>connection: {status}</p>
