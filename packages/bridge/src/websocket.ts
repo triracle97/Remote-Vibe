@@ -12,6 +12,9 @@ import type { PromptStore } from './prompt-store.js';
 import type { FsApi } from './fs-api.js';
 import type { ImageStore } from './image-store.js';
 import type { HistoryScanner } from './history-scanner.js';
+import type { ProfileStore } from './profile-store.js';
+import type { SlashCommandsScanner } from './slash-commands.js';
+import type { FileSearch } from './file-search.js';
 import type {
   ClientMsg,
   ServerErrorMsg,
@@ -29,6 +32,9 @@ export interface AttachWsOpts {
   fsApi: FsApi;
   imageStore: ImageStore;
   historyScanner: HistoryScanner;
+  profileStore: ProfileStore;
+  slashCommands: SlashCommandsScanner;
+  fileSearch: FileSearch;
 }
 
 export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
@@ -72,7 +78,20 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
     send({ type: 'system', event: 'init' });
 
     ws.on('message', (raw) => {
-      void handleMessage(ws, raw, opts.sessionManager, send, opts.accounts, opts.promptStore, opts.fsApi, opts.imageStore, opts.historyScanner);
+      void handleMessage(
+        ws,
+        raw,
+        opts.sessionManager,
+        send,
+        opts.accounts,
+        opts.promptStore,
+        opts.fsApi,
+        opts.imageStore,
+        opts.historyScanner,
+        opts.profileStore,
+        opts.slashCommands,
+        opts.fileSearch,
+      );
     });
   });
 
@@ -82,14 +101,18 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
 async function handleMessage(
   _ws: WebSocket,
   raw: import('ws').RawData,
-  mgr: SessionManager,
+  sessionManager: SessionManager,
   send: (m: ServerMsg) => void,
   accounts: Map<string, CodexAccount>,
   promptStore: PromptStore | undefined,
   fsApi: FsApi,
   imageStore: ImageStore,
   historyScanner: HistoryScanner,
+  profileStore: ProfileStore,
+  slashCommands: SlashCommandsScanner,
+  fileSearch: FileSearch,
 ): Promise<void> {
+  const mgr = sessionManager;
   let msg: ClientMsg;
   try {
     msg = JSON.parse(raw.toString()) as ClientMsg;
@@ -106,14 +129,23 @@ async function handleMessage(
     switch (msg.type) {
       case 'start': {
         // Phase 6: dirs[] wins over projectPath; first dir is the primary cwd.
-        const effectivePath = msg.dirs?.[0] ?? msg.projectPath;
-        if (!effectivePath) {
+        // Multi-dir requests route to spawnSession (which validates every dir
+        // and stores additionalDirs on the registry entry); single-dir falls
+        // through the same code path with dirs=[projectPath]. The legacy
+        // create() shape is no longer needed at the wire layer because
+        // spawnSession is a strict superset.
+        const dirs = msg.dirs && msg.dirs.length > 0
+          ? msg.dirs
+          : msg.projectPath
+            ? [msg.projectPath]
+            : [];
+        if (dirs.length === 0) {
           sendError(send, 'project_path_missing', 'start requires projectPath or dirs', msg.correlationId);
           return;
         }
-        await mgr.create({
+        await sessionManager.spawnSession({
           agent: msg.agent,
-          projectPath: effectivePath,
+          dirs,
           ...(msg.account ? { account: msg.account } : {}),
           ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
         });
@@ -326,6 +358,141 @@ async function handleMessage(
             message: (err as Error).message,
             correlationId: msg.correlationId,
             ...('webSessionId' in msg ? { sessionId: msg.webSessionId } : {}),
+          });
+        }
+        break;
+      }
+      case 'list_profiles': {
+        const profiles = profileStore.list();
+        send({ type: 'profile_list', profiles, correlationId: msg.correlationId });
+        break;
+      }
+      case 'save_profile': {
+        try {
+          const existing = profileStore.get(msg.profile.name, msg.profile.agent);
+          if (existing) {
+            await profileStore.update(msg.profile.name, msg.profile.agent, msg.profile);
+          } else {
+            await profileStore.add(msg.profile);
+          }
+          send({ type: 'profile_saved', profile: msg.profile, correlationId: msg.correlationId });
+        } catch (err) {
+          const code = (err as { code?: string }).code ?? 'profile_invalid_name';
+          send({
+            type: 'error',
+            code: code as never,
+            message: (err as Error).message,
+            correlationId: msg.correlationId,
+          });
+        }
+        break;
+      }
+      case 'delete_profile': {
+        try {
+          await profileStore.remove(msg.name, msg.agent);
+          send({
+            type: 'profile_deleted',
+            name: msg.name,
+            agent: msg.agent,
+            correlationId: msg.correlationId,
+          });
+        } catch (err) {
+          send({
+            type: 'error',
+            code: 'profile_not_found',
+            message: (err as Error).message,
+            correlationId: msg.correlationId,
+          });
+        }
+        break;
+      }
+      case 'set_default_profile': {
+        try {
+          await profileStore.setDefault(msg.name, msg.agent);
+          send({
+            type: 'profile_default_set',
+            name: msg.name,
+            agent: msg.agent,
+            correlationId: msg.correlationId,
+          });
+        } catch (err) {
+          send({
+            type: 'error',
+            code: 'profile_not_found',
+            message: (err as Error).message,
+            correlationId: msg.correlationId,
+          });
+        }
+        break;
+      }
+      case 'list_slash_commands': {
+        try {
+          // SessionManager has no single-id getter; use listSessions() and
+          // find by id. Reuses the P5 history_session_not_found code for the
+          // unknown-session case (rather than minting a new error code).
+          const session = sessionManager
+            .listSessions()
+            .find((s) => s.sessionId === msg.sessionId);
+          if (!session) {
+            send({
+              type: 'error',
+              code: 'history_session_not_found',
+              message: `Unknown session ${msg.sessionId}`,
+              correlationId: msg.correlationId,
+            });
+            return;
+          }
+          const commands = await slashCommands.listForSession({
+            sessionId: msg.sessionId,
+            agent: session.agent,
+            primaryCwd: session.projectPath,
+          });
+          send({ type: 'slash_commands_list', commands, correlationId: msg.correlationId });
+        } catch (err) {
+          send({
+            type: 'error',
+            code: 'slash_commands_failed',
+            message: (err as Error).message,
+            correlationId: msg.correlationId,
+          });
+        }
+        break;
+      }
+      case 'search_files': {
+        try {
+          const result = await fileSearch.search(msg.sessionId, msg.query);
+          send({
+            type: 'file_search_results',
+            hits: result.hits,
+            truncated: result.truncated,
+            correlationId: msg.correlationId,
+          });
+        } catch (err) {
+          send({
+            type: 'error',
+            code: 'file_search_failed',
+            message: (err as Error).message,
+            correlationId: msg.correlationId,
+          });
+        }
+        break;
+      }
+      case 'rename_session': {
+        try {
+          await sessionManager.renameSession(msg.sessionId, msg.name);
+          send({
+            type: 'session_renamed',
+            sessionId: msg.sessionId,
+            name: msg.name,
+            correlationId: msg.correlationId,
+          });
+        } catch (err) {
+          const code = (err as { code?: string }).code ?? 'session_name_invalid';
+          send({
+            type: 'error',
+            code: code as never,
+            message: (err as Error).message,
+            correlationId: msg.correlationId,
           });
         }
         break;

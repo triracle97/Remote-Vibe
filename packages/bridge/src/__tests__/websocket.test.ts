@@ -5,7 +5,10 @@ import { attachWebSocket } from '../websocket.js';
 import { SessionManager } from '../session.js';
 import { EventEmitter } from 'node:events';
 import type { HistoryScanner } from '../history-scanner.js';
-import type { HistoryEntry } from '../types.js';
+import type { HistoryEntry, Profile, SearchHit, SlashCommand } from '../types.js';
+import type { ProfileStore } from '../profile-store.js';
+import type { SlashCommandsScanner } from '../slash-commands.js';
+import type { FileSearch } from '../file-search.js';
 
 const TOKEN = 'a'.repeat(32);
 
@@ -23,12 +26,83 @@ function makeFakeScanner(overrides: Partial<HistoryScanner> = {}): HistoryScanne
   } as unknown as HistoryScanner;
 }
 
+function makeFakeProfileStore(initial: Profile[] = []): ProfileStore {
+  let profiles: Profile[] = [...initial];
+  return {
+    list: vi.fn(() => [...profiles]),
+    get: vi.fn((name: string, agent: 'claude' | 'codex') =>
+      profiles.find((p) => p.agent === agent && p.name.toLowerCase() === name.toLowerCase()),
+    ),
+    add: vi.fn(async (p: Profile) => {
+      if (!/^[A-Za-z0-9 _-]{1,40}$/.test(p.name)) {
+        throw Object.assign(new Error('Invalid name'), { code: 'profile_invalid_name' });
+      }
+      if (profiles.some((q) => q.agent === p.agent && q.name.toLowerCase() === p.name.toLowerCase())) {
+        throw Object.assign(new Error('exists'), { code: 'profile_invalid_name' });
+      }
+      profiles.push(p);
+    }),
+    update: vi.fn(async (name: string, agent: 'claude' | 'codex', patch: Partial<Profile>) => {
+      const idx = profiles.findIndex(
+        (p) => p.agent === agent && p.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (idx < 0) {
+        throw Object.assign(new Error('not found'), { code: 'profile_not_found' });
+      }
+      profiles[idx] = { ...profiles[idx]!, ...patch };
+    }),
+    remove: vi.fn(async (name: string, agent: 'claude' | 'codex') => {
+      const before = profiles.length;
+      profiles = profiles.filter(
+        (p) => !(p.agent === agent && p.name.toLowerCase() === name.toLowerCase()),
+      );
+      if (profiles.length === before) {
+        throw Object.assign(new Error('not found'), { code: 'profile_not_found' });
+      }
+    }),
+    setDefault: vi.fn(async (name: string, agent: 'claude' | 'codex') => {
+      const idx = profiles.findIndex(
+        (p) => p.agent === agent && p.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (idx < 0) {
+        throw Object.assign(new Error('not found'), { code: 'profile_not_found' });
+      }
+      profiles = profiles.map((p) =>
+        p.agent === agent
+          ? { ...p, default: p.name.toLowerCase() === name.toLowerCase() }
+          : p,
+      );
+    }),
+  } as unknown as ProfileStore;
+}
+
+function makeFakeSlashCommands(
+  result: SlashCommand[] = [],
+): SlashCommandsScanner {
+  return {
+    listForSession: vi.fn(async () => result),
+    invalidateCache: vi.fn(),
+  } as unknown as SlashCommandsScanner;
+}
+
+function makeFakeFileSearch(
+  result: { hits: SearchHit[]; truncated: boolean } = { hits: [], truncated: false },
+): FileSearch {
+  return {
+    search: vi.fn(async () => result),
+    invalidate: vi.fn(),
+  } as unknown as FileSearch;
+}
+
 async function startServer(opts: {
   accounts?: Map<string, import('../accounts.js').CodexAccount>;
   fsApi?: import('../fs-api.js').FsApi;
   imageStore?: import('../image-store.js').ImageStore;
   sessionManager?: SessionManager;
   historyScanner?: HistoryScanner;
+  profileStore?: ProfileStore;
+  slashCommands?: SlashCommandsScanner;
+  fileSearch?: FileSearch;
 } = {}) {
   const procs: FakeProc[] = [];
   const fsApi =
@@ -59,6 +133,9 @@ async function startServer(opts: {
       imageStore,
     });
   const historyScanner = opts.historyScanner ?? makeFakeScanner();
+  const profileStore = opts.profileStore ?? makeFakeProfileStore();
+  const slashCommands = opts.slashCommands ?? makeFakeSlashCommands();
+  const fileSearch = opts.fileSearch ?? makeFakeFileSearch();
   const server = createServer();
   attachWebSocket({
     server,
@@ -68,6 +145,9 @@ async function startServer(opts: {
     fsApi,
     imageStore,
     historyScanner,
+    profileStore,
+    slashCommands,
+    fileSearch,
   });
 
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
@@ -79,6 +159,9 @@ async function startServer(opts: {
     mgr,
     procs,
     historyScanner,
+    profileStore,
+    slashCommands,
+    fileSearch,
     close: () =>
       new Promise<void>((r) => {
         server.close(() => r());
@@ -379,6 +462,9 @@ describe('websocket', () => {
       fsApi: fakeFsApi,
       imageStore: fakeImageStore,
       historyScanner: makeFakeScanner(),
+      profileStore: makeFakeProfileStore(),
+      slashCommands: makeFakeSlashCommands(),
+      fileSearch: makeFakeFileSearch(),
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
     const addr = server.address();
@@ -886,6 +972,491 @@ describe('websocket', () => {
       expect(m.type).toBe('error');
       expect(m.code).toBe('project_path_disallowed');
       expect(m.correlationId).toBe('cid-disallow');
+      sock.close();
+      await close();
+    } finally {
+      await new Promise((r) => setTimeout(r, 10));
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // --- Phase 6 T8: profiles, slash, file-search, rename, multi-dir start --
+
+  it('list_profiles replies with profile_list (empty initially)', async () => {
+    const { port, close } = await startServer();
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const got = new Promise<{ type: string; profiles: Profile[]; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'profile_list') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'list_profiles', correlationId: 'cid-lp' }));
+    const m = await got;
+    expect(m.type).toBe('profile_list');
+    expect(m.profiles).toEqual([]);
+    expect(m.correlationId).toBe('cid-lp');
+    sock.close();
+    await close();
+  });
+
+  it('save_profile happy path replies profile_saved', async () => {
+    const profileStore = makeFakeProfileStore();
+    const { port, close } = await startServer({ profileStore });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const profile: Profile = {
+      name: 'work',
+      agent: 'claude',
+      dirs: ['/Users/test/proj'],
+      account: null,
+      default: false,
+    };
+    const got = new Promise<{ type: string; profile?: Profile; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'profile_saved') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'save_profile', profile, correlationId: 'cid-save' }));
+    const m = await got;
+    expect(m.type).toBe('profile_saved');
+    expect(m.profile?.name).toBe('work');
+    expect(m.correlationId).toBe('cid-save');
+    expect(profileStore.add).toHaveBeenCalledTimes(1);
+    sock.close();
+    await close();
+  });
+
+  it('save_profile with bad name replies error profile_invalid_name', async () => {
+    const { port, close } = await startServer();
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const profile: Profile = {
+      name: 'bad/name!', // contains disallowed chars
+      agent: 'claude',
+      dirs: ['/Users/test/proj'],
+      account: null,
+      default: false,
+    };
+    const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'error') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'save_profile', profile, correlationId: 'cid-bad' }));
+    const m = await got;
+    expect(m.code).toBe('profile_invalid_name');
+    expect(m.correlationId).toBe('cid-bad');
+    sock.close();
+    await close();
+  });
+
+  it('delete_profile happy path replies profile_deleted', async () => {
+    const profile: Profile = {
+      name: 'work',
+      agent: 'claude',
+      dirs: ['/Users/test/proj'],
+      account: null,
+      default: false,
+    };
+    const profileStore = makeFakeProfileStore([profile]);
+    const { port, close } = await startServer({ profileStore });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const got = new Promise<{ type: string; name?: string; agent?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'profile_deleted') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'delete_profile',
+        name: 'work',
+        agent: 'claude',
+        correlationId: 'cid-del',
+      }),
+    );
+    const m = await got;
+    expect(m.name).toBe('work');
+    expect(m.agent).toBe('claude');
+    expect(m.correlationId).toBe('cid-del');
+    sock.close();
+    await close();
+  });
+
+  it('delete_profile missing name replies error profile_not_found', async () => {
+    const { port, close } = await startServer();
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'error') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'delete_profile',
+        name: 'nope',
+        agent: 'claude',
+        correlationId: 'cid-del-missing',
+      }),
+    );
+    const m = await got;
+    expect(m.code).toBe('profile_not_found');
+    expect(m.correlationId).toBe('cid-del-missing');
+    sock.close();
+    await close();
+  });
+
+  it('set_default_profile happy path replies profile_default_set', async () => {
+    const profile: Profile = {
+      name: 'work',
+      agent: 'claude',
+      dirs: ['/Users/test/proj'],
+      account: null,
+      default: false,
+    };
+    const profileStore = makeFakeProfileStore([profile]);
+    const { port, close } = await startServer({ profileStore });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const got = new Promise<{ type: string; name?: string; agent?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'profile_default_set') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'set_default_profile',
+        name: 'work',
+        agent: 'claude',
+        correlationId: 'cid-sd',
+      }),
+    );
+    const m = await got;
+    expect(m.name).toBe('work');
+    expect(m.agent).toBe('claude');
+    expect(m.correlationId).toBe('cid-sd');
+    sock.close();
+    await close();
+  });
+
+  it('list_slash_commands for known session replies slash_commands_list', async () => {
+    const cmds: SlashCommand[] = [
+      { name: '/help', description: 'show help', source: 'builtin', agent: 'claude' },
+    ];
+    const slashCommands = makeFakeSlashCommands(cmds);
+    const { port, mgr, close } = await startServer({ slashCommands });
+    const session = await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const got = new Promise<{ type: string; commands?: SlashCommand[]; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'slash_commands_list') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'list_slash_commands',
+        sessionId: session.sessionId,
+        correlationId: 'cid-slash',
+      }),
+    );
+    const m = await got;
+    expect(m.commands).toEqual(cmds);
+    expect(m.correlationId).toBe('cid-slash');
+    expect(slashCommands.listForSession).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      agent: 'claude',
+      primaryCwd: '/Users/test/proj',
+    });
+    sock.close();
+    await close();
+  });
+
+  it('list_slash_commands for unknown session replies error history_session_not_found', async () => {
+    const { port, close } = await startServer();
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'error') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'list_slash_commands',
+        sessionId: 'never-existed',
+        correlationId: 'cid-slash-nf',
+      }),
+    );
+    const m = await got;
+    expect(m.code).toBe('history_session_not_found');
+    expect(m.correlationId).toBe('cid-slash-nf');
+    sock.close();
+    await close();
+  });
+
+  it('search_files for known session replies file_search_results', async () => {
+    const hits: SearchHit[] = [
+      { insertText: '@README.md', fullPath: '/Users/test/proj/README.md', dirIndex: 0, mtime: 1000 },
+    ];
+    const fileSearch = makeFakeFileSearch({ hits, truncated: false });
+    const { port, close } = await startServer({ fileSearch });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const got = new Promise<{ type: string; hits: SearchHit[]; truncated: boolean; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'file_search_results') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'search_files',
+        sessionId: 'web-1',
+        query: 'read',
+        correlationId: 'cid-fs',
+      }),
+    );
+    const m = await got;
+    expect(m.hits).toEqual(hits);
+    expect(m.truncated).toBe(false);
+    expect(m.correlationId).toBe('cid-fs');
+    expect(fileSearch.search).toHaveBeenCalledWith('web-1', 'read');
+    sock.close();
+    await close();
+  });
+
+  it('rename_session happy path replies session_renamed', async () => {
+    const { mkdtempSync, mkdirSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { SessionRegistry } = await import('../session-registry.js');
+
+    const tmp = mkdtempSync(join(tmpdir(), 'ws-rename-ok-'));
+    const proj = join(tmp, 'proj');
+    mkdirSync(proj, { recursive: true });
+    try {
+      const registry = new SessionRegistry(join(tmp, 'sessions.json'));
+      await registry.load();
+      const mgr = new SessionManager({
+        allowedDirs: [tmp],
+        bufferCap: 100,
+        driverFactory: () => new FakeProc() as unknown as import('../session.js').AgentDriver,
+        realpath: async (p) => p,
+        registry,
+      });
+      const sess = await mgr.spawnSession({ agent: 'claude', dirs: [proj] });
+
+      const { port, close } = await startServer({ sessionManager: mgr });
+      const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+        cookie: `bridge_session=${TOKEN}`,
+        origin: `http://127.0.0.1:${port}`,
+      });
+      await new Promise<void>((r) => sock.on('open', () => r()));
+      await once(sock as unknown as EventEmitter, 'message');
+
+      // Both the handler's direct reply (correlationId='cid-rn') and the
+      // session-manager broadcast (correlationId='') deliver a session_renamed
+      // message; collect them all and assert both shapes were observed.
+      const renames: Array<{ type: string; sessionId?: string; name?: string; correlationId?: string }> = [];
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'session_renamed') renames.push(m);
+      });
+      sock.send(
+        JSON.stringify({
+          type: 'rename_session',
+          sessionId: sess.webSessionId,
+          name: 'my session',
+          correlationId: 'cid-rn',
+        }),
+      );
+      // Wait for at least one rename event, up to 1s.
+      await new Promise<void>((r) => {
+        const start = Date.now();
+        const tick = setInterval(() => {
+          if (renames.length >= 1 || Date.now() - start > 1000) {
+            clearInterval(tick);
+            r();
+          }
+        }, 10);
+      });
+      expect(renames.length).toBeGreaterThanOrEqual(1);
+      // The handler-direct reply is the one with correlationId='cid-rn'.
+      const direct = renames.find((m) => m.correlationId === 'cid-rn');
+      expect(direct?.sessionId).toBe(sess.webSessionId);
+      expect(direct?.name).toBe('my session');
+      expect(registry.get(sess.webSessionId)?.name).toBe('my session');
+      sock.close();
+      await close();
+    } finally {
+      await new Promise((r) => setTimeout(r, 10));
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('rename_session with bad name replies error session_name_invalid', async () => {
+    const { mkdtempSync, mkdirSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { SessionRegistry } = await import('../session-registry.js');
+
+    const tmp = mkdtempSync(join(tmpdir(), 'ws-rename-bad-'));
+    const proj = join(tmp, 'proj');
+    mkdirSync(proj, { recursive: true });
+    try {
+      const registry = new SessionRegistry(join(tmp, 'sessions.json'));
+      await registry.load();
+      const mgr = new SessionManager({
+        allowedDirs: [tmp],
+        bufferCap: 100,
+        driverFactory: () => new FakeProc() as unknown as import('../session.js').AgentDriver,
+        realpath: async (p) => p,
+        registry,
+      });
+      const sess = await mgr.spawnSession({ agent: 'claude', dirs: [proj] });
+
+      const { port, close } = await startServer({ sessionManager: mgr });
+      const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+        cookie: `bridge_session=${TOKEN}`,
+        origin: `http://127.0.0.1:${port}`,
+      });
+      await new Promise<void>((r) => sock.on('open', () => r()));
+      await once(sock as unknown as EventEmitter, 'message');
+
+      const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
+        sock.on('message', (raw) => {
+          const m = JSON.parse(raw.toString());
+          if (m.type === 'error') r(m);
+        });
+      });
+      sock.send(
+        JSON.stringify({
+          type: 'rename_session',
+          sessionId: sess.webSessionId,
+          name: '   ', // whitespace-only → invalid
+          correlationId: 'cid-rn-bad',
+        }),
+      );
+      const m = await got;
+      expect(m.code).toBe('session_name_invalid');
+      expect(m.correlationId).toBe('cid-rn-bad');
+      sock.close();
+      await close();
+    } finally {
+      await new Promise((r) => setTimeout(r, 10));
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('start with dirs[] spawns multi-dir session and stores additionalDirs', async () => {
+    const { mkdtempSync, mkdirSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { SessionRegistry } = await import('../session-registry.js');
+
+    const tmp = mkdtempSync(join(tmpdir(), 'ws-multidir-'));
+    const a = join(tmp, 'a');
+    const b = join(tmp, 'b');
+    mkdirSync(a, { recursive: true });
+    mkdirSync(b, { recursive: true });
+    try {
+      const registry = new SessionRegistry(join(tmp, 'sessions.json'));
+      await registry.load();
+      const mgr = new SessionManager({
+        allowedDirs: [tmp],
+        bufferCap: 100,
+        driverFactory: () => new FakeProc() as unknown as import('../session.js').AgentDriver,
+        realpath: async (p) => p,
+        registry,
+      });
+
+      const { port, close } = await startServer({ sessionManager: mgr });
+      const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+        cookie: `bridge_session=${TOKEN}`,
+        origin: `http://127.0.0.1:${port}`,
+      });
+      await new Promise<void>((r) => sock.on('open', () => r()));
+      await once(sock as unknown as EventEmitter, 'message');
+
+      const got = new Promise<{ type: string; event?: string; sessionId?: string; projectPath?: string; correlationId?: string }>(
+        (r) => {
+          sock.on('message', (raw) => {
+            const m = JSON.parse(raw.toString());
+            if (m.type === 'system' && m.event === 'session_created') r(m);
+          });
+        },
+      );
+      sock.send(
+        JSON.stringify({
+          type: 'start',
+          agent: 'claude',
+          dirs: [a, b],
+          correlationId: 'cid-md',
+        }),
+      );
+      const m = await got;
+      expect(m.projectPath).toBe(a);
+      expect(m.correlationId).toBe('cid-md');
+      // The registry entry should include both dirs.
+      const entry = registry.get(m.sessionId!);
+      expect(entry?.projectPath).toBe(a);
+      expect(entry?.additionalDirs).toEqual([b]);
       sock.close();
       await close();
     } finally {
