@@ -1,5 +1,8 @@
+import { useState } from 'react';
+import { Plus, Trash2 } from 'lucide-react';
 import { useConnectionStore } from '../store/connection';
 import { useThemeStore, type ThemeMode } from '../shell/themeStore';
+import { useDefaultWorkspacesStore } from '../features/project-picker/defaultWorkspacesStore';
 
 const themes: ReadonlyArray<{ value: ThemeMode; label: string }> = [
   { value: 'system', label: 'System' },
@@ -12,6 +15,10 @@ export function Settings(): JSX.Element {
   const lastError = useConnectionStore((s) => s.lastError);
   const mode = useThemeStore((s) => s.mode);
   const setMode = useThemeStore((s) => s.setMode);
+  const workspaces = useDefaultWorkspacesStore((s) => s.paths);
+  const addWorkspace = useDefaultWorkspacesStore((s) => s.add);
+  const removeWorkspace = useDefaultWorkspacesStore((s) => s.remove);
+  const [draft, setDraft] = useState('');
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto p-4 max-w-screen-md w-full mx-auto space-y-8">
@@ -57,6 +64,50 @@ export function Settings(): JSX.Element {
       <section className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4">
         <h2 className="text-[var(--color-text-dim)] text-xs font-bold tracking-wider uppercase mb-3">Default agent</h2>
         <p className="text-[var(--color-text-dim)] text-sm">Default agent selection is applied when starting a new session via Home or Projects. (Persisted per-session inside ProjectPicker for v1.)</p>
+      </section>
+
+      <section className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4">
+        <h2 className="text-[var(--color-text-dim)] text-xs font-bold tracking-wider uppercase mb-3">Default workspaces</h2>
+        <div className="flex gap-2 mb-3">
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="/Volumes/.../my-project"
+            className="flex-1 bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              const v = draft.trim();
+              if (!v) return;
+              addWorkspace(v);
+              setDraft('');
+            }}
+            aria-label="Add default workspace"
+            className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center bg-[var(--color-accent)] text-white rounded-lg hover:opacity-90"
+          >
+            <Plus size={18} />
+          </button>
+        </div>
+        {workspaces.length === 0 ? (
+          <div className="text-sm text-[var(--color-text-dim)]">No default workspaces.</div>
+        ) : (
+          <ul className="list-none p-0 m-0 divide-y divide-[var(--color-border)]">
+            {workspaces.map((p) => (
+              <li key={p} className="flex items-center justify-between py-2">
+                <span className="text-[var(--color-text)] text-sm font-mono truncate min-w-0">{p}</span>
+                <button
+                  type="button"
+                  onClick={() => removeWorkspace(p)}
+                  aria-label={`Remove ${p}`}
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-dim)] hover:text-[var(--color-danger)]"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   );

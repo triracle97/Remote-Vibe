@@ -41,4 +41,10 @@ describe('Settings page', () => {
     fireEvent.click(dark);
     expect(useThemeStore.getState().mode).toBe('dark');
   });
+
+  it('renders Default workspaces section with add input', () => {
+    renderPage();
+    expect(screen.getByRole('heading', { name: /default workspaces/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /add default workspace/i })).toBeDefined();
+  });
 });
