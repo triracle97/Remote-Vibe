@@ -28,13 +28,13 @@ export function HistoryRow({ entry, onClick }: HistoryRowProps): JSX.Element {
   return (
     <button
       type="button"
-      className="history-row"
+      className="history-row flex flex-col gap-0.5 w-full px-3 py-2 min-h-[44px] md:min-h-[36px] mb-0.5 bg-transparent text-[var(--color-text)] border border-transparent rounded text-[13px] text-left cursor-pointer hover:bg-[var(--color-surface)] hover:border-[var(--color-border)]"
       onClick={onClick}
       title={tooltip}
     >
-      <span className="history-row-project">{basenameSafe(entry.projectPath)}</span>
-      <span className="history-row-prompt">{entry.firstPrompt || '(no prompt)'}</span>
-      <span className="history-row-time">{relativeTime(entry.mtime)}</span>
+      <span className="history-row-project text-[var(--color-accent)] font-medium">{basenameSafe(entry.projectPath)}</span>
+      <span className="history-row-prompt text-[var(--color-text-mute)] overflow-hidden text-ellipsis whitespace-nowrap">{entry.firstPrompt || '(no prompt)'}</span>
+      <span className="history-row-time text-[var(--color-text-dim)] text-xs">{relativeTime(entry.mtime)}</span>
     </button>
   );
 }

@@ -6,7 +6,6 @@ import './index.css';
 import './App.css';
 import 'katex/dist/katex.min.css';
 import './features/markdown/markdown.css';
-import './features/history/history.css';
 import './features/profiles/profiles.css';
 
 createRoot(document.getElementById('root')!).render(

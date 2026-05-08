@@ -12,7 +12,6 @@ describe('mobile responsive CSS contract', () => {
   it('stacks the root layout and major panels at phone widths', () => {
     const css = [
       readCss('src/App.css'),
-      readCss('src/features/history/history.css'),
       readCss('src/features/chat/Chat.css'),
       readCss('src/features/file-explorer/FileExplorer.css'),
       readCss('src/features/project-picker/ProjectPicker.css'),
@@ -21,7 +20,7 @@ describe('mobile responsive CSS contract', () => {
     expect(css).toContain('@media (max-width: 720px)');
     expect(css).toMatch(/#root\s*{[^}]*flex-direction:\s*column/s);
     // .session-list width:100% is now handled by Tailwind (w-full md:w-60)
-    expect(css).toMatch(/\.history-panel\s*{[^}]*width:\s*100%/s);
+    // .history-panel width:100% is now handled by Tailwind (max-md:w-full)
     expect(css).toMatch(/\.chat\s*{[^}]*min-height:\s*100dvh/s);
     expect(css).toMatch(/\.file-explorer\s*{[^}]*width:\s*100%/s);
     expect(css).toMatch(/\.picker\s*{[^}]*max-height:\s*calc\(100dvh - 1rem\)/s);
@@ -31,7 +30,6 @@ describe('mobile responsive CSS contract', () => {
     const appCss = readCss('src/App.css');
     const css = [
       appCss,
-      readCss('src/features/history/history.css'),
       readCss('src/features/chat/Chat.css'),
       readCss('src/features/file-explorer/FileExplorer.css'),
     ].join('\n');
