@@ -190,7 +190,7 @@ interface ServerHistoryListMsg {
 interface HistoryEntry {
   agent: 'claude' | 'codex';
   sessionId: string;        // CLI's session uuid (claude: filename without .jsonl; codex: from session_meta.payload.id)
-  projectPath: string;      // ground-truth cwd extracted from file content; falls back to dir-decode
+  projectPath: string;      // ground-truth cwd extracted from file content (entries with no parseable user message are dropped, never surfaced)
   mtime: number;            // ms since epoch
   firstPrompt: string;      // first user message text, truncated to 80 chars
 }
@@ -259,13 +259,14 @@ The intermediate cap of 200 mentioned in earlier drafts was wrong — it must be
 
 1. List `~/.claude/projects/*` directories (each name is an encoded cwd: `/` → `-`). The encoding is irreversible when path segments contain literal `-`, so dir names are NOT used for allowlist filtering.
 2. List `*.jsonl` files inside each dir; collect `{ filePath, mtime }` via `stat`. No prefilter on dir names.
-3. Sort all candidates by mtime desc; take top 50.
-4. For each top-50 entry: read first ~4 KB of the file. Parse line-by-line until a user message is found; extract its `cwd` (ground truth) and first text content (truncated to 80 chars).
+3. Sort all candidates by mtime desc; take **top 75** (over-read margin so allowlist-rejections don't shrink the surfaced list below 50).
+4. For each top-75 entry: read first ~4 KB of the file. Parse line-by-line until a user message is found; extract its `cwd` (ground truth) and first text content (truncated to 80 chars).
 5. Allowlist gate: reject entries whose ground-truth `cwd` is NOT inside `BRIDGE_ALLOWED_DIRS` (realpath + Phase 3 denylist gates). Drop them silently from the result.
 6. If the file has no parseable user message in its first ~4 KB, drop the entry (we can't allowlist-validate without ground truth, so we don't surface it).
-7. Return `[{ agent: 'claude', sessionId: filename without .jsonl, projectPath: groundTruthCwd, mtime, firstPrompt }]`.
+7. Cap the post-filter list at top 50 (still mtime-desc sorted).
+8. Return `[{ agent: 'claude', sessionId: filename without .jsonl, projectPath: groundTruthCwd, mtime, firstPrompt }]`.
 
-This means a few rejected entries can shrink the result below 50. To compensate, scanClaude over-reads top 75 candidates and drops down to 50 after allowlist-filtering. This bounds extra I/O without the prefilter false-negatives that made earlier drafts unsafe.
+The over-read of 75 (vs the surfaced cap of 50) absorbs allowlist-rejections without re-introducing the prefilter false-negatives that made earlier drafts unsafe. If even more are rejected (rare), the surfaced list simply shrinks below 50; the spec does not retry with a larger over-read.
 
 ### `scanCodex`
 
@@ -398,9 +399,11 @@ Click handler                                             ⇣
 `packages/bridge/src/__tests__/`:
 
 - **`history-scanner.test.ts`** — mocked tmpdir with synthetic Claude + Codex layouts:
-  - Top-50 cap holds across a 100-file dir
-  - Sort by mtime desc verified
-  - Allowlist filter: entry under disallowed cwd is dropped (both pre-filter and post-parse ground-truth check)
+  - Top-50 cap holds across a 100-file dir (final surfaced list ≤ 50 mtime-desc)
+  - Sort-then-cap order: a file with the newest mtime sitting at position 90 in directory-walk order still appears in the top-50 (proves stat-all-then-sort-then-cap pipeline)
+  - Allowlist filter: ground-truth `cwd` outside `BRIDGE_ALLOWED_DIRS` → entry dropped (no dir-name pre-filter — allowlist enforced ONLY against file-content `cwd`)
+  - File with no parseable user message in first 4 KB → entry dropped (no ground truth to validate)
+  - Over-read top-75 then cap to 50: if allowlist rejects some, final list can be <50 but never duplicates or jumps order
   - Path-decoding ambiguity: dir name `-foo-bar-baz` with file's user-message `cwd: "/foo-bar/baz"` → ground truth wins
   - Malformed JSONL line: skipped, scan continues
   - First-prompt truncation at 80 chars
