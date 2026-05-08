@@ -1929,20 +1929,29 @@ Expected: 6 new failures.
 
 - [ ] **Step 3: Implement WS handlers**
 
-Inside `packages/bridge/src/websocket.ts`, locate the existing message-dispatch switch (likely a switch on `msg.type`). Add the two new arms:
+`packages/bridge/src/websocket.ts` is function-based, not class-based. The structure is:
+- `interface AttachWsOpts { ... }` — public DI surface (around line 22)
+- `export function attachWebSocket(opts)` — wires up the WS server
+- `async function handleMessage(ws, raw, sessionManager, send, accounts, promptStore, fsApi, imageStore)` — internal dispatcher
+
+To add Phase 5 handlers:
+
+1. Add `historyScanner: HistoryScanner;` to `AttachWsOpts`.
+2. Add a `historyScanner` parameter to `handleMessage` and pass it through from `attachWebSocket` (around line 73 — adjust the existing `void handleMessage(ws, raw, opts.sessionManager, ...)` call to also pass `opts.historyScanner`).
+3. Inside `handleMessage`, add the two new arms to the existing message-dispatch switch:
 
 ```ts
 case 'list_history': {
   try {
-    const result = await this.historyScanner.list();
-    this.send(socket, {
+    const result = await opts.historyScanner.list();
+    send(ws, {
       type: 'history_list',
       claude: result.claude,
       codex: result.codex,
       correlationId: msg.correlationId,
     });
   } catch (err) {
-    this.send(socket, {
+    send(ws, {
       type: 'error',
       code: 'resume_spawn_failed', // or invent a list_history_failed if you prefer
       message: (err as Error).message,
@@ -1953,20 +1962,24 @@ case 'list_history': {
 }
 
 case 'resume_session': {
+  // websocket.ts is function-based: `opts` is AttachWsOpts (extend it to
+  // include `historyScanner`); `send` is the local helper passed into
+  // handleMessage; `mgr` is the local alias for opts.sessionManager (or
+  // call opts.sessionManager directly).
   try {
     let webSessionId: string;
     if ('webSessionId' in msg) {
       // Path 1: bridge-known. SessionManager.resume() looks up registry,
       // re-validates path, spawns Claude / re-instantiates Codex driver.
       webSessionId = msg.webSessionId;
-      await this.sessionManager.resume(webSessionId);
+      await opts.sessionManager.resume(webSessionId);
     } else {
       // Path 2: native history first-resume. Verify the (agent, sessionId)
       // pair via the scanner cache + re-stat the backing file. The scanner
       // returns undefined if either lookup fails.
-      const entry = await this.historyScanner.findEntry(msg.agent, msg.sessionId);
+      const entry = await opts.historyScanner.findEntry(msg.agent, msg.sessionId);
       if (!entry) {
-        this.send(socket, {
+        send(ws, {
           type: 'error',
           code: 'history_session_not_found',
           message: `No history session found for ${msg.agent}:${msg.sessionId}`,
@@ -1974,15 +1987,12 @@ case 'resume_session': {
         });
         return;
       }
-      // SessionManager.resumeFromHistoryEntry() handles allowlist re-check
-      // (against ground-truth cwd), webSessionId minting, registry add,
-      // and Path 1 spawn/instantiate. Throws typed errors on failure
-      // (project_path_disallowed, resume_spawn_failed, claude_resume_rejected).
-      webSessionId = await this.sessionManager.resumeFromHistoryEntry(entry, msg.account ?? null);
-      // Invalidate scanner cache so the newly-resumed entry's mtime refreshes next list().
-      this.historyScanner.invalidateCache();
+      // SessionManager.resumeFromHistoryEntry() handles allowlist re-check,
+      // webSessionId minting, registry add, and Path 1 spawn/instantiate.
+      webSessionId = await opts.sessionManager.resumeFromHistoryEntry(entry, msg.account ?? null);
+      opts.historyScanner.invalidateCache();
     }
-    this.send(socket, {
+    send(ws, {
       type: 'session_resumed',
       webSessionId,
       alive: true,
@@ -1990,9 +2000,9 @@ case 'resume_session': {
     });
   } catch (err) {
     const code = (err as { code?: string }).code ?? 'resume_spawn_failed';
-    // exactOptionalPropertyTypes: omit `sessionId` when not present rather
-    // than passing `undefined` (which would not satisfy the optional-prop type).
-    this.send(socket, {
+    // exactOptionalPropertyTypes-safe: conditional spread instead of
+    // `sessionId: undefined`.
+    send(ws, {
       type: 'error',
       code: code as never,
       message: (err as Error).message,
@@ -2345,6 +2355,17 @@ vi.mock('../../store/sessions', () => ({
     getState: vi.fn(() => ({ resumeFromHistory: vi.fn() })),
   },
 }));
+
+// HistoryPanel uses useNavigate() from react-router-dom; mock it so tests
+// don't need a Router wrapper. The mock returns a plain function so calls
+// to navigate('/session/<id>') no-op silently.
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router-dom')>();
+  return {
+    ...actual,
+    useNavigate: () => vi.fn(),
+  };
+});
 
 import { useSessionsStore } from '../../store/sessions';
 
