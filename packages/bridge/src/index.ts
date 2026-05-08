@@ -18,6 +18,10 @@ import { FsApi } from './fs-api.js';
 import { ImageStore } from './image-store.js';
 import { HistoryScanner } from './history-scanner.js';
 import { SessionRegistry } from './session-registry.js';
+import { ProfileStore } from './profile-store.js';
+import { SlashCommandsScanner } from './slash-commands.js';
+import { FileSearch } from './file-search.js';
+import { Notifier } from './notifier.js';
 
 async function main(): Promise<void> {
   const cfg = loadEnv(process.env);
@@ -70,6 +74,36 @@ async function main(): Promise<void> {
   const registry = new SessionRegistry(join('.bridge', 'sessions.json'));
   await registry.load();
 
+  // Phase 6: profiles
+  const profilesPath = process.env.BRIDGE_PROFILES_FILE ?? join('.bridge', 'profiles.json');
+  const profileStore = new ProfileStore(profilesPath);
+  await profileStore.load();
+
+  // Phase 6: slash commands scanner
+  const slashCommands = new SlashCommandsScanner({ homeDir: homedir() });
+
+  // Phase 6: file search
+  const fileSearch = new FileSearch({
+    getDirsForSession: (sessionId: string) => {
+      const entry = registry.get(sessionId);
+      if (!entry) return [];
+      return [entry.projectPath, ...entry.additionalDirs];
+    },
+    ...(process.env.BRIDGE_FILE_SEARCH_CAP
+      ? { fileCap: Number(process.env.BRIDGE_FILE_SEARCH_CAP) }
+      : {}),
+  });
+
+  // Phase 6: telegram notifier (no-op if env unset)
+  const notifier = new Notifier({
+    ...(process.env.BRIDGE_TELEGRAM_BOT_TOKEN ? { token: process.env.BRIDGE_TELEGRAM_BOT_TOKEN } : {}),
+    ...(process.env.BRIDGE_TELEGRAM_CHAT_ID ? { chatId: process.env.BRIDGE_TELEGRAM_CHAT_ID } : {}),
+    minDurationMs: process.env.BRIDGE_NOTIFY_MIN_DURATION_MS
+      ? Number(process.env.BRIDGE_NOTIFY_MIN_DURATION_MS)
+      : 180_000,
+    ...(process.env.BRIDGE_PUBLIC_URL ? { publicUrl: process.env.BRIDGE_PUBLIC_URL } : {}),
+  });
+
   const sessionManager = new SessionManager({
     allowedDirs: cfg.allowedDirs,
     bufferCap: 1000,
@@ -79,6 +113,7 @@ async function main(): Promise<void> {
     accounts,
     imageStore,
     registry,
+    notifier,
   });
 
   const handler = createHttpHandler({
@@ -114,6 +149,9 @@ async function main(): Promise<void> {
     fsApi,
     imageStore,
     historyScanner,
+    profileStore,
+    slashCommands,
+    fileSearch,
   });
 
   await new Promise<void>((res, rej) => {
