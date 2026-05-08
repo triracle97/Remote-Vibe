@@ -28,6 +28,7 @@ Make any past Claude or Codex CLI session resumable from the web UI. Three coupl
 - Bulk-resume, archive, or per-row delete-history actions.
 - Surfacing bridge's own transcripts (`.bridge/transcripts/*.jsonl`) as history rows. Bridge transcripts re-appear automatically via the persisted registry's live-sessions list after restart; they're not native CLI sessions.
 - Multi-account selection UI on resume — Codex falls back to default profile if the original session had none recorded.
+- **Native-history JSONL → bridge transcript import.** When a user resumes a native CLI session via the History panel, the bridge does NOT import the CLI's existing JSONL into the bridge's transcript format. The chat view starts empty in the UI; the CLI itself retains context internally so user-visible behavior on the next send works (Claude/Codex respond with full memory). Importing native CLI events into bridge protocol events is a future phase (schema mapping per agent is non-trivial: Claude's CLI events vs bridge stream events differ; Codex's events vs bridge events differ). Tracked as Phase 6 candidate.
 
 ## 3. Architecture
 
@@ -101,6 +102,17 @@ Two paths converge into the same `resume()` flow on the bridge. Each is asymmetr
 - Web routes to `/session/<webSessionId>`.
 
 The same web sessionId is preserved across resumes for Path 1 — URL stays stable, transcript JSONL appends, reload-replay continues to work.
+
+### Capturing the CLI session id at spawn time (registry seed)
+
+Path 1 (bridge-known resume) only works if the registry entry contains a valid `claudeSessionId` or `codexSessionId`. Phase 5 must therefore extend the existing fresh-session-spawn flow (Phases 1-2) to capture that id and persist it. Concrete contract:
+
+- **On first spawn of a new bridge session** (existing `+ New session` flow): bridge creates a registry entry up-front with the known fields (`webSessionId`, `agent`, `projectPath`, `transcriptPath`, `createdAt`, `account`) and `claudeSessionId/codexSessionId = null`. Persists registry.
+- **Claude**: when the ClaudeDriver's stream emits the `system` init event (Phase 1's existing parser already extracts the `session_id` field), bridge writes the captured value into the registry entry (`claudeSessionId = <captured>`) and persists. This happens within the first turn, well before any death/restart.
+- **Codex**: when the CodexDriver's first turn produces the `session_meta` event (Phase 2's existing parser already extracts `payload.id` from the first JSONL line), bridge writes the captured value (`codexSessionId = <captured>`) and persists.
+- **If a session dies before the id arrives** (rare: Claude crashes during init): the registry entry has `claudeSessionId = null`. Resume cannot work for that entry — the UI surfaces a `resume_failed` with `code: 'cli_session_id_unknown'` and CTA "[Open new session]". Acceptable degradation; logged to bridge stderr.
+
+This contract integrates with the existing P1/P2 driver event-handling code — no new driver state, just a registry mutation on the same event the parser already inspects. Plan task: extend `SessionManager.handleDriverEvent()` (or the equivalent integration point) to call `sessionRegistry.update(webSessionId, { claudeSessionId | codexSessionId })`.
 
 ### Persisted registry
 
@@ -212,6 +224,7 @@ interface ServerErrorMsg {
     | 'history_session_not_found'   // (agent, sessionId) not in scanner cache or filesystem
     | 'project_path_disallowed'     // ground-truth cwd outside BRIDGE_ALLOWED_DIRS
     | 'project_path_missing'        // projectPath no longer exists on disk
+    | 'cli_session_id_unknown'      // registry entry never captured the CLI's session id (rare: child died during init)
     | /* existing codes... */;
   message: string;
   sessionId?: string;               // present when the error is scoped to a specific session
@@ -433,8 +446,8 @@ Operator:
 
 1. Boot bridge with old transcripts + native CLI history already on disk.
 2. Open History panel → confirm both Claude + Codex tabs populated; rows show project + first-prompt preview + relative time. Tooltip shows full path + ISO timestamp.
-3. Click Claude history row from a different project → routes to `/session/<new-id>`; chat shows replayed turns; input box live; send a message → Claude continues conversation in original cwd.
-4. Click Codex history row → similar; Codex resumes via `codex exec resume`.
+3. Click Claude history row from a different project → routes to `/session/<new-id>` with an EMPTY chat view (the native CLI history JSONL is NOT imported into bridge transcripts in Phase 5; that's deferred). Input box is live. Send a message → Claude responds with full memory of the prior conversation (because `claude --resume` loads context inside the CLI), demonstrating the resume actually preserved context even though the UI starts blank.
+4. Click Codex history row → similar; Codex resumes via `codex exec resume`. Empty bridge-side chat; first send triggers `codex exec resume` and the response shows Codex retains context.
 5. Open an existing live session, kill bridge, restart bridge, reload web → session shows as dead, transcript replayed silently (no error banner), `[Resume]` button visible. Click → spawns Claude with `--resume`; chat continues.
 6. Send message into a dead session WITHOUT clicking Resume → inline auto-prompt with "Resume + send" CTA. Click → resume + first message flushes; subsequent typed messages stay queued in input.
 7. Manually delete a history row's JSONL file from disk; click Resume on that row in the UI → clean inline error notice; history list auto-refreshes.
