@@ -48,12 +48,13 @@ describe('parseCookie', () => {
 });
 
 describe('buildSessionCookie', () => {
-  it('returns cookie with HttpOnly, SameSite=Strict, Path=/', () => {
+  it('returns persistent cookie with HttpOnly, SameSite=Strict, Path=/', () => {
     const c = buildSessionCookie(T);
     expect(c).toContain(`bridge_session=${T}`);
     expect(c).toContain('HttpOnly');
     expect(c).toContain('SameSite=Strict');
     expect(c).toContain('Path=/');
+    expect(c).toContain('Max-Age=2592000');
     expect(c).not.toContain('Secure');
   });
 });

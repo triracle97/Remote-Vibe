@@ -1,6 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 
+const SESSION_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+
 export function tokensMatch(a: string, b: string): boolean {
   // JS string length is in UTF-16 code units, but timingSafeEqual requires
   // equal byte lengths. Compare on Buffer length so a non-ASCII candidate
@@ -27,7 +29,7 @@ export function parseCookie(header: string | undefined): Record<string, string> 
 }
 
 export function buildSessionCookie(token: string): string {
-  return `bridge_session=${token}; HttpOnly; SameSite=Strict; Path=/`;
+  return `bridge_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_COOKIE_MAX_AGE_SECONDS}`;
 }
 
 export function isOriginAllowed(origin: string | undefined, host: string | undefined): boolean {
