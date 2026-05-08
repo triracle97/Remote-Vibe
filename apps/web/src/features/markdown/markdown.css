@@ -1,1 +1,55 @@
-/* Stub — real styles land in Task 7. */
+.md-rendered { color: #ddd; line-height: 1.45; word-break: break-word; }
+.md-rendered h1 { font-size: 1.4rem; margin: 0.5rem 0 0.4rem; border-bottom: 1px solid #2a2a2a; padding-bottom: 0.25rem; }
+.md-rendered h2 { font-size: 1.2rem; margin: 0.5rem 0 0.4rem; }
+.md-rendered h3 { font-size: 1.05rem; margin: 0.4rem 0 0.3rem; }
+.md-rendered h4, .md-rendered h5, .md-rendered h6 { font-size: 0.95rem; margin: 0.4rem 0 0.3rem; color: #aaa; }
+.md-rendered p { margin: 0.4rem 0; }
+.md-rendered ul, .md-rendered ol { margin: 0.4rem 0; padding-left: 1.5rem; }
+.md-rendered li { margin: 0.15rem 0; }
+.md-rendered blockquote { border-left: 3px solid #444; padding: 0.1rem 0.6rem; margin: 0.4rem 0; color: #aaa; }
+.md-rendered hr { border: 0; border-top: 1px solid #2a2a2a; margin: 0.6rem 0; }
+.md-rendered a { color: #6fa8ff; text-decoration: none; }
+.md-rendered a:hover { text-decoration: underline; }
+.md-rendered table { border-collapse: collapse; margin: 0.4rem 0; }
+.md-rendered th, .md-rendered td { border: 1px solid #2a2a2a; padding: 0.2rem 0.5rem; }
+.md-rendered th { background: #1a1a1a; font-weight: 600; }
+
+.md-inline-code {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.85em;
+  background: #1a1a1a;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  border: 1px solid #2a2a2a;
+}
+
+.md-code-block {
+  position: relative;
+  background: #0d1117;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 0.5rem 0;
+}
+.md-code-block pre { margin: 0; padding: 0.7rem 0.8rem; overflow-x: auto; font-family: ui-monospace, Menlo, monospace; font-size: 0.82rem; }
+.md-code-block pre code { background: transparent; padding: 0; border: 0; font-size: inherit; }
+.md-code-lang {
+  position: absolute; top: 0.2rem; left: 0.6rem;
+  font-size: 0.65rem; color: #888; text-transform: lowercase; letter-spacing: 0.04em;
+}
+.md-code-copy {
+  position: absolute; top: 0.2rem; right: 0.4rem;
+  background: #1f1f1f; color: #ccc; border: 1px solid #2a2a2a;
+  width: 22px; height: 22px; padding: 0;
+  font-size: 0.75rem; cursor: pointer; border-radius: 3px;
+}
+.md-code-copy:hover { background: #2a2a2a; }
+.md-code-dev-caption {
+  padding: 0.2rem 0.6rem 0.4rem; color: #888; font-size: 0.7rem; font-style: italic;
+}
+
+.md-mermaid { background: #0d1117; padding: 0.6rem; border: 1px solid #2a2a2a; border-radius: 6px; margin: 0.5rem 0; overflow-x: auto; }
+.md-mermaid svg { max-width: 100%; height: auto; }
+.md-mermaid-error { background: #2a1010; border: 1px solid #4a1a1a; border-radius: 6px; padding: 0.5rem; margin: 0.5rem 0; }
+.md-mermaid-error-caption { color: #f88; font-size: 0.75rem; margin-bottom: 0.4rem; }
+.md-mermaid-error pre { background: #1a0a0a; color: #ddd; margin: 0; padding: 0.4rem 0.6rem; font-size: 0.8rem; overflow-x: auto; }
