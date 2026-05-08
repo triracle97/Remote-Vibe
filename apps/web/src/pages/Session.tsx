@@ -32,6 +32,15 @@ export function Session({ client }: SessionProps): JSX.Element {
     if (id) setActive(id);
   }, [id, setActive]);
 
+  useEffect(() => {
+    document.title = session?.name
+      ? `${session.name} — mac-remote-terminal`
+      : 'mac-remote-terminal';
+    return () => {
+      document.title = 'mac-remote-terminal';
+    };
+  }, [session?.name]);
+
   // Reset file-explorer state when switching sessions.
   useEffect(() => {
     resetExplorer();

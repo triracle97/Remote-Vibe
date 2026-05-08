@@ -139,3 +139,12 @@ body { margin: 0; }
 }
 .session-rename-pencil:hover { background: #2a2a2a; border-radius: 3px; }
 .session-rename-error { color: #f88; font-size: 0.7rem; }
+
+/* Session header name + pencil (T14) */
+.session-header-name {
+  color: #aaa; font-size: 0.85rem; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; max-width: 14rem;
+}
+.session-header-pencil {
+  flex-shrink: 0;
+}

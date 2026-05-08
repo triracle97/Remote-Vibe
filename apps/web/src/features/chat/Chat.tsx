@@ -5,6 +5,7 @@ import { useSessionsStore } from '../../store/sessions';
 import { MessageBubble } from './MessageBubble';
 import { InputBox } from './InputBox';
 import { ResumePrompt } from './ResumePrompt';
+import { SessionRenameInline } from '../session-list/SessionRenameInline';
 import { useImagePaste } from '../image-attach/useImagePaste';
 import './Chat.css';
 
@@ -37,15 +38,17 @@ export function Chat({
   const imagePaste = useImagePaste();
   const imagesEnabled = session.agent === 'claude' && session.alive && !inputDisabled;
   const [dragOver, setDragOver] = useState(false);
+  const [renamingHeader, setRenamingHeader] = useState(false);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [session.events]);
 
-  // Reset images when switching sessions.
+  // Reset images and rename state when switching sessions.
   useEffect(() => {
     imagePaste.clear();
     setDragOver(false);
+    setRenamingHeader(false);
   }, [session.sessionId]);
 
   const onDragOver = (e: DragEvent<HTMLDivElement>): void => {
@@ -68,7 +71,28 @@ export function Chat({
     <div className="chat" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div className="chat-header">
         <code>{session.projectPath}</code>
-        <span className="chat-header-spacer">session {session.sessionId.slice(0, 8)}</span>
+        {renamingHeader ? (
+          <SessionRenameInline
+            sessionId={session.sessionId}
+            initialName={session.name ?? ''}
+            onClose={() => setRenamingHeader(false)}
+          />
+        ) : (
+          <>
+            <span className="session-header-name">
+              {session.name ?? session.sessionId.slice(0, 8)}
+            </span>
+            <button
+              type="button"
+              className="session-rename-pencil session-header-pencil"
+              onClick={(e) => { e.stopPropagation(); setRenamingHeader(true); }}
+              aria-label="Rename session"
+            >
+              ✏️
+            </button>
+          </>
+        )}
+        <span className="chat-header-spacer" />
         {onToggleDrawer && (
           <button
             type="button"
