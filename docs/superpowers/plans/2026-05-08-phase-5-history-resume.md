@@ -1062,10 +1062,16 @@ git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(bridge): HistoryS
 ## Task 4: Driver `cli_session_id_captured` events
 
 **Files:**
+- Modify: `packages/bridge/src/parser.ts` (extend Claude parser to emit `session_id` from system init events)
 - Modify: `packages/bridge/src/codex-process.ts`
 - Modify: `packages/bridge/src/claude-process.ts`
+- Modify: `packages/bridge/src/__tests__/parser.test.ts` (test the new parser branch)
 - Modify: `packages/bridge/src/__tests__/codex-process.test.ts` (or equivalent — see Step 1)
 - Modify: `packages/bridge/src/__tests__/claude-process.test.ts`
+
+**Important parser context** (read before editing):
+- Codex parser (`codex-parser.ts`) ALREADY returns `{ kind: 'session_id'; id }` for lines shaped `{type:'session_init', session_id:'<uuid>'}`. No parser change needed for Codex.
+- Claude parser (`parser.ts`) currently returns `null` for `type: 'system'` lines. We need to extend the return type to optionally yield `{ kind: 'session_id'; id }` for the system init line that carries Claude's `session_id`. This is the parser change in this task.
 
 The drivers gain a single new EventEmitter event so the SessionManager can write CLI session ids into the registry. Pure additive change — existing event paths unchanged.
 
@@ -1087,26 +1093,26 @@ Both drivers extend `EventEmitter` (per `AgentDriver` interface in session.ts). 
 ```ts
 // Inside the existing describe('CodexDriver', ...) block (or top-level):
 
-it('emits cli_session_id when codex parser yields a session_id line', async () => {
-  // Use whatever test harness the existing tests use to drive a CodexDriver;
-  // the typical pattern is to construct the driver, feed simulated stdout
-  // bytes, and listen for emitted events.
+it('emits cli_session_id when codex parser yields a session_init line', async () => {
+  // Codex parser (codex-parser.ts) reads `{type:'session_init', session_id:'<uuid>'}`
+  // and returns `{ kind: 'session_id', id }`. The driver code-path that branches
+  // on `'id' in parsed` (codex-process.ts:128) is what we add the new emit to.
   const driver = makeCodexDriver(/* whatever args the existing tests use */);
   const captured: string[] = [];
   driver.on('cli_session_id', (id: string) => { captured.push(id); });
 
-  await feedStdout(driver, JSON.stringify({ id: 'codex-uuid-aaa' }) + '\n');
+  await feedStdout(driver, JSON.stringify({ type: 'session_init', session_id: 'codex-uuid-aaa' }) + '\n');
 
   expect(captured).toEqual(['codex-uuid-aaa']);
 });
 
-it('emits cli_session_id only ONCE per driver lifetime even if session_id line repeats', async () => {
+it('emits cli_session_id only ONCE per driver lifetime even if session_init line repeats', async () => {
   const driver = makeCodexDriver(/* ... */);
   const captured: string[] = [];
   driver.on('cli_session_id', (id: string) => { captured.push(id); });
 
-  await feedStdout(driver, JSON.stringify({ id: 'codex-uuid-aaa' }) + '\n');
-  await feedStdout(driver, JSON.stringify({ id: 'codex-uuid-bbb' }) + '\n');
+  await feedStdout(driver, JSON.stringify({ type: 'session_init', session_id: 'codex-uuid-aaa' }) + '\n');
+  await feedStdout(driver, JSON.stringify({ type: 'session_init', session_id: 'codex-uuid-bbb' }) + '\n');
 
   expect(captured).toEqual(['codex-uuid-aaa']);
 });
@@ -1117,12 +1123,14 @@ If `makeCodexDriver` and `feedStdout` helpers don't exist in the existing test f
 Append an analogous test pair to `claude-process.test.ts` for Claude's init event:
 
 ```ts
-it('emits cli_session_id when Claude system init event arrives', async () => {
+it('emits cli_session_id when Claude system init event arrives (relies on Step 5a parser change)', async () => {
   const driver = makeClaudeDriver(/* ... */);
   const captured: string[] = [];
   driver.on('cli_session_id', (id: string) => { captured.push(id); });
 
-  // Claude's system init event shape — adjust to match the existing fixture.
+  // Claude's `--output-format stream-json` init line. The exact field path
+  // may need adjustment — verify against an actual Claude init line in the
+  // project's existing fixtures.
   await feedStdout(driver, JSON.stringify({
     type: 'system',
     subtype: 'init',
@@ -1132,7 +1140,7 @@ it('emits cli_session_id when Claude system init event arrives', async () => {
   expect(captured).toEqual(['claude-uuid-xyz']);
 });
 
-it('emits cli_session_id only ONCE per driver lifetime', async () => {
+it('emits cli_session_id only ONCE per Claude driver lifetime', async () => {
   const driver = makeClaudeDriver(/* ... */);
   const captured: string[] = [];
   driver.on('cli_session_id', (id: string) => { captured.push(id); });
@@ -1183,34 +1191,65 @@ if ('id' in parsed) {
 
 The `if (this.codexSessionId === null)` guard ensures the second test (idempotent emission) passes. Existing `continue` preserves the no-upstream-event-emit behavior for downstream consumers.
 
-- [ ] **Step 5: Implement claude-process.ts addition**
+- [ ] **Step 5a: Extend `parser.ts` to surface Claude session id**
 
-Locate the parser/emission site for Claude's `system` init event. The existing code likely does something like:
+Current shape (parser.ts:70-71):
+```ts
+case 'system':
+  return null;
+```
+
+Update the `AgentEvent` / parser return type to include a session-id discriminant alongside the existing event kinds, mirroring `codex-parser.ts:18`'s `CodexParseResult` pattern. Approach: keep `AgentEvent` unchanged but widen the parser's return type to `AgentEvent | { kind: 'session_id'; id: string } | null`. Then:
 
 ```ts
-const parsed = parseClaudeLine(line);
-if (parsed.kind === 'system_init') {
-  // ... existing handling
-  this.emit('event', { kind: 'system', event: 'session_created', /* ... */ });
+case 'system': {
+  // Claude's `--output-format stream-json` system init line carries
+  // `session_id`; surface it as a typed result for the driver to capture.
+  if (
+    typeof raw.subtype === 'string' &&
+    raw.subtype === 'init' &&
+    typeof raw.session_id === 'string'
+  ) {
+    return { kind: 'session_id', id: raw.session_id };
+  }
+  return null;
 }
 ```
 
-Augment to:
+The exact field path (`subtype === 'init'`, `session_id`) should be verified against an actual Claude init line in the project's existing fixtures or by running `claude -p --output-format stream-json` once. Adapt accordingly.
+
+Add a parser test in `packages/bridge/src/__tests__/parser.test.ts`:
+
+```ts
+it('returns session_id discriminant for Claude system init line', () => {
+  const line = JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-uuid-xyz' });
+  const ev = parseClaudeLine(line);
+  expect(ev).toEqual({ kind: 'session_id', id: 'claude-uuid-xyz' });
+});
+```
+
+- [ ] **Step 5b: Implement claude-process.ts addition**
+
+Locate where `parseClaudeLine()` is called and its result is dispatched (likely a switch on `parsed.kind`). Add a new branch BEFORE the existing kind-handling that captures `session_id`:
 
 ```ts
 const parsed = parseClaudeLine(line);
-if (parsed.kind === 'system_init') {
-  if (this.claudeSessionIdEmitted !== true && typeof parsed.sessionId === 'string') {
-    this.emit('cli_session_id', parsed.sessionId);
+if (parsed === null) continue;
+
+if (parsed.kind === 'session_id') {
+  if (!this.claudeSessionIdEmitted) {
+    this.emit('cli_session_id', parsed.id);
     this.claudeSessionIdEmitted = true;
   }
-  // ... existing handling
+  continue; // do NOT pass through to the upstream `event` channel
 }
+
+// ... existing kind-dispatch code (assistant_text, stream_delta, tool_use, ...)
 ```
 
-Add the `claudeSessionIdEmitted` flag as a class field initialized to `false` (mirrors the codex driver's pattern).
+Add `private claudeSessionIdEmitted = false;` as a class field (mirrors the codex driver's pattern).
 
-If the existing parser returns the session id under a different field name, adjust accordingly — the contract here is "emit exactly once per driver lifetime when the CLI's session id first becomes known."
+The contract: emit exactly once per driver lifetime when Claude's session id first becomes known, regardless of how many init lines arrive.
 
 - [ ] **Step 6: Run tests — expect PASS**
 
@@ -1223,8 +1262,8 @@ Expected: 4 new tests pass; existing tests unaffected.
 - [ ] **Step 7: Commit**
 
 ```bash
-git -C /Volumes/WDSSD/Code/mac-remote-terminal add packages/bridge/src/codex-process.ts packages/bridge/src/claude-process.ts packages/bridge/src/__tests__/codex-process.test.ts packages/bridge/src/__tests__/claude-process.test.ts
-git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(bridge): drivers emit cli_session_id event on first capture (idempotent)"
+git -C /Volumes/WDSSD/Code/mac-remote-terminal add packages/bridge/src/parser.ts packages/bridge/src/__tests__/parser.test.ts packages/bridge/src/codex-process.ts packages/bridge/src/claude-process.ts packages/bridge/src/__tests__/codex-process.test.ts packages/bridge/src/__tests__/claude-process.test.ts
+git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(bridge): parser emits session_id; drivers emit cli_session_id (idempotent)"
 ```
 
 ---
