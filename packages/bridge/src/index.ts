@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { existsSync } from 'node:fs';
 import { realpath as fsRealpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -17,6 +17,7 @@ import { PromptStore } from './prompt-store.js';
 import { FsApi } from './fs-api.js';
 import { ImageStore } from './image-store.js';
 import { HistoryScanner } from './history-scanner.js';
+import { SessionRegistry } from './session-registry.js';
 
 async function main(): Promise<void> {
   const cfg = loadEnv(process.env);
@@ -66,6 +67,9 @@ async function main(): Promise<void> {
   const fsApi = new FsApi({ allowedDirs: cfg.allowedDirs });
   const imageStore = new ImageStore({ dataDir: cfg.dataDir });
 
+  const registry = new SessionRegistry(join('.bridge', 'sessions.json'));
+  await registry.load();
+
   const sessionManager = new SessionManager({
     allowedDirs: cfg.allowedDirs,
     bufferCap: 1000,
@@ -74,6 +78,7 @@ async function main(): Promise<void> {
     promptStore,
     accounts,
     imageStore,
+    registry,
   });
 
   const handler = createHttpHandler({
