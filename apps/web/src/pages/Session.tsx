@@ -15,6 +15,8 @@ interface SessionProps {
   client: BridgeClient;
 }
 
+type MobileNavTab = 'sessions' | 'history';
+
 export function Session({ client }: SessionProps): JSX.Element {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -27,6 +29,8 @@ export function Session({ client }: SessionProps): JSX.Element {
   const newSession = useNewSession(client);
   const resetExplorer = useFileExplorerStore((s) => s.reset);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [mobileNavTab, setMobileNavTab] = useState<MobileNavTab>('sessions');
 
   useEffect(() => {
     if (id) setActive(id);
@@ -92,6 +96,11 @@ export function Session({ client }: SessionProps): JSX.Element {
   }
 
   const sessions = order.map((sid) => sessionsMap[sid]!).filter((s) => s !== undefined);
+  const closeMobileNav = (): void => setMobileNavOpen(false);
+  const openMobileNav = (): void => {
+    setMobileNavTab('sessions');
+    setMobileNavOpen(true);
+  };
 
   return (
     <>
@@ -100,6 +109,7 @@ export function Session({ client }: SessionProps): JSX.Element {
         activeId={id ?? null}
         onSelect={(nid) => navigate(`/session/${nid}`)}
         onNewSession={newSession.open}
+        onAfterSelect={closeMobileNav}
       />
       <HistoryPanel />
       {session && (
@@ -125,10 +135,58 @@ export function Session({ client }: SessionProps): JSX.Element {
           }
           onToggleDrawer={() => setDrawerOpen((o) => !o)}
           drawerOpen={drawerOpen}
+          onOpenMobileNav={openMobileNav}
           banner={transcriptOnly ? 'transcript-only view (session no longer live)' : null}
           errorBanner={lastError}
           inputDisabled={transcriptOnly}
         />
+      )}
+      {mobileNavOpen && (
+        <div className="mobile-nav-shell">
+          <button
+            type="button"
+            className="mobile-nav-backdrop"
+            aria-label="Close mobile navigation"
+            onClick={closeMobileNav}
+          />
+          <aside className="mobile-nav-drawer" role="dialog" aria-label="Mobile navigation">
+            <div className="mobile-nav-header">
+              <span>Navigation</span>
+              <button type="button" onClick={closeMobileNav} aria-label="Close mobile navigation">
+                ×
+              </button>
+            </div>
+            <div className="mobile-nav-tabs" role="tablist" aria-label="Mobile navigation sections">
+              <button
+                type="button"
+                className={mobileNavTab === 'sessions' ? 'active' : ''}
+                onClick={() => setMobileNavTab('sessions')}
+              >
+                Sessions
+              </button>
+              <button
+                type="button"
+                className={mobileNavTab === 'history' ? 'active' : ''}
+                onClick={() => setMobileNavTab('history')}
+              >
+                History
+              </button>
+            </div>
+            <div className="mobile-nav-content">
+              {mobileNavTab === 'sessions' ? (
+                <SessionList
+                  sessions={sessions}
+                  activeId={id ?? null}
+                  onSelect={(nid) => navigate(`/session/${nid}`)}
+                  onNewSession={newSession.open}
+                  onAfterSelect={closeMobileNav}
+                />
+              ) : (
+                <HistoryPanel defaultOpen onAfterResume={closeMobileNav} />
+              )}
+            </div>
+          </aside>
+        </div>
       )}
       {!session && transcriptOnly && (
         <main className="home-main">
