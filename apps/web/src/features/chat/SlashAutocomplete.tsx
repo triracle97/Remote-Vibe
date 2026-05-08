@@ -118,14 +118,17 @@ export const SlashAutocomplete = forwardRef<SlashAutocompleteHandle, SlashAutoco
     if (!open) return null;
 
     return (
-      <div className="autocomplete-popup slash-autocomplete" role="listbox" aria-label="Slash commands">
+      <div className="autocomplete-popup slash-autocomplete absolute bottom-full left-0 right-0 mb-2 max-h-[40vh] overflow-y-auto z-30 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-2xl max-md:fixed max-md:left-0 max-md:right-0 max-md:bottom-0 max-md:max-h-[50vh] max-md:rounded-t-2xl max-md:rounded-b-none max-md:mb-0" role="listbox" aria-label="Slash commands">
         {filtered.map((c, i) => (
           <button
             key={c.name}
             type="button"
             role="option"
             aria-selected={i === active}
-            className={`autocomplete-row ${i === active ? 'active' : ''}`}
+            className={[
+              'autocomplete-row flex gap-2 items-center w-full min-h-[44px] max-md:min-h-[56px] px-3 py-2 bg-transparent text-[var(--color-text)] border-0 border-b border-[var(--color-border)] last:border-b-0 text-left text-sm cursor-pointer hover:bg-[var(--color-surface-2)]',
+              i === active ? 'active bg-[var(--color-surface-2)]' : '',
+            ].join(' ')}
             onMouseEnter={() => setActive(i)}
             // Use onMouseDown so click fires before textarea blur swallows
             // the event on mobile / certain keyboard layouts.
@@ -134,9 +137,9 @@ export const SlashAutocomplete = forwardRef<SlashAutocompleteHandle, SlashAutoco
               insert(c);
             }}
           >
-            <span className="autocomplete-row-primary">{c.name}</span>
-            <span className="autocomplete-row-source">[{c.source}]</span>
-            {c.description && <span className="autocomplete-row-desc">{c.description}</span>}
+            <span className="autocomplete-row-primary flex flex-col gap-0.5 min-w-0 flex-1 text-[var(--color-accent)] font-mono">{c.name}</span>
+            <span className="autocomplete-row-source text-[var(--color-text-dim)] text-[10px]">[{c.source}]</span>
+            {c.description && <span className="autocomplete-row-desc text-[var(--color-text-mute)] flex-1 truncate">{c.description}</span>}
           </button>
         ))}
       </div>

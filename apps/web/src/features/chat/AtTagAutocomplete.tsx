@@ -99,14 +99,17 @@ export const AtTagAutocomplete = forwardRef<AtTagAutocompleteHandle, AtTagAutoco
     if (!open) return null;
 
     return (
-      <div className="autocomplete-popup at-tag-autocomplete" role="listbox" aria-label="File suggestions">
+      <div className="autocomplete-popup at-tag-autocomplete absolute bottom-full left-0 right-0 mb-2 max-h-[40vh] overflow-y-auto z-30 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-2xl max-md:fixed max-md:left-0 max-md:right-0 max-md:bottom-[calc(8rem+env(safe-area-inset-bottom))] max-md:max-h-[min(42vh,18rem)] max-md:rounded-t-2xl max-md:rounded-b-none max-md:mb-0 max-md:pb-[env(safe-area-inset-bottom)]" role="listbox" aria-label="File suggestions">
         {visible.map((h, i) => (
           <button
             key={h.fullPath}
             type="button"
             role="option"
             aria-selected={i === active}
-            className={`autocomplete-row ${i === active ? 'active' : ''}`}
+            className={[
+              'autocomplete-row flex gap-2 items-center w-full min-h-[44px] max-md:min-h-[56px] px-3 py-2 bg-transparent text-[var(--color-text)] border-0 border-b border-[var(--color-border)] last:border-b-0 text-left text-sm cursor-pointer hover:bg-[var(--color-surface-2)]',
+              i === active ? 'active bg-[var(--color-surface-2)]' : '',
+            ].join(' ')}
             onMouseEnter={() => setActive(i)}
             onMouseDown={(e) => {
               e.preventDefault();
@@ -114,18 +117,18 @@ export const AtTagAutocomplete = forwardRef<AtTagAutocompleteHandle, AtTagAutoco
             }}
             title={h.fullPath}
           >
-            <span className="autocomplete-row-primary">
-              <span className="autocomplete-row-head">
-                <span className="autocomplete-row-title">{filenameFor(h.fullPath)}</span>
-                <span className="autocomplete-row-insert">{h.insertText}</span>
+            <span className="autocomplete-row-primary flex flex-col gap-0.5 min-w-0 flex-1 text-[var(--color-accent)] font-mono">
+              <span className="autocomplete-row-head flex items-center gap-2 min-w-0">
+                <span className="autocomplete-row-title flex-1 min-w-0 truncate text-[#dbe8ff]">{filenameFor(h.fullPath)}</span>
+                <span className="autocomplete-row-insert text-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] border border-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] rounded-full px-1.5 py-[1px] text-[10px] max-w-[45%] truncate">{h.insertText}</span>
               </span>
-              <span className="autocomplete-row-path">{h.fullPath}</span>
+              <span className="autocomplete-row-path text-[var(--color-text-dim)] text-[11px] truncate font-mono">{h.fullPath}</span>
             </span>
-            <span className="autocomplete-row-time">{relTime(h.mtime)}</span>
+            <span className="autocomplete-row-time text-[var(--color-text-dim)] text-[10px] ml-auto max-md:self-start max-md:pt-0.5">{relTime(h.mtime)}</span>
           </button>
         ))}
         {truncated && (
-          <div className="autocomplete-truncated">
+          <div className="autocomplete-truncated px-3 py-2 text-[var(--color-text-dim)] text-xs border-t border-[var(--color-border)]">
             (showing first {visible.length} of many; refine query)
           </div>
         )}
