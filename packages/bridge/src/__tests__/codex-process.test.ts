@@ -79,13 +79,13 @@ describe('CodexProcess', () => {
     expect(cmd2).toBe('codex');
     expect(args2).toEqual([
       'exec',
-      'resume',
-      'sess-1',
       '--json',
       '--dangerously-bypass-approvals-and-sandbox',
       '--skip-git-repo-check',
       '-C',
       '/Users/test/proj',
+      'resume',
+      'sess-1',
       'second',
     ]);
   });

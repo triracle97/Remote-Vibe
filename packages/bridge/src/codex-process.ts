@@ -38,7 +38,7 @@ export class CodexProcess extends EventEmitter {
   /**
    * The Codex CLI session uuid for this driver. Mutates from null → uuid on
    * first session_id event from the CLI; once set, sendUserText switches to
-   * `codex exec resume <id>` so the CLI continues the same conversation.
+   * `codex exec [opts] resume <id>` so the CLI continues the same conversation.
    */
   private codexSessionId: string | null = null;
   /**
@@ -118,7 +118,7 @@ export class CodexProcess extends EventEmitter {
     const args =
       this.codexSessionId === null
         ? ['exec', ...baseArgs, text]
-        : ['exec', 'resume', this.codexSessionId, ...baseArgs, text];
+        : ['exec', ...baseArgs, 'resume', this.codexSessionId, text];
 
     const child = this.spawnFn('codex', args, {
       cwd: this.projectPath,
