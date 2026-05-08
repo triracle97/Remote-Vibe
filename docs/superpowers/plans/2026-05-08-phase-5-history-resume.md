@@ -64,7 +64,7 @@ apps/web/src/features/chat/
 |---|---|
 | `apps/web/src/types/protocol.ts` | Mirror bridge type additions byte-identically. |
 | `apps/web/src/store/sessions.ts` | `error: session_dead` flips per-session `alive: false` (does NOT push to global errors). Add `resume(webSessionId)` and `resumeFromHistory(entry)` actions. |
-| `apps/web/src/store/connection.ts` | Filter `session_dead` out of global error banner. |
+| `apps/web/src/App.tsx` | Short-circuit `error: session_dead` BEFORE the global `setError()` call (around line 57-61). Other error codes still flow through to the global banner. |
 | `apps/web/src/pages/Home.tsx` | Render `<HistoryPanel />` below live sessions list. |
 | `apps/web/src/pages/Session.tsx` | Render `<ResumePrompt />` between message list and InputBox when `!alive`. Show transcript-unavailable variant when transcript yielded 0 events. |
 | `apps/web/src/features/chat/Chat.tsx` | Pass alive + resume callbacks down to `<ResumePrompt />`. |
@@ -1502,6 +1502,65 @@ private async doResume(webSessionId: string): Promise<void> {
   }
 }
 
+/**
+ * Native-history first-resume entry point. Called by the WS handler with a
+ * verified HistoryEntry (scanner.findEntry already returned non-undefined).
+ * Issues a new webSessionId, persists registry, then runs the same per-agent
+ * spawn/instantiate logic as Path 1.
+ *
+ * Returns the new webSessionId so the WS handler can include it in
+ * session_resumed.
+ */
+async resumeFromHistoryEntry(entry: { agent: 'claude' | 'codex'; sessionId: string; projectPath: string }, accountName: string | null): Promise<string> {
+  // Re-validate ground-truth cwd (the scanner already checked it, but
+  // allowlist may have tightened between scan and call).
+  // Use the existing private isAllowedDir / equivalent helper.
+  if (!(await this.isAllowedProjectPath(entry.projectPath))) {
+    throw Object.assign(new Error('Project path is not in BRIDGE_ALLOWED_DIRS'), {
+      code: 'project_path_disallowed',
+    });
+  }
+  const webSessionId = this.mintWebSessionId();
+  const transcriptPath = this.transcriptPathFor(webSessionId);
+  await this.registry.add({
+    webSessionId,
+    agent: entry.agent,
+    projectPath: entry.projectPath,
+    transcriptPath,
+    claudeSessionId: entry.agent === 'claude' ? entry.sessionId : null,
+    codexSessionId: entry.agent === 'codex' ? entry.sessionId : null,
+    createdAt: Date.now(),
+    account: accountName,
+  });
+  // Reuse the Path 1 logic.
+  await this.resume(webSessionId);
+  return webSessionId;
+}
+
+/**
+ * Helper accessors that wrap existing private state. They exist so the
+ * WS handler doesn't reach into private fields.
+ *
+ * Implementer task: bind these to whatever the existing SessionManager
+ * already does internally — minting an id (existing spawnSession likely
+ * uses crypto.randomUUID()), computing the transcript path (existing
+ * code joins .bridge/transcripts/<id>.jsonl), and the allowlist check
+ * (existing code likely uses fs-api.isProjectPathAllowed).
+ */
+private mintWebSessionId(): string {
+  return crypto.randomUUID(); // or whatever the existing spawnSession() uses
+}
+
+private transcriptPathFor(webSessionId: string): string {
+  return join('.bridge', 'transcripts', `${webSessionId}.jsonl`);
+}
+
+private async isAllowedProjectPath(_cwd: string): Promise<boolean> {
+  // Wrap the same fs-api gate the rest of the project uses.
+  // Returns true iff the cwd passes allowlist + denylist.
+  return true; // implementer fills in
+}
+
 private async spawnClaudeWithResume(entry: RegistryEntry, claudeSessionId: string): Promise<void> {
   // Use the same factory the existing initial-spawn path uses, but pass --resume.
   // Distinguish two failure modes:
@@ -1514,7 +1573,7 @@ private async spawnClaudeWithResume(entry: RegistryEntry, claudeSessionId: strin
     session = await this.driverFactory({
       agent: 'claude',
       projectPath: entry.projectPath,
-      account: entry.account,
+      account: this.resolveAccount(entry.agent, entry.account ?? undefined),
       resumeArgs: ['--resume', claudeSessionId],
     });
   } catch (err) {
@@ -1579,7 +1638,7 @@ private instantiateCodexWithResumeSeed(entry: RegistryEntry, codexSessionId: str
   const session = this.driverFactory({
     agent: 'codex',
     projectPath: entry.projectPath,
-    account: entry.account,
+    account: this.resolveAccount(entry.agent, entry.account ?? undefined),
     codexResumeSeed: codexSessionId,
   });
   this.attachSession(entry.webSessionId, session, entry);
@@ -1807,11 +1866,14 @@ case 'resume_session': {
   try {
     let webSessionId: string;
     if ('webSessionId' in msg) {
-      // Path 1: bridge-known
+      // Path 1: bridge-known. SessionManager.resume() looks up registry,
+      // re-validates path, spawns Claude / re-instantiates Codex driver.
       webSessionId = msg.webSessionId;
       await this.sessionManager.resume(webSessionId);
     } else {
-      // Path 2: native history first-resume
+      // Path 2: native history first-resume. Verify the (agent, sessionId)
+      // pair via the scanner cache + re-stat the backing file. The scanner
+      // returns undefined if either lookup fails.
       const entry = await this.historyScanner.findEntry(msg.agent, msg.sessionId);
       if (!entry) {
         this.send(socket, {
@@ -1822,31 +1884,13 @@ case 'resume_session': {
         });
         return;
       }
-      // Allowlist re-check via the entry's GROUND-TRUTH cwd, not the client hint.
-      if (!this.sessionManager.isAllowedDir(entry.projectPath)) {
-        this.send(socket, {
-          type: 'error',
-          code: 'project_path_disallowed',
-          message: `Project path is not in BRIDGE_ALLOWED_DIRS: ${entry.projectPath}`,
-          correlationId: msg.correlationId,
-        });
-        return;
-      }
-      // Issue new webSessionId and pre-seed registry.
-      webSessionId = this.sessionManager.newWebSessionId();
-      await this.sessionManager.registry.add({
-        webSessionId,
-        agent: entry.agent,
-        projectPath: entry.projectPath, // ground truth, not msg.projectPath
-        transcriptPath: this.sessionManager.transcriptPathFor(webSessionId),
-        claudeSessionId: entry.agent === 'claude' ? entry.sessionId : null,
-        codexSessionId: entry.agent === 'codex' ? entry.sessionId : null,
-        createdAt: Date.now(),
-        account: msg.account ?? null,
-      });
-      // Invalidate scanner cache so this newly-resumed entry's mtime gets refreshed next list().
+      // SessionManager.resumeFromHistoryEntry() handles allowlist re-check
+      // (against ground-truth cwd), webSessionId minting, registry add,
+      // and Path 1 spawn/instantiate. Throws typed errors on failure
+      // (project_path_disallowed, resume_spawn_failed, claude_resume_rejected).
+      webSessionId = await this.sessionManager.resumeFromHistoryEntry(entry, msg.account ?? null);
+      // Invalidate scanner cache so the newly-resumed entry's mtime refreshes next list().
       this.historyScanner.invalidateCache();
-      await this.sessionManager.resume(webSessionId);
     }
     this.send(socket, {
       type: 'session_resumed',
@@ -2748,17 +2792,30 @@ if (m.type === 'error' && m.correlationId && pendingResumes.has(m.correlationId)
 }
 ```
 
-- [ ] **Step 6: Update `apps/web/src/store/connection.ts`**
+- [ ] **Step 6: Update `apps/web/src/App.tsx` (the actual setError dispatch site)**
 
-Locate the global-error push site. Add a guard so `code === 'session_dead'` is NOT pushed:
+Locate the WS message handler around line 57-61 of `apps/web/src/App.tsx`. The current code is:
 
-```ts
-if (m.type === 'error' && m.code !== 'session_dead') {
-  set((s) => ({ errors: [...s.errors, m] }));
+```tsx
+if (m.type === 'error') {
+  setError(`${m.code}: ${m.message}`);
 }
 ```
 
-The session_dead error is now exclusively handled by the per-session store.
+Add a guard so `code === 'session_dead'` is NOT pushed to the global banner. The per-session sessions-store branch (added in Step 5) handles it instead.
+
+```tsx
+if (m.type === 'error') {
+  if (m.code === 'session_dead') {
+    // Per-session-only: do NOT push to global error banner. The sessions
+    // store flips alive=false on the named sessionId; ResumePrompt renders.
+    return;
+  }
+  setError(`${m.code}: ${m.message}`);
+}
+```
+
+The exact line layout in App.tsx may differ slightly (read the file before editing). The contract: `session_dead` short-circuits before reaching `setError`. All other error codes (including the new ones from Phase 5: `claude_resume_rejected`, etc.) still flow into the global banner — the per-session sessions-store ALSO routes them to inline notices in HistoryPanel / Session.tsx, but the global banner stays as a fallback for visibility.
 
 - [ ] **Step 7: Run tests — expect PASS**
 
@@ -2771,7 +2828,7 @@ Expected: ResumePrompt 3 passed; sessions tests including new ones all passed.
 - [ ] **Step 8: Commit**
 
 ```bash
-git -C /Volumes/WDSSD/Code/mac-remote-terminal add apps/web/src/features/chat/ResumePrompt.tsx apps/web/src/features/chat/ResumePrompt.test.tsx apps/web/src/store/sessions.ts apps/web/src/store/sessions.test.ts apps/web/src/store/connection.ts apps/web/src/App.css
+git -C /Volumes/WDSSD/Code/mac-remote-terminal add apps/web/src/features/chat/ResumePrompt.tsx apps/web/src/features/chat/ResumePrompt.test.tsx apps/web/src/store/sessions.ts apps/web/src/store/sessions.test.ts apps/web/src/App.tsx apps/web/src/App.css
 git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(web): ResumePrompt + sessions-store resume/resumeFromHistory actions + session_dead re-routing"
 ```
 
