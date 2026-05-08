@@ -13,6 +13,7 @@ interface ChatProps {
   session: SessionView;
   onSend(text: string, images?: ReadonlyArray<{ mime: string; base64: string }>): void;
   onStop(): void;
+  onOpenMobileNav?(): void;
   onToggleDrawer?(): void;
   drawerOpen?: boolean;
   banner?: string | null;
@@ -24,6 +25,7 @@ export function Chat({
   session,
   onSend,
   onStop,
+  onOpenMobileNav,
   onToggleDrawer,
   drawerOpen,
   banner,
@@ -70,6 +72,16 @@ export function Chat({
   return (
     <div className="chat" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div className="chat-header">
+        {onOpenMobileNav && (
+          <button
+            type="button"
+            className="chat-mobile-menu"
+            onClick={onOpenMobileNav}
+            aria-label="Open sessions and history"
+          >
+            ☰
+          </button>
+        )}
         <code>{session.projectPath}</code>
         {renamingHeader ? (
           <SessionRenameInline
