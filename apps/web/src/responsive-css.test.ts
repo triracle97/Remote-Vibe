@@ -12,7 +12,7 @@ describe('mobile responsive CSS contract', () => {
   it('stacks the root layout and major panels at phone widths', () => {
     const css = [
       readCss('src/App.css'),
-      readCss('src/features/file-explorer/FileExplorer.css'),
+      // FileExplorer.css deleted — FileExplorer now uses Tailwind + BottomSheet / motion pane
       // ProjectPicker.css deleted — picker now uses Modal primitive with Tailwind
       // Chat.css deleted — chat shell now uses Tailwind; base rules moved to App.css
     ].join('\n');
@@ -22,17 +22,15 @@ describe('mobile responsive CSS contract', () => {
     // .session-list width:100% is now handled by Tailwind (w-full md:w-60)
     // .history-panel width:100% is now handled by Tailwind (max-md:w-full)
     expect(css).toMatch(/\.chat\s*{[^}]*min-height:\s*100dvh/s);
-    expect(css).toMatch(/\.file-explorer\s*{[^}]*width:\s*100%/s);
+    // .file-explorer width:100% is now handled by Tailwind (BottomSheet on mobile, fixed pane on desktop)
     // .picker max-height is now handled by Modal primitive (overflow-hidden + mobile-safe sizing)
   });
 
   it('defines the mobile chat shell overlay contract', () => {
     const appCss = readCss('src/App.css');
-    const css = [
-      appCss,
-      // Chat.css deleted — chat shell now uses Tailwind; base rules moved to App.css
-      readCss('src/features/file-explorer/FileExplorer.css'),
-    ].join('\n');
+    const css = appCss;
+    // FileExplorer.css deleted — FileExplorer now uses Tailwind + BottomSheet / motion pane
+    // Chat.css deleted — chat shell now uses Tailwind; base rules moved to App.css
 
     expect(css).toMatch(/\.mobile-nav-shell\s*{[^}]*position:\s*fixed/s);
     expect(css).toMatch(/\.mobile-nav-backdrop\s*{[^}]*position:\s*absolute/s);
@@ -40,13 +38,12 @@ describe('mobile responsive CSS contract', () => {
     expect(css).toMatch(/\.chat-mobile-menu\s*{[^}]*display:\s*none/s);
     expect(css).toMatch(/\.chat\s*{[^}]*height:\s*100dvh/s);
     expect(css).toMatch(/\.input-box\s*{[^}]*padding-bottom:\s*calc\(0\.65rem \+ env\(safe-area-inset-bottom\)\)/s);
-    expect(css).toMatch(/\.file-explorer\s*{[^}]*position:\s*fixed/s);
+    // .file-explorer position:fixed is now handled by Tailwind (fixed top-0 right-0 on desktop motion.aside)
     expect(appCss).not.toMatch(/#root\s*>\s*\.session-list\s*,\s*#root\s*>\s*\.history-panel\s*{[^}]*display:\s*none/s);
     expect(css).toMatch(/#root:has\(\s*>\s*\.chat\s*\)\s*>\s*\.session-list\s*,\s*#root:has\(\s*>\s*\.chat\s*\)\s*>\s*\.history-panel\s*{[^}]*display:\s*none/s);
     expect(css).toMatch(/\.mobile-nav-content\s+\.session-list\s*,\s*\.mobile-nav-content\s+\.history-panel\s*{[^}]*display:\s*block/s);
     expect(css).toMatch(/\.mobile-nav-content\s+\.history-list\s*{[^}]*max-height:\s*none/s);
-    expect(css).toMatch(/\.fe-tree\s*{[^}]*flex:\s*1[^}]*max-height:\s*none[^}]*min-height:\s*0/s);
-    expect(css).toMatch(/\.fe-preview\s*{[^}]*flex:\s*1[^}]*max-height:\s*none[^}]*min-height:\s*0/s);
+    // .fe-tree and .fe-preview flex/min-height are now handled by Tailwind (flex-1 min-h-0 classes)
   });
 
   it('orders mobile nav shell display rules so the mobile override wins', () => {
