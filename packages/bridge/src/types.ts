@@ -69,7 +69,9 @@ export type ClientMsg =
   | ClientListAccountsMsg
   | ClientListPromptsMsg
   | ClientListDirsMsg
-  | ClientReadFileMsg;
+  | ClientReadFileMsg
+  | ClientListHistoryMsg
+  | ClientResumeSessionMsg;
 
 export type AgentEvent =
   | { kind: 'assistant_text'; text: string }
@@ -195,7 +197,14 @@ export type ServerErrorCode =
   | 'images_not_supported_for_agent'
   | 'image_too_large'
   | 'image_invalid_mime'
-  | 'too_many_images';
+  | 'too_many_images'
+  | 'history_session_not_found'
+  | 'project_path_disallowed'
+  | 'project_path_missing'
+  | 'cli_session_id_unknown'
+  | 'claude_resume_rejected'
+  | 'codex_resume_rejected'
+  | 'resume_spawn_failed';
 
 export interface ServerErrorMsg {
   type: 'error';
@@ -215,4 +224,62 @@ export type ServerMsg =
   | ServerPromptsResultMsg
   | ServerDirsResultMsg
   | ServerFileResultMsg
-  | ServerErrorMsg;
+  | ServerErrorMsg
+  | ServerHistoryListMsg
+  | ServerSessionResumedMsg;
+
+// Phase 5 — history viewer + session resume
+
+export interface HistoryEntry {
+  agent: 'claude' | 'codex';
+  /** CLI's own session uuid (Claude: filename without `.jsonl`; Codex: session_meta.payload.id). */
+  sessionId: string;
+  /** Ground-truth cwd extracted from file content. Entries with no parseable user message are dropped. */
+  projectPath: string;
+  /** ms since epoch */
+  mtime: number;
+  /** First user message text, truncated to 80 chars; "" if none parseable. */
+  firstPrompt: string;
+}
+
+export interface ClientListHistoryMsg {
+  type: 'list_history';
+  correlationId: string;
+}
+
+/**
+ * Resume — tagged union with two shapes:
+ *   (a) Bridge-known: only webSessionId is required; bridge looks up the
+ *       agent + projectPath + cliSessionId from its registry.
+ *   (b) Native-history first-resume: agent + sessionId + projectPath required;
+ *       bridge issues a new webSessionId.
+ */
+export type ClientResumeSessionMsg =
+  | {
+      type: 'resume_session';
+      webSessionId: string;
+      account?: string;
+      correlationId: string;
+    }
+  | {
+      type: 'resume_session';
+      agent: 'claude' | 'codex';
+      sessionId: string;
+      projectPath: string;
+      account?: string;
+      correlationId: string;
+    };
+
+export interface ServerHistoryListMsg {
+  type: 'history_list';
+  claude: HistoryEntry[];
+  codex: HistoryEntry[];
+  correlationId: string;
+}
+
+export interface ServerSessionResumedMsg {
+  type: 'session_resumed';
+  webSessionId: string;
+  alive: true;
+  correlationId: string;
+}
