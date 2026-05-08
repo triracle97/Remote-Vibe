@@ -17,7 +17,7 @@ Bundle four cohesive UX improvements into one phase:
 
 ### In scope
 
-- Bridge: new `profile-store.ts`, `slash-commands.ts`, `file-search.ts`, `notifier.ts`. SessionManager extensions: multi-dir spawn, per-session name, rename action, per-turn duration tracking. Registry shape extended (`name`, `additionalDirs`). Seven new WS message types (list/save/delete/set-default profile, list slash commands, search files, rename session). Backward-compatible `start_session` extension.
+- Bridge: new `profile-store.ts`, `slash-commands.ts`, `file-search.ts`, `notifier.ts`. SessionManager extensions: multi-dir spawn, per-session name, rename action, per-turn duration tracking. Registry shape extended (`name`, `additionalDirs`). Seven new WS message types (list/save/delete/set-default profile, list slash commands, search files, rename session). Backward-compatible `start (ClientStartMsg)` extension.
 - Web: `DirPicker`, `ProfilePicker`, `ProfileEditor`, `SlashAutocomplete`, `AtTagAutocomplete`, `SessionRenameInline`. New stores: `profileStore`, `slashCommandStore`, `fileSearchStore`. InputBox + project picker + SessionList integration.
 - All UI mobile-friendly: full-screen modals on viewports < 640 px, tap targets ≥ 44 px, no drag-only / hover-only patterns. Bottom-sheet popups for autocompletes.
 - Documentation: this spec + a Phase 6 implementation plan + `docs/setup/telegram-bot.md`.
@@ -98,7 +98,7 @@ This preserves the Phase 1 "thin spawner" principle: no input mutation, no shell
 5. **Codex**: spawn args unchanged. `additionalDirs` stored in `RegistryEntry.additionalDirs` for diagnostics + future use. Log once per session: `[codex] ignoring additional dirs (CLI does not support --add-dir)`.
 6. Registry entry: `name: null`, `additionalDirs: dirs.slice(1)`. Lazy-name set on first `input` event.
 
-Backward compat: existing `start_session { projectPath }` still works (treated as `dirs: [projectPath]`). Single-cwd spawn paths in tests don't break.
+Backward compat: existing `start (ClientStartMsg) { projectPath }` still works (treated as `dirs: [projectPath]`). Single-cwd spawn paths in tests don't break.
 
 ## 4. Data models
 
@@ -362,15 +362,15 @@ interface ClientRenameSessionMsg {
 }
 ```
 
-### Existing `start_session` extended
+### Existing `ClientStartMsg` (`type: 'start'`) extended
 
 Backward-compatible: accepts EITHER `projectPath: string` OR `dirs: string[]`. If both are set, `dirs[]` wins (primary = `dirs[0]`).
 
 ```ts
 // Was (P1-P5):
-{ type: 'start_session', agent, projectPath, account?, correlationId }
+{ type: 'start', agent, projectPath, account?, correlationId }
 // Phase 6 also accepts:
-{ type: 'start_session', agent, dirs: string[], account?, correlationId }
+{ type: 'start', agent, dirs: string[], account?, correlationId }
 ```
 
 Server-side: if `dirs` present, ignore `projectPath`. If only `projectPath` present, treat as `dirs: [projectPath]`.
@@ -387,6 +387,20 @@ interface ServerProfileListMsg {
 interface ServerProfileSavedMsg {
   type: 'profile_saved';
   profile: Profile;
+  correlationId: string;
+}
+
+interface ServerProfileDeletedMsg {
+  type: 'profile_deleted';
+  name: string;
+  agent: 'claude' | 'codex';
+  correlationId: string;
+}
+
+interface ServerProfileDefaultSetMsg {
+  type: 'profile_default_set';
+  name: string;
+  agent: 'claude' | 'codex';
   correlationId: string;
 }
 
@@ -430,14 +444,14 @@ interface ServerSessionRenamedMsg {
 | `Profile.dirs` | non-empty; each item realpath'd + allowlist + denylist; deduped exact-match |
 | `Profile.agent` | `'claude'` or `'codex'` |
 | `Profile.account` | null OR string matching existing CodexAccount name (validated on save) |
-| `start_session.dirs[]` | same as `Profile.dirs` |
+| `start (ClientStartMsg).dirs[]` | same as `Profile.dirs` |
 | `rename_session.name` | trim → reject empty → ≤ 200 chars → strip control characters (only printable Unicode allowed) |
 | `search_files.query` | string ≤ 200 chars; longer rejected as `file_search_failed` |
 | `list_slash_commands.sessionId` | must exist in SessionManager `sessions` map; otherwise reject |
 
 ## 11. Security
 
-- **Allowlist + denylist on every dir**: `Profile.dirs` validated at save AND at every `start_session` (allowlist may have tightened between save and use).
+- **Allowlist + denylist on every dir**: `Profile.dirs` validated at save AND at every `start (ClientStartMsg)` (allowlist may have tightened between save and use).
 - **Symlink safety**: `file-search.ts` realpaths every file; rejects targets outside allowlist. `slash-commands.ts` similarly realpaths command files.
 - **Spawn args**: `--add-dir <path>` paths are realpath'd + allowlist-checked + passed via `child_process.spawn(cmd, args, { cwd })` (no shell). No metacharacter risk.
 - **Telegram**: bot token never logged in plain text. Failure messages omit the token.
