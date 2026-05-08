@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { X, Plus } from 'lucide-react';
 import type { Profile } from '../../types/protocol';
 import { useProfileStore } from './profileStore';
 import { useAccountsStore } from '../../store/accounts';
@@ -30,7 +31,7 @@ const emptyDraft: DraftState = { key: undefined, name: '', dirs: [], account: nu
  * - Each row has Edit / Delete / Set-default buttons (≥ 44 px tap targets).
  * - Edit expands inline form (name, dirs, codex account).
  * - "+ New profile" appends a draft form.
- * - Full-screen at < 640 px (handled by CSS media query).
+ * - Full-screen at < 640 px (max-md: Tailwind variants).
  */
 export function ProfileEditor({
   open,
@@ -179,7 +180,7 @@ export function ProfileEditor({
 
   return (
     <div
-      className="profile-editor-overlay"
+      className="profile-editor-overlay fixed inset-0 bg-black/60 z-50 flex items-center justify-center max-sm:p-0 p-4"
       role="dialog"
       aria-modal="true"
       aria-label="Manage profiles"
@@ -187,24 +188,28 @@ export function ProfileEditor({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="profile-editor-modal">
-        <div className="profile-editor-header">
-          <h2>Manage profiles</h2>
+      <div className="profile-editor-modal bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl max-sm:rounded-none max-w-[600px] w-full max-h-[90vh] max-sm:fixed max-sm:inset-0 max-sm:max-w-none max-sm:max-h-none overflow-y-auto p-4 text-[var(--color-text)]">
+        <div className="profile-editor-header flex items-center justify-between gap-2 mb-3">
+          <h2 className="text-[var(--color-text)] text-base font-semibold m-0">Manage profiles</h2>
           <button
             type="button"
-            className="profile-editor-close"
+            className="profile-editor-close min-w-[44px] min-h-[44px] flex items-center justify-center bg-transparent border border-[var(--color-border)] rounded-lg text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)]"
             onClick={onClose}
             aria-label="close manage profiles"
           >
-            ✕
+            <X size={16} />
           </button>
         </div>
-        <div className="profile-editor-agent-tabs" role="tablist">
+        <div className="profile-editor-agent-tabs flex gap-1 mb-3" role="tablist">
           <button
             type="button"
             role="tab"
             aria-selected={agent === 'claude'}
-            className={`profile-editor-agent-tab${agent === 'claude' ? ' is-active' : ''}`}
+            className={`profile-editor-agent-tab flex-1 px-3 py-2 min-h-[44px] text-sm rounded-lg border border-[var(--color-border)] transition-colors ${
+              agent === 'claude'
+                ? 'bg-[var(--color-surface-2)] text-[var(--color-text)]'
+                : 'bg-[var(--color-surface)] text-[var(--color-text-mute)] hover:bg-[var(--color-surface-2)]'
+            }${agent === 'claude' ? ' is-active' : ''}`}
             onClick={() => {
               setAgent('claude');
               setDraft(emptyDraft);
@@ -217,7 +222,11 @@ export function ProfileEditor({
             type="button"
             role="tab"
             aria-selected={agent === 'codex'}
-            className={`profile-editor-agent-tab${agent === 'codex' ? ' is-active' : ''}`}
+            className={`profile-editor-agent-tab flex-1 px-3 py-2 min-h-[44px] text-sm rounded-lg border border-[var(--color-border)] transition-colors ${
+              agent === 'codex'
+                ? 'bg-[var(--color-surface-2)] text-[var(--color-text)]'
+                : 'bg-[var(--color-surface)] text-[var(--color-text-mute)] hover:bg-[var(--color-surface-2)]'
+            }${agent === 'codex' ? ' is-active' : ''}`}
             onClick={() => {
               setAgent('codex');
               setDraft(emptyDraft);
@@ -229,24 +238,34 @@ export function ProfileEditor({
         </div>
 
         {filtered.length === 0 && draft.key !== 'new' && (
-          <div className="profile-editor-empty">No {agent} profiles yet.</div>
+          <div className="profile-editor-empty py-4 px-2 text-[var(--color-text-mute)] text-sm italic text-center">
+            No {agent} profiles yet.
+          </div>
         )}
 
-        <ul className="profile-editor-list">
+        <ul className="profile-editor-list list-none p-0 m-0 mb-3">
           {filtered.map((p) => {
             const k = `${p.agent}:${p.name}`;
             const editing = draft.key === k;
             return (
-              <li key={k} data-testid="profile-row">
-                <div className="profile-editor-row-header">
-                  <span className="profile-editor-name" title={p.name}>
+              <li
+                key={k}
+                className="flex flex-col gap-2 py-3 px-1 border-b border-[var(--color-border)] last:border-b-0"
+                data-testid="profile-row"
+              >
+                <div className="profile-editor-row-header flex gap-2 items-center flex-wrap min-h-[44px]">
+                  <span className="profile-editor-name flex-1 min-w-32 font-semibold text-[var(--color-text)] truncate">
                     {p.name}
-                    {p.default && <span className="profile-editor-default-badge">default</span>}
+                    {p.default && (
+                      <span className="profile-editor-default-badge ml-2 text-xs bg-[var(--color-surface-2)] text-[var(--color-text-dim)] px-2 py-0.5 rounded border border-[var(--color-border)]">
+                        default
+                      </span>
+                    )}
                   </span>
-                  <div className="profile-editor-actions">
+                  <div className="profile-editor-actions flex gap-1 flex-wrap max-sm:justify-stretch">
                     <button
                       type="button"
-                      className="profile-editor-action"
+                      className="profile-editor-action bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded-lg px-3 py-2 min-h-[44px] text-sm hover:bg-[var(--color-surface)] disabled:opacity-40 disabled:cursor-not-allowed max-sm:flex-1"
                       onClick={() => (editing ? cancelDraft() : startEdit(p))}
                       disabled={busy}
                       aria-label={editing ? `cancel editing ${p.name}` : `edit ${p.name}`}
@@ -255,7 +274,7 @@ export function ProfileEditor({
                     </button>
                     <button
                       type="button"
-                      className="profile-editor-action"
+                      className="profile-editor-action bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded-lg px-3 py-2 min-h-[44px] text-sm hover:bg-[var(--color-surface)] disabled:opacity-40 disabled:cursor-not-allowed max-sm:flex-1"
                       onClick={() => onSetDefault(p)}
                       disabled={busy || p.default}
                       aria-label={`set ${p.name} as default`}
@@ -264,7 +283,7 @@ export function ProfileEditor({
                     </button>
                     <button
                       type="button"
-                      className="profile-editor-action is-danger"
+                      className="profile-editor-action is-danger bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded-lg px-3 py-2 min-h-[44px] text-sm hover:text-[var(--color-danger)] hover:bg-[color-mix(in_srgb,var(--color-danger)_20%,var(--color-surface-2))] disabled:opacity-40 disabled:cursor-not-allowed max-sm:flex-1"
                       onClick={() => onDelete(p)}
                       disabled={busy}
                       aria-label={`delete ${p.name}`}
@@ -289,9 +308,14 @@ export function ProfileEditor({
             );
           })}
           {draft.key === 'new' && (
-            <li data-testid="profile-row-new">
-              <div className="profile-editor-row-header">
-                <span className="profile-editor-name">New {agent} profile</span>
+            <li
+              className="flex flex-col gap-2 py-3 px-1 border-b border-[var(--color-border)] last:border-b-0"
+              data-testid="profile-row-new"
+            >
+              <div className="profile-editor-row-header flex gap-2 items-center flex-wrap min-h-[44px]">
+                <span className="profile-editor-name flex-1 min-w-32 font-semibold text-[var(--color-text)] truncate">
+                  New {agent} profile
+                </span>
               </div>
               <DraftForm
                 draft={draft}
@@ -310,12 +334,13 @@ export function ProfileEditor({
         {draft.key === undefined && (
           <button
             type="button"
-            className="profile-editor-new"
+            className="profile-editor-new w-full min-h-[44px] bg-[var(--color-surface-2)] text-[var(--color-accent)] border border-dashed border-[var(--color-border)] rounded-lg px-3 py-2 text-sm flex items-center justify-center gap-2 hover:bg-[var(--color-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
             onClick={startNew}
             disabled={busy}
             aria-label="create new profile"
           >
-            + New profile
+            <Plus size={14} />
+            New profile
           </button>
         )}
       </div>
@@ -345,9 +370,11 @@ function DraftForm({
   accounts,
 }: DraftFormProps): JSX.Element {
   return (
-    <div className="profile-editor-edit">
-      <div className="profile-editor-field">
-        <label htmlFor="pf-name">Name</label>
+    <div className="profile-editor-edit flex flex-col gap-3">
+      <div className="profile-editor-field flex flex-col gap-1">
+        <label htmlFor="pf-name" className="text-xs text-[var(--color-text-dim)]">
+          Name
+        </label>
         <input
           id="pf-name"
           type="text"
@@ -356,21 +383,27 @@ function DraftForm({
           onChange={(e) => onChange({ ...draft, name: e.target.value })}
           placeholder="my-profile"
           aria-label="profile name"
+          className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-2 min-h-[44px] text-sm text-[var(--color-text)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] w-full"
         />
       </div>
-      <div className="profile-editor-field">
-        <label>Working dirs (first = primary cwd)</label>
+      <div className="profile-editor-field flex flex-col gap-1">
+        <label className="text-xs text-[var(--color-text-dim)]">
+          Working dirs (first = primary cwd)
+        </label>
         <DirPicker dirs={draft.dirs} onChange={(dirs) => onChange({ ...draft, dirs })} />
       </div>
       {agent === 'codex' && (
-        <div className="profile-editor-field">
-          <label htmlFor="pf-account">Codex account</label>
+        <div className="profile-editor-field flex flex-col gap-1">
+          <label htmlFor="pf-account" className="text-xs text-[var(--color-text-dim)]">
+            Codex account
+          </label>
           {accounts.length > 0 ? (
             <select
               id="pf-account"
               value={draft.account ?? ''}
               onChange={(e) => onChange({ ...draft, account: e.target.value || null })}
               aria-label="codex account"
+              className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-2 min-h-[44px] text-sm text-[var(--color-text)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] w-full"
             >
               <option value="">— Pick an account —</option>
               {accounts.map((a) => (
@@ -387,19 +420,20 @@ function DraftForm({
               onChange={(e) => onChange({ ...draft, account: e.target.value || null })}
               placeholder="account name"
               aria-label="codex account"
+              className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-2 min-h-[44px] text-sm text-[var(--color-text)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] w-full"
             />
           )}
         </div>
       )}
       {error && (
-        <div className="profile-editor-error" role="alert">
+        <div className="profile-editor-error text-xs text-[var(--color-danger)]" role="alert">
           {error}
         </div>
       )}
-      <div className="profile-editor-actions">
+      <div className="profile-editor-actions flex gap-2 flex-wrap justify-end">
         <button
           type="button"
-          className="profile-editor-action"
+          className="profile-editor-action bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded-lg px-3 py-2 min-h-[44px] text-sm hover:bg-[var(--color-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
           onClick={onCancel}
           disabled={busy}
         >
@@ -407,7 +441,7 @@ function DraftForm({
         </button>
         <button
           type="button"
-          className="profile-editor-action is-primary"
+          className="profile-editor-action is-primary bg-[var(--color-accent)] text-white rounded-lg px-3 py-2 min-h-[44px] text-sm hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
           onClick={onSubmit}
           disabled={busy}
         >

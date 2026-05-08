@@ -47,4 +47,10 @@ describe('Settings page', () => {
     expect(screen.getByRole('heading', { name: /default workspaces/i })).toBeDefined();
     expect(screen.getByRole('button', { name: /add default workspace/i })).toBeDefined();
   });
+
+  it('renders Profiles section with manage button', () => {
+    renderPage();
+    expect(screen.getByRole('heading', { name: /^profiles$/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /manage profiles/i })).toBeDefined();
+  });
 });

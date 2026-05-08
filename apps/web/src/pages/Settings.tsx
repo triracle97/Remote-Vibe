@@ -3,6 +3,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { useConnectionStore } from '../store/connection';
 import { useThemeStore, type ThemeMode } from '../shell/themeStore';
 import { useDefaultWorkspacesStore } from '../features/project-picker/defaultWorkspacesStore';
+import { ProfileEditor } from '../features/profiles/ProfileEditor';
 
 const themes: ReadonlyArray<{ value: ThemeMode; label: string }> = [
   { value: 'system', label: 'System' },
@@ -19,6 +20,7 @@ export function Settings(): JSX.Element {
   const addWorkspace = useDefaultWorkspacesStore((s) => s.add);
   const removeWorkspace = useDefaultWorkspacesStore((s) => s.remove);
   const [draft, setDraft] = useState('');
+  const [profilesOpen, setProfilesOpen] = useState(false);
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto p-4 max-w-screen-md w-full mx-auto space-y-8">
@@ -108,6 +110,19 @@ export function Settings(): JSX.Element {
             ))}
           </ul>
         )}
+      </section>
+
+      <section className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4">
+        <h2 className="text-[var(--color-text-dim)] text-xs font-bold tracking-wider uppercase mb-3">Profiles</h2>
+        <p className="text-[var(--color-text-dim)] text-sm mb-3">Saved combinations of agent + working directories. Use them to start sessions faster.</p>
+        <button
+          type="button"
+          onClick={() => setProfilesOpen(true)}
+          className="bg-[var(--color-accent)] text-white rounded-lg px-3 py-2 min-h-[44px] hover:opacity-90"
+        >
+          Manage profiles
+        </button>
+        <ProfileEditor open={profilesOpen} onClose={() => setProfilesOpen(false)} />
       </section>
     </div>
   );

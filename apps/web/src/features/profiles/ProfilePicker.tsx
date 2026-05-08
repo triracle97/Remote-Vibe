@@ -25,8 +25,12 @@ export function ProfilePicker({ agent, onSelect, onManage }: ProfilePickerProps)
 
   if (filtered.length === 0) {
     return onManage ? (
-      <div className="profile-picker">
-        <button type="button" className="profile-picker-manage" onClick={onManage}>
+      <div className="profile-picker flex flex-col gap-1">
+        <button
+          type="button"
+          className="profile-picker-manage bg-transparent border border-[var(--color-border)] rounded-lg text-[var(--color-accent)] px-3 py-2 min-h-[44px] text-sm self-start hover:bg-[var(--color-surface-2)]"
+          onClick={onManage}
+        >
           Manage profiles…
         </button>
       </div>
@@ -36,9 +40,9 @@ export function ProfilePicker({ agent, onSelect, onManage }: ProfilePickerProps)
   }
 
   return (
-    <div className="profile-picker">
+    <div className="profile-picker flex flex-col gap-1">
       <select
-        className="profile-picker-select"
+        className="profile-picker-select w-full bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-2 min-h-[44px] text-sm text-[var(--color-text)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
         defaultValue=""
         aria-label="select a profile"
         onChange={(e) => {
@@ -59,7 +63,11 @@ export function ProfilePicker({ agent, onSelect, onManage }: ProfilePickerProps)
         ))}
       </select>
       {onManage && (
-        <button type="button" className="profile-picker-manage" onClick={onManage}>
+        <button
+          type="button"
+          className="profile-picker-manage bg-transparent border border-[var(--color-border)] rounded-lg text-[var(--color-accent)] px-3 py-2 min-h-[44px] text-sm self-start hover:bg-[var(--color-surface-2)]"
+          onClick={onManage}
+        >
           Manage profiles…
         </button>
       )}
