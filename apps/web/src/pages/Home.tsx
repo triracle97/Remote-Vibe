@@ -1,16 +1,13 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 import { useSessionsStore } from '../store/sessions';
 import { useConnectionStore } from '../store/connection';
-import type { BridgeClient } from '../services/bridge-client';
 import { SessionList } from '../features/session-list/SessionList';
 import { useNewSession } from '../features/project-picker/useNewSession';
 import { HistoryPanel } from '../features/history/HistoryPanel';
+import type { AppShellOutletContext } from '../shell/AppShell';
 
-interface HomeProps {
-  client: BridgeClient;
-}
-
-export function Home({ client }: HomeProps): JSX.Element {
+export function Home(): JSX.Element {
+  const { client } = useOutletContext<AppShellOutletContext>();
   const order = useSessionsStore((s) => s.order);
   const sessionsMap = useSessionsStore((s) => s.sessions);
   const status = useConnectionStore((s) => s.status);

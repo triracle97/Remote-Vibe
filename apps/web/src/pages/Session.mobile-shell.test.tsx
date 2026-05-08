@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, within } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, Outlet } from 'react-router-dom';
 import { Session } from './Session';
 import { useSessionsStore } from '../store/sessions';
 import type { SessionView } from '../store/sessions';
@@ -94,12 +94,18 @@ function makeSession(overrides: Partial<SessionView> = {}): SessionView {
   };
 }
 
+function ContextWrapper(): JSX.Element {
+  return <Outlet context={{ client }} />;
+}
+
 function renderSession(path = '/session/s1') {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route path="/session/:id" element={<Session client={client} />} />
-        <Route path="/" element={<div>home</div>} />
+        <Route element={<ContextWrapper />}>
+          <Route path="/session/:id" element={<Session />} />
+          <Route path="/" element={<div>home</div>} />
+        </Route>
       </Routes>
     </MemoryRouter>,
   );

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useOutletContext } from 'react-router-dom';
 import { useSessionsStore } from '../store/sessions';
 import { useConnectionStore } from '../store/connection';
 import { useFileExplorerStore } from '../store/file-explorer';
@@ -10,10 +10,7 @@ import { useNewSession } from '../features/project-picker/useNewSession';
 import { streamTranscript } from '../services/transcript-fetcher';
 import { FileExplorer } from '../features/file-explorer/FileExplorer';
 import { HistoryPanel } from '../features/history/HistoryPanel';
-
-interface SessionProps {
-  client: BridgeClient;
-}
+import type { AppShellOutletContext } from '../shell/AppShell';
 
 type MobileNavTab = 'sessions' | 'history';
 
@@ -26,7 +23,8 @@ const focusableSelector = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
-export function Session({ client }: SessionProps): JSX.Element {
+export function Session(): JSX.Element {
+  const { client } = useOutletContext<AppShellOutletContext>();
   const { id } = useParams();
   const navigate = useNavigate();
   const order = useSessionsStore((s) => s.order);
