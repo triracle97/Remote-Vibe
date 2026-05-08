@@ -1,5 +1,5 @@
+import { X } from 'lucide-react';
 import type { PendingImage } from './useImagePaste';
-import './ImageAttach.css';
 
 interface ImageThumbnailsProps {
   images: PendingImage[];
@@ -15,20 +15,22 @@ function humanSize(bytes: number): string {
 export function ImageThumbnails({ images, onRemove }: ImageThumbnailsProps): JSX.Element | null {
   if (images.length === 0) return null;
   return (
-    <ul className="image-thumbs">
+    <ul className="image-thumbs flex flex-wrap gap-2 mb-2 list-none m-0 p-0">
       {images.map((img) => (
-        <li key={img.id} className="image-thumb">
-          <img src={img.dataUrl} alt={img.filename} />
-          <button
-            type="button"
-            className="image-thumb-x"
-            onClick={() => onRemove(img.id)}
-            aria-label={`Remove ${img.filename}`}
-          >
-            ×
-          </button>
-          <div className="image-thumb-meta">
-            <span className="image-thumb-name">{img.filename}</span>
+        <li key={img.id} className="image-thumb relative w-16">
+          <div className="relative w-16 h-16 rounded overflow-hidden bg-[var(--color-surface-2)] border border-[var(--color-border)]">
+            <img src={img.dataUrl} alt={img.filename} className="w-full h-full object-cover" />
+            <button
+              type="button"
+              className="image-thumb-x absolute top-0.5 right-0.5 w-5 h-5 flex items-center justify-center text-white bg-black/60 rounded-full"
+              onClick={() => onRemove(img.id)}
+              aria-label={`Remove ${img.filename}`}
+            >
+              <X size={12} />
+            </button>
+          </div>
+          <div className="image-thumb-meta flex flex-col text-[0.65rem] text-[var(--color-text-dim)] mt-0.5">
+            <span className="image-thumb-name overflow-hidden text-ellipsis whitespace-nowrap">{img.filename}</span>
             <span className="image-thumb-size">{humanSize(img.sizeBytes)}</span>
           </div>
         </li>
