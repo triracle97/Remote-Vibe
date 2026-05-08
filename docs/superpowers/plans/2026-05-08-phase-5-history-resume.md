@@ -777,7 +777,6 @@ interface CandidateFile {
 }
 
 const SURFACE_CAP = 50;
-const OVER_READ_CAP = 75;
 const HEAD_BYTES = 4096;
 const FORWARD_SCAN_BYTES = 16384;
 const PROMPT_TRUNCATE = 80;
@@ -864,10 +863,15 @@ export class HistoryScanner {
     }
 
     candidates.sort((a, b) => b.mtime - a.mtime);
-    const top = candidates.slice(0, OVER_READ_CAP);
 
+    // Walk candidates by mtime desc, parse + allowlist-filter as we go,
+    // stop as soon as we have SURFACE_CAP valid entries. NO over-read cap —
+    // the loop is bounded by SURFACE_CAP results (early exit) AND by the
+    // total candidate set (typically a few hundred). Per-file work is a
+    // single 4 KB read; total worst-case I/O ~MB-scale.
     const out: HistoryEntry[] = [];
-    for (const c of top) {
+    for (const c of candidates) {
+      if (out.length >= SURFACE_CAP) break;
       const parsed = await this.parseClaudeFile(c.filePath);
       if (parsed === null) continue;
       const allowed = await this.opts.allowlistGate(parsed.cwd);
@@ -881,7 +885,6 @@ export class HistoryScanner {
         mtime: c.mtime,
         firstPrompt: parsed.firstPrompt,
       });
-      if (out.length >= SURFACE_CAP) break;
     }
     return out;
   }
@@ -920,10 +923,10 @@ export class HistoryScanner {
     }
 
     candidates.sort((a, b) => b.mtime - a.mtime);
-    const top = candidates.slice(0, OVER_READ_CAP);
 
     const out: HistoryEntry[] = [];
-    for (const c of top) {
+    for (const c of candidates) {
+      if (out.length >= SURFACE_CAP) break;
       const parsed = await this.parseCodexFile(c.filePath);
       if (parsed === null) continue;
       const allowed = await this.opts.allowlistGate(parsed.cwd);
@@ -2109,8 +2112,48 @@ git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(bridge): boot wir
 ## Task 8: Web `historyStore.ts` — zustand store + 60 s dedupe
 
 **Files:**
+- Create: `apps/web/src/services/bridge-client-singleton.ts` (small registration shim)
+- Modify: `apps/web/src/App.tsx` (register the BridgeClient instance on mount)
 - Create: `apps/web/src/features/history/historyStore.ts`
 - Create: `apps/web/src/features/history/historyStore.test.ts`
+
+### Architecture note: how the store talks to the bridge
+
+The existing web architecture instantiates `BridgeClient` ONCE in `App.tsx` (`const client = useMemo(() => new BridgeClient(), []);`) and threads it through component props (e.g. `Session.tsx`'s `client: BridgeClient` prop). Zustand stores have no access to this prop chain, so a Zustand action like `historyStore.fetch()` cannot reach `client.send()` directly.
+
+Rather than threading the client through every action call, register the singleton on mount:
+
+`apps/web/src/services/bridge-client-singleton.ts`:
+
+```ts
+import type { BridgeClient } from './bridge-client';
+
+let registered: BridgeClient | null = null;
+
+export function setBridgeClient(c: BridgeClient): void {
+  registered = c;
+}
+
+export function getBridgeClient(): BridgeClient {
+  if (registered === null) {
+    throw new Error('BridgeClient has not been registered yet (App.tsx must call setBridgeClient on mount)');
+  }
+  return registered;
+}
+```
+
+In `App.tsx`, after the `client` is constructed (around the `useMemo` line), call `setBridgeClient(client)` ONCE in a `useEffect` that runs on mount:
+
+```tsx
+import { setBridgeClient } from './services/bridge-client-singleton';
+
+// inside App component, after the existing useMemo:
+useEffect(() => {
+  setBridgeClient(client);
+}, [client]);
+```
+
+Stores then call `getBridgeClient().send(msg)` inside actions. This keeps the existing prop-threading for components that need it AND gives stores a clean way to send.
 
 - [ ] **Step 1: Write failing test**
 
@@ -2121,16 +2164,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useHistoryStore } from './historyStore';
 import type { HistoryEntry } from '../../types/protocol';
 
-// Mock the WS send() function. The real store calls something like
-// `useConnectionStore.getState().send(msg)`. Adjust the mock target
-// to whatever the existing code uses.
-vi.mock('../../store/connection', () => ({
-  useConnectionStore: {
-    getState: () => ({ send: vi.fn() }),
-  },
+// Mock the BridgeClient singleton — the store calls getBridgeClient().send(msg).
+vi.mock('../../services/bridge-client-singleton', () => ({
+  getBridgeClient: vi.fn(),
 }));
 
-import { useConnectionStore } from '../../store/connection';
+import { getBridgeClient } from '../../services/bridge-client-singleton';
 
 describe('historyStore', () => {
   beforeEach(() => {
@@ -2145,7 +2184,7 @@ describe('historyStore', () => {
 
   it('fetch() sends list_history over WS', async () => {
     const send = vi.fn();
-    (useConnectionStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({ send });
+    (getBridgeClient as ReturnType<typeof vi.fn>).mockReturnValue({ send });
     useHistoryStore.getState().fetch();
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'list_history' }));
     expect(useHistoryStore.getState().loading).toBe(true);
@@ -2153,7 +2192,7 @@ describe('historyStore', () => {
 
   it('60s dedupe: second fetch within window does NOT re-send', async () => {
     const send = vi.fn();
-    (useConnectionStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({ send });
+    (getBridgeClient as ReturnType<typeof vi.fn>).mockReturnValue({ send });
     useHistoryStore.setState({ lastFetched: Date.now(), loading: false });
     useHistoryStore.getState().fetch();
     expect(send).not.toHaveBeenCalled();
@@ -2199,7 +2238,7 @@ Expected: FAIL — module not found.
 ```ts
 import { create } from 'zustand';
 import type { HistoryEntry, ServerMsg } from '../../types/protocol';
-import { useConnectionStore } from '../../store/connection';
+import { getBridgeClient } from '../../services/bridge-client-singleton';
 
 const CACHE_TTL_MS = 60_000;
 
@@ -2225,7 +2264,7 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     if (Date.now() - s.lastFetched < CACHE_TTL_MS) return;
     set({ loading: true });
     const correlationId = `hist-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    useConnectionStore.getState().send({ type: 'list_history', correlationId });
+    getBridgeClient().send({ type: 'list_history', correlationId });
   },
 
   invalidate() {
@@ -2249,16 +2288,19 @@ The existing `App.tsx` (or wherever ws messages are dispatched) needs ONE additi
 
 - [ ] **Step 4: Wire history-store into the WS message dispatcher**
 
-Find the dispatcher (likely `apps/web/src/App.tsx` or `apps/web/src/store/connection.ts`). Add:
+The WS message dispatcher lives in `apps/web/src/App.tsx` (the `client.on('message', ...)` handler around line 40+). Inside that handler, add a route for the new `history_list` message:
 
-```ts
-import { useHistoryStore } from './features/history/historyStore'; // adjust path
+```tsx
+import { useHistoryStore } from './features/history/historyStore';
 
-// inside the message handler:
-if (msg.type === 'history_list') {
-  useHistoryStore.getState().applyServerMsg(msg);
+// inside the message handler, alongside the other type-routed branches:
+if (m.type === 'history_list') {
+  useHistoryStore.getState().applyServerMsg(m);
+  return;
 }
 ```
+
+Place it near the other store-routing branches (e.g. `useFileExplorerStore.getState().applyDirsResult(m)` at App.tsx:50).
 
 - [ ] **Step 5: Run test — expect PASS**
 
@@ -2271,11 +2313,9 @@ Expected: 4 passed.
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /Volumes/WDSSD/Code/mac-remote-terminal add apps/web/src/features/history/historyStore.ts apps/web/src/features/history/historyStore.test.ts apps/web/src/App.tsx apps/web/src/store/connection.ts
-git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(web): historyStore with list_history fetch + 60s dedupe"
+git -C /Volumes/WDSSD/Code/mac-remote-terminal add apps/web/src/services/bridge-client-singleton.ts apps/web/src/features/history/historyStore.ts apps/web/src/features/history/historyStore.test.ts apps/web/src/App.tsx
+git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(web): bridge-client singleton + historyStore with list_history fetch + 60s dedupe"
 ```
-
-(Adjust the staged files to match what you actually edited.)
 
 ---
 
@@ -2797,7 +2837,7 @@ In `apps/web/src/store/sessions.ts`:
 
 ```ts
 import type { HistoryEntry } from '../types/protocol';
-import { useConnectionStore } from './connection';
+import { getBridgeClient } from '../services/bridge-client-singleton';
 
 // Inside the create() body, alongside existing actions:
 
@@ -2816,7 +2856,7 @@ async resume(webSessionId: string): Promise<string> {
   const promise = new Promise<string>((resolve, reject) => {
     pendingResumes.set(correlationId, { resolve, reject });
   });
-  useConnectionStore.getState().send({
+  getBridgeClient().send({
     type: 'resume_session',
     webSessionId,
     correlationId,
@@ -2829,7 +2869,7 @@ async resumeFromHistory(entry: HistoryEntry): Promise<string> {
   const promise = new Promise<string>((resolve, reject) => {
     pendingResumes.set(correlationId, { resolve, reject });
   });
-  useConnectionStore.getState().send({
+  getBridgeClient().send({
     type: 'resume_session',
     agent: entry.agent,
     sessionId: entry.sessionId,
