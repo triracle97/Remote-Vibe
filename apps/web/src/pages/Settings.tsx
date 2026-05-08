@@ -3,6 +3,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { useConnectionStore } from '../store/connection';
 import { useThemeStore, type ThemeMode } from '../shell/themeStore';
 import { useDefaultWorkspacesStore } from '../features/project-picker/defaultWorkspacesStore';
+import { useAccountsStore } from '../store/accounts';
 import { ProfileEditor } from '../features/profiles/ProfileEditor';
 
 const themes: ReadonlyArray<{ value: ThemeMode; label: string }> = [
@@ -19,6 +20,7 @@ export function Settings(): JSX.Element {
   const workspaces = useDefaultWorkspacesStore((s) => s.paths);
   const addWorkspace = useDefaultWorkspacesStore((s) => s.add);
   const removeWorkspace = useDefaultWorkspacesStore((s) => s.remove);
+  const accounts = useAccountsStore((s) => s.accounts);
   const [draft, setDraft] = useState('');
   const [profilesOpen, setProfilesOpen] = useState(false);
 
@@ -123,6 +125,25 @@ export function Settings(): JSX.Element {
           Manage profiles
         </button>
         <ProfileEditor open={profilesOpen} onClose={() => setProfilesOpen(false)} />
+      </section>
+
+      <section className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4">
+        <h2 className="text-[var(--color-text-dim)] text-xs font-bold tracking-wider uppercase mb-3">Accounts</h2>
+        {accounts.length === 0 ? (
+          <div className="text-sm text-[var(--color-text-dim)]">No accounts.</div>
+        ) : (
+          <ul className="list-none p-0 m-0 divide-y divide-[var(--color-border)]">
+            {accounts.map((a) => (
+              <li key={a.name} className="py-2 flex items-center justify-between">
+                <span className="text-[var(--color-text)] text-sm">{a.name}</span>
+                <span className="text-[var(--color-text-dim)] text-xs flex items-center gap-2">
+                  {a.agent}
+                  {a.isDefault && <span className="text-[var(--color-accent)]">(default)</span>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   );

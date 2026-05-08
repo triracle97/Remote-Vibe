@@ -53,4 +53,9 @@ describe('Settings page', () => {
     expect(screen.getByRole('heading', { name: /^profiles$/i })).toBeDefined();
     expect(screen.getByRole('button', { name: /manage profiles/i })).toBeDefined();
   });
+
+  it('renders Accounts heading', () => {
+    renderPage();
+    expect(screen.getByRole('heading', { name: /accounts/i })).toBeDefined();
+  });
 });
