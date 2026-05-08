@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    background: var(--color-bg);
+    color: var(--color-text);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Brand accents (shared across themes) */
+  --color-accent:  #339af0;
+  --color-success: #40c057;
+  --color-warn:    #fcc419;
+  --color-danger:  #fa5252;
+}
+
+[data-theme="dark"] {
+  --color-bg:          #111214;
+  --color-surface:     #1a1b1e;
+  --color-surface-2:   #25262b;
+  --color-border:      #373a40;
+  --color-text:        #e5e7eb;
+  --color-text-mute:   #9ca3af;
+  --color-text-dim:    #6b7280;
+  --color-bubble-user: #4b4461;
+  --color-bubble-ai:   #2c3340;
+  --color-tool-shell:  rgba(64, 192, 87, 0.18);
+  --color-tool-result: rgba(252, 196, 25, 0.18);
+}
+
+[data-theme="light"] {
+  --color-bg:          #fafafa;
+  --color-surface:     #ffffff;
+  --color-surface-2:   #f1f3f5;
+  --color-border:      #dee2e6;
+  --color-text:        #1a1b1e;
+  --color-text-mute:   #495057;
+  --color-text-dim:    #868e96;
+  --color-bubble-user: #dbe4ff;
+  --color-bubble-ai:   #f1f3f5;
+  --color-tool-shell:  rgba(64, 192, 87, 0.14);
+  --color-tool-result: rgba(252, 196, 25, 0.18);
+}
+
+@layer utilities {
+  .scrollbar-hide { scrollbar-width: none; }
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+}
