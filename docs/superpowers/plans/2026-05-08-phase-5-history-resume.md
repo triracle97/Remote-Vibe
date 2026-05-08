@@ -2806,16 +2806,20 @@ Add a guard so `code === 'session_dead'` is NOT pushed to the global banner. The
 
 ```tsx
 if (m.type === 'error') {
-  if (m.code === 'session_dead') {
-    // Per-session-only: do NOT push to global error banner. The sessions
-    // store flips alive=false on the named sessionId; ResumePrompt renders.
-    return;
+  // session_dead is per-session-only — it must NOT raise the global banner,
+  // but it MUST still flow through to the rest of the handler (the
+  // sessions-store apply(m) call later in App.tsx is what flips alive=false
+  // on the named sessionId so ResumePrompt renders). Skip ONLY setError;
+  // do NOT return early.
+  if (m.code !== 'session_dead') {
+    setError(`${m.code}: ${m.message}`);
   }
-  setError(`${m.code}: ${m.message}`);
 }
 ```
 
-The exact line layout in App.tsx may differ slightly (read the file before editing). The contract: `session_dead` short-circuits before reaching `setError`. All other error codes (including the new ones from Phase 5: `claude_resume_rejected`, etc.) still flow into the global banner — the per-session sessions-store ALSO routes them to inline notices in HistoryPanel / Session.tsx, but the global banner stays as a fallback for visibility.
+Critical: the guard must NOT use `return` here — App.tsx's WS message handler proceeds to call `apply(m)` (which routes the message into the sessions store, file-explorer store, etc.) after the error branch. Returning early would skip that, and the sessions store would never see the `session_dead` event → alive flag never flips → ResumePrompt never appears.
+
+The contract: `session_dead` skips ONLY the global banner; all other handler logic (including the per-session apply) still runs. All other error codes (Phase 5's new ones included) still flow into the global banner.
 
 - [ ] **Step 7: Run tests — expect PASS**
 
