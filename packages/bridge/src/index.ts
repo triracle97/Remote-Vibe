@@ -8,6 +8,7 @@ import { ClaudeProcess } from './claude-process.js';
 import { CodexProcess } from './codex-process.js';
 import { loadCodexAccounts } from './accounts.js';
 import { loadEnv } from './env.js';
+import { loadEnvFile } from './env-file.js';
 import { resolveTailscaleIPv4 } from './tailscale.js';
 import { createHttpHandler } from './http-server.js';
 import { attachWebSocket } from './websocket.js';
@@ -24,6 +25,12 @@ import { FileSearch } from './file-search.js';
 import { Notifier } from './notifier.js';
 
 async function main(): Promise<void> {
+  // Load .env from cwd if present. Existing process env (e.g. shell exports)
+  // wins; the file is just a default-source for missing values. Path can be
+  // overridden via BRIDGE_ENV_FILE.
+  const applied = loadEnvFile(process.env.BRIDGE_ENV_FILE);
+  if (applied > 0) console.log(`[bridge] loaded ${applied} value(s) from .env`);
+
   const cfg = loadEnv(process.env);
   const accounts = loadCodexAccounts({ dataDir: cfg.dataDir, env: process.env });
   console.log(`[bridge] loaded ${accounts.size} codex account(s): ${[...accounts.keys()].join(', ')}`);
