@@ -134,4 +134,121 @@ describe('sessions store', () => {
     expect(next.sessions['s1']).toBeDefined();
     expect(next.order).toEqual([]);
   });
+
+  it('flags preceding stream_deltas as superseded when assistant text arrives', () => {
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+    store.applyServerMsg({
+      type: 'stream_delta',
+      sessionId: 's1',
+      seq: 2,
+      payload: { delta: 'hel' },
+    });
+    store.applyServerMsg({
+      type: 'stream_delta',
+      sessionId: 's1',
+      seq: 3,
+      payload: { delta: 'lo' },
+    });
+    store.applyServerMsg({
+      type: 'assistant',
+      sessionId: 's1',
+      seq: 4,
+      payload: { text: 'hello' },
+    });
+    const events = useSessionsStore.getState().sessions['s1']!.events;
+    const deltas = events.filter((e) => e.type === 'stream_delta');
+    expect(deltas).toHaveLength(2);
+    expect(deltas.every((e) => (e as { superseded?: boolean }).superseded === true)).toBe(true);
+    const assistant = events.find((e) => e.type === 'assistant');
+    expect((assistant as { superseded?: boolean }).superseded).toBeUndefined();
+  });
+
+  it('does NOT supersede stream_deltas from a previous turn', () => {
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+    // Turn 1: deltas + result
+    store.applyServerMsg({
+      type: 'stream_delta',
+      sessionId: 's1',
+      seq: 2,
+      payload: { delta: 'hi' },
+    });
+    store.applyServerMsg({ type: 'result', sessionId: 's1', seq: 3, payload: {} });
+    // Turn 2: deltas + assistant text
+    store.applyServerMsg({
+      type: 'stream_delta',
+      sessionId: 's1',
+      seq: 4,
+      payload: { delta: 'world' },
+    });
+    store.applyServerMsg({
+      type: 'assistant',
+      sessionId: 's1',
+      seq: 5,
+      payload: { text: 'world' },
+    });
+    const events = useSessionsStore.getState().sessions['s1']!.events;
+    const seq2 = events.find((e) => 'seq' in e && e.seq === 2)!;
+    const seq4 = events.find((e) => 'seq' in e && e.seq === 4)!;
+    expect((seq2 as { superseded?: boolean }).superseded).toBeUndefined(); // turn 1 delta NOT touched
+    expect((seq4 as { superseded?: boolean }).superseded).toBe(true);
+  });
+
+  it('reload-replay (cold reload via history) reaches the same superseded set', () => {
+    // Spec §5 + §8 test #3: replay the same events from a cold store and
+    // verify the supersession walk re-derives identical superseded flags.
+    const replay = [
+      { type: 'system', event: 'session_created', sessionId: 's1', seq: 1 } as const,
+      { type: 'stream_delta', sessionId: 's1', seq: 2, payload: { delta: 'hel' } } as const,
+      { type: 'stream_delta', sessionId: 's1', seq: 3, payload: { delta: 'lo' } } as const,
+      { type: 'assistant', sessionId: 's1', seq: 4, payload: { text: 'hello' } } as const,
+    ];
+    // Pass 1: live append path (event-by-event)
+    const store1 = useSessionsStore.getState();
+    for (const e of replay) store1.applyServerMsg(e);
+    const liveDeltas = useSessionsStore
+      .getState()
+      .sessions['s1']!.events.filter((e) => e.type === 'stream_delta');
+    const liveFlags = liveDeltas.map((e) => (e as { superseded?: boolean }).superseded === true);
+
+    // Reset store to cold and re-load the same events via the history bulk-merge path.
+    useSessionsStore.setState({ sessions: {}, order: [], activeId: null, transcriptOnly: {} });
+    const store2 = useSessionsStore.getState();
+    // Seed the session row first (history path requires existing summary).
+    store2.applyServerMsg({
+      type: 'session_list',
+      sessions: [{ sessionId: 's1', agent: 'claude', projectPath: '/p', createdAt: 1 }],
+    });
+    store2.applyServerMsg({ type: 'history', sessionId: 's1', events: replay, hasMore: false });
+    const replayDeltas = useSessionsStore
+      .getState()
+      .sessions['s1']!.events.filter((e) => e.type === 'stream_delta');
+    const replayFlags = replayDeltas.map(
+      (e) => (e as { superseded?: boolean }).superseded === true,
+    );
+
+    expect(replayFlags).toEqual(liveFlags);
+    expect(replayFlags.every((f) => f === true)).toBe(true);
+  });
+
+  it('does NOT supersede on assistant events that have no text payload (e.g. tool_use)', () => {
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+    store.applyServerMsg({
+      type: 'stream_delta',
+      sessionId: 's1',
+      seq: 2,
+      payload: { delta: 'hi' },
+    });
+    store.applyServerMsg({
+      type: 'assistant',
+      sessionId: 's1',
+      seq: 3,
+      payload: { toolUse: { kind: 'tool_use', toolUseId: 'tu1', toolName: 'Bash', input: {} } },
+    });
+    const events = useSessionsStore.getState().sessions['s1']!.events;
+    const delta = events.find((e) => 'seq' in e && e.seq === 2)!;
+    expect((delta as { superseded?: boolean }).superseded).toBeUndefined();
+  });
 });

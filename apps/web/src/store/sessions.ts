@@ -1,7 +1,39 @@
 import { create } from 'zustand';
 import type { AgentKind, ServerLifecycleMsg, ServerMsg, ServerStreamMsg } from '../types/protocol';
 
-export type SessionEvent = ServerLifecycleMsg | ServerStreamMsg;
+export type SessionEvent = (ServerLifecycleMsg | ServerStreamMsg) & {
+  /**
+   * Web-store-only flag. Set on stream_delta events whose contents have been
+   * superseded by a consolidated `assistant` event with text payload.
+   * MessageBubble early-returns null for these. NEVER carried on the wire —
+   * the store sets/clears it locally; replay re-derives it from order.
+   */
+  superseded?: true;
+};
+
+function applySupersessionWalk(events: SessionEvent[]): SessionEvent[] {
+  // Single SSOT for the supersession derivation. Order-only and idempotent:
+  // for each `assistant` with a non-empty text payload, walk backwards until
+  // any non-`stream_delta` boundary, flagging stream_delta events as
+  // `superseded: true`. Already-flagged events are not re-allocated.
+  // Used by BOTH the live `assistant` append path and the `history` bulk-merge
+  // (replay) path so reload-replay reaches the same superseded set as live.
+  let out: SessionEvent[] | null = null;
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!;
+    if (e.type !== 'assistant') continue;
+    const text = (e.payload as { text?: unknown }).text;
+    if (typeof text !== 'string' || text.length === 0) continue;
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = (out ?? events)[j]!;
+      if (prev.type !== 'stream_delta') break;
+      if (prev.superseded) continue;
+      if (out === null) out = events.slice();
+      out[j] = { ...prev, superseded: true };
+    }
+  }
+  return out ?? events;
+}
 
 export interface SessionView {
   sessionId: string;
@@ -84,9 +116,15 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     ) {
       const exists = get().sessions[m.sessionId];
       if (!exists) return;
+      let nextEvents: SessionEvent[] = [...exists.events, m as SessionEvent];
+      // Only the `assistant` append can introduce a new supersession boundary —
+      // skip the walk on every other event type for performance.
+      if (m.type === 'assistant') {
+        nextEvents = applySupersessionWalk(nextEvents);
+      }
       const next: SessionView = {
         ...exists,
-        events: [...exists.events, m],
+        events: nextEvents,
         lastSeq: m.seq,
       };
       set((s) => ({ sessions: { ...s.sessions, [m.sessionId]: next } }));
@@ -139,9 +177,14 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       const merged = [...bySeq.values()].sort(
         (a, b) => (a as { seq: number }).seq - (b as { seq: number }).seq,
       );
+      // Re-derive supersession flags on the merged array. The walk is purely
+      // additive and order-only — replay reaches the same flag set as live.
+      const mergedWithFlags = applySupersessionWalk(merged);
       const lastSeq =
-        merged.length > 0 ? (merged[merged.length - 1] as { seq: number }).seq : existing.lastSeq;
-      const next: SessionView = { ...existing, events: merged, lastSeq };
+        mergedWithFlags.length > 0
+          ? (mergedWithFlags[mergedWithFlags.length - 1] as { seq: number }).seq
+          : existing.lastSeq;
+      const next: SessionView = { ...existing, events: mergedWithFlags, lastSeq };
       set((s) => ({ sessions: { ...s.sessions, [m.sessionId]: next } }));
       return;
     }
