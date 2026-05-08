@@ -66,7 +66,8 @@ Make any past Claude or Codex CLI session resumable from the web UI. Three coupl
 │ session-manager.ts (modified)                                         │
 │   └─ resume(webSessionId)                                             │
 │       ├─ Claude: spawn `claude --resume <claudeId> -p ...`            │
-│       └─ Codex:  flip alive=true; spawn-per-turn handles rest         │
+│       └─ Codex:  re-instantiate CodexDriver seeded with codexSessionId│
+│                  so next send_text runs `codex exec resume <id>`      │
 │                                                                       │
 │ ws-server (handlers added)                                            │
 │   ├─ list_history → scanner (60s in-memory cache) → history_list     │
@@ -76,21 +77,30 @@ Make any past Claude or Codex CLI session resumable from the web UI. Three coupl
 
 ### Resume model
 
-Two paths converge into the same `resume(webSessionId)` action:
+Two paths converge into the same `resume()` flow on the bridge. Each is asymmetric per agent because Claude is a long-running child whereas Codex is spawn-per-turn (Phase 2).
 
-1. **Resume a bridge-known dead session** (existing webSessionId in registry):
-   - Web sends `resume_session { webSessionId, ... }`.
-   - Bridge looks up registry entry, spawns CLI, marks alive.
-   - Reply: `session_resumed { webSessionId, alive: true }`.
-   - Web flips local alive flag; ResumePrompt unmounts; input box becomes active.
+**Path 1 — Resume a bridge-known dead session** (existing webSessionId in registry):
 
-2. **Resume a never-seen native CLI session from the History panel**:
-   - Web sends `resume_session { agent, sessionId, projectPath, account?, /* no webSessionId */ }`.
-   - Bridge issues a NEW webSessionId, persists it to registry with `cliSessionId = sessionId`, then spawns CLI.
-   - Reply: `session_resumed { webSessionId, alive: true }`.
-   - Web routes to `/session/<webSessionId>`.
+- Web sends `resume_session { webSessionId, account?, correlationId }`.
+- Bridge looks up registry entry to retrieve `agent`, `projectPath`, `claudeSessionId | codexSessionId`.
+- **Claude**: bridge spawns `claude --resume <claudeSessionId> -p --dangerously-skip-permissions --output-format stream-json --input-format stream-json --include-partial-messages --verbose` with `cwd: projectPath`. Reuses the existing ClaudeDriver factory.
+- **Codex**: bridge instantiates a new `CodexDriver` for the same webSessionId, **seeded with `codexSessionId`** so the driver's "next-turn command" is `codex exec resume <codexSessionId> --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check` instead of `codex exec` (the seed is the same field the existing driver populates after the first turn). No spawn happens here — the spawn fires on the user's first `send_text` per the existing P2 spawn-per-turn flow.
+- Both agents: bridge sets `alive: true` on the session entry, persists registry, replies `session_resumed { webSessionId, alive: true }`.
+- Web flips local alive flag; ResumePrompt unmounts; input box becomes active.
 
-The same web sessionId is preserved across resumes for path #1 — URL stays stable, transcript JSONL appends, reload-replay continues to work.
+**Path 2 — Resume a never-seen native CLI session from the History panel**:
+
+- Web sends `resume_session { agent, sessionId, projectPath, account?, correlationId }` (no `webSessionId`).
+- Bridge **must verify** the (agent, sessionId) pair against the scanned history before doing anything else (see §9 Security):
+  - Look up the entry in the scanner cache (or rescan if absent). The scanner already establishes the file's ground-truth `cwd` via parsing.
+  - If no entry exists for (agent, sessionId) → reject with `error: resume_failed, code: 'history_session_not_found'`.
+  - If the file's ground-truth `cwd` is not inside `BRIDGE_ALLOWED_DIRS` → reject with `error: resume_failed, code: 'project_path_disallowed'`.
+  - The client-supplied `projectPath` is treated as a HINT only; the bridge always uses the ground-truth `cwd` from the file when spawning. (If the hint disagrees, log a warning to bridge stderr but proceed with the ground truth.)
+- Bridge issues a new webSessionId, persists registry with `claudeSessionId = sessionId` or `codexSessionId = sessionId`, then runs the same per-agent resume logic as Path 1 (Claude spawns; Codex seeds driver).
+- Reply: `session_resumed { webSessionId, alive: true }`.
+- Web routes to `/session/<webSessionId>`.
+
+The same web sessionId is preserved across resumes for Path 1 — URL stays stable, transcript JSONL appends, reload-replay continues to work.
 
 ### Persisted registry
 
@@ -119,7 +129,17 @@ The same web sessionId is preserved across resumes for path #1 — URL stays sta
 }
 ```
 
-Atomic write: `tmp` file + `rename`. On boot, bridge loads the file, populates `sessions` map with `alive: false`, and waits for resume actions or new spawns.
+**Atomic + concurrency-safe write protocol**:
+
+A naïve `tmp file + rename` is NOT safe under concurrent async writers in the same Node process — two overlapping `save()` calls share the same tmp path, race, and can lose the newer write or rename a missing file.
+
+The registry uses three layers:
+
+1. **Serialized write queue (in-process mutex)**. Every `save()` chains onto a module-level `writePromise` (a `let writePromise: Promise<void> = Promise.resolve()`). Each new save does `writePromise = writePromise.then(() => doWrite(state))`. The latest in-memory state is captured at the time `doWrite` runs, so coalesced writes are fine. Never two `doWrite` runs concurrently.
+2. **Unique tmp filename per write**: `.bridge/sessions.json.tmp.<pid>.<counter>` where `counter` increments per call. Even if a future refactor parallelizes, two writers don't collide.
+3. **Fsync before rename**: `await fh.write(...); await fh.sync(); await fh.close(); await fs.rename(tmp, final)`. On crash, either the old file remains intact OR the new one is fully durable — never a torn write.
+
+On boot, bridge loads the file, populates `sessions` map with `alive: false` for each entry, and waits for resume actions or new spawns. If the file is missing or unparseable, log to stderr and start with an empty registry (no crash).
 
 ## 4. WS Protocol
 
@@ -182,11 +202,19 @@ interface ServerSessionResumedMsg {
   correlationId: string;
 }
 
-// Resume failure (typed error)
+// Resume failure (typed error). The new error includes optional sessionId so
+// the web can route the message to the right per-session view (matches the
+// existing session_dead error shape from Phase 1, which also carries sessionId).
 interface ServerErrorMsg {
   type: 'error';
-  code: 'resume_failed' | /* existing codes... */;
+  code:
+    | 'resume_failed'
+    | 'history_session_not_found'   // (agent, sessionId) not in scanner cache or filesystem
+    | 'project_path_disallowed'     // ground-truth cwd outside BRIDGE_ALLOWED_DIRS
+    | 'project_path_missing'        // projectPath no longer exists on disk
+    | /* existing codes... */;
   message: string;
+  sessionId?: string;               // present when the error is scoped to a specific session
   correlationId: string;
 }
 ```
@@ -215,38 +243,52 @@ async function listHistory(allowedDirs: string[]): Promise<{
 }
 ```
 
+### Pre-cap sort invariant
+
+Both scanners must establish the candidate-by-mtime order BEFORE any cap is applied, otherwise the most-recent sessions sitting beyond the cap boundary disappear. The order is therefore:
+
+1. Enumerate all candidate file paths (Claude: across all project dirs; Codex: across all date dirs).
+2. `stat` each path — collect `{ filePath, mtime }`. (Cheap; even 5000 files = ~5000 stats < 100 ms on macOS.)
+3. Sort the full list by mtime desc.
+4. THEN take top 50.
+5. THEN do per-file partial reads on those 50.
+
+The intermediate cap of 200 mentioned in earlier drafts was wrong — it must be removed. The hard cap is only on per-file content reads (50 reads at 4-16 KB each = trivial).
+
 ### `scanClaude`
 
-1. List `~/.claude/projects/*` directories (each name is an encoded cwd: `/` → `-`).
-2. Best-effort decode dir name (`-Volumes-WDSSD-Code-foo` → `/Volumes/WDSSD/Code/foo`); accept ambiguity for paths with `-` in segments.
-3. Filter: keep only dirs whose decoded path is inside one of `BRIDGE_ALLOWED_DIRS` (using realpath + same denylist gates as Phase 3 fs-api).
-4. List `*.jsonl` files inside each kept dir; collect `{ filePath, mtime }` via `stat`.
-5. Cap candidate set at 200 total; sort by mtime desc; take top 50.
-6. For each top-50 entry: read first ~4 KB of the file. Parse line-by-line until a user message is found; extract its `cwd` (ground truth) and first text content (truncated to 80 chars).
-7. Re-validate ground-truth `cwd` against allowlist (drop entry if it now fails).
-8. Return `[{ agent: 'claude', sessionId: filename without .jsonl, projectPath, mtime, firstPrompt }]`.
+1. List `~/.claude/projects/*` directories (each name is an encoded cwd: `/` → `-`). The encoding is irreversible when path segments contain literal `-`, so dir names are NOT used for allowlist filtering.
+2. List `*.jsonl` files inside each dir; collect `{ filePath, mtime }` via `stat`. No prefilter on dir names.
+3. Sort all candidates by mtime desc; take top 50.
+4. For each top-50 entry: read first ~4 KB of the file. Parse line-by-line until a user message is found; extract its `cwd` (ground truth) and first text content (truncated to 80 chars).
+5. Allowlist gate: reject entries whose ground-truth `cwd` is NOT inside `BRIDGE_ALLOWED_DIRS` (realpath + Phase 3 denylist gates). Drop them silently from the result.
+6. If the file has no parseable user message in its first ~4 KB, drop the entry (we can't allowlist-validate without ground truth, so we don't surface it).
+7. Return `[{ agent: 'claude', sessionId: filename without .jsonl, projectPath: groundTruthCwd, mtime, firstPrompt }]`.
+
+This means a few rejected entries can shrink the result below 50. To compensate, scanClaude over-reads top 75 candidates and drops down to 50 after allowlist-filtering. This bounds extra I/O without the prefilter false-negatives that made earlier drafts unsafe.
 
 ### `scanCodex`
 
-1. Walk `~/.codex/sessions/<YYYY>/<MM>/<DD>/*.jsonl` (3-level glob). Cap candidates at 200.
-2. Sort by mtime desc, take top 50.
+1. Walk `~/.codex/sessions/<YYYY>/<MM>/<DD>/*.jsonl` (3-level glob). No cap during enumeration.
+2. `stat` each file; sort all by mtime desc; take top 75 (over-read margin same as Claude).
 3. For each: read first line — Codex's `session_meta` event has `payload.id` (sessionId), `payload.cwd` (project path), `payload.originator` (informational), `payload.git` (informational).
-4. Filter out entries whose `cwd` isn't inside allowlist.
+4. Allowlist gate: reject entries whose `cwd` isn't inside `BRIDGE_ALLOWED_DIRS`.
 5. Bounded forward-scan (~16 KB) for first user message; truncate text to 80 chars. If none, `firstPrompt = ''`.
-6. Return `[{ agent: 'codex', sessionId: payload.id, projectPath: payload.cwd, mtime, firstPrompt }]`.
+6. Cap the post-filter list at top 50.
+7. Return `[{ agent: 'codex', sessionId: payload.id, projectPath: payload.cwd, mtime, firstPrompt }]`.
 
 ### Performance budget
 
-- 200 stat calls + 100 partial-file reads (4-16 KB each) per call.
-- Target <100 ms cold-cache on a typical SSD-backed home dir.
-- Bridge caches the `history_list` reply in-memory for 60 s to dedupe rapid reloads. Cache key is "everything" (no per-arg variation since args are static).
+- ~5000 stat calls + 75 partial-file reads (4-16 KB each) per agent per call. Target <200 ms cold-cache on a typical SSD-backed home dir.
+- Bridge caches the `history_list` reply in-memory for 60 s to dedupe rapid reloads. Cache key is "everything" (no per-arg variation since args are static). Cache invalidates immediately on `resume_session` success (so a fresh resume's mtime bump is reflected next time).
 
-### Path-decoding ambiguity
+### Path-decoding ambiguity (Claude)
 
-Claude encodes `/` as `-` in dir names — irreversible when path segments contain literal `-`. Mitigation order:
+Claude encodes `/` as `-` in dir names — irreversible when path segments contain literal `-`. The earlier draft tried to dir-decode for prefiltering and failed both ways: false positives (read a file we'd reject) AND false negatives (drop a file we'd accept). The fix above sidesteps the issue entirely:
 
-1. Prefer `cwd` from the file's user-message events (ground truth).
-2. Fall back to the dir-decoded path (still used for the allowlist pre-filter — false positives mean we read a file we'd reject after parsing; safe).
+- Dir names are NEVER used for allowlist decisions.
+- Allowlist is enforced ONLY against the ground-truth `cwd` extracted from the file content.
+- A file with no parseable user message is dropped (can't validate without ground truth).
 
 ## 6. Banner cleanup
 
@@ -314,10 +356,11 @@ Click handler                                             ⇣
 
 | Failure | Behavior |
 |---|---|
-| `claude --resume <id>` rejected by Claude (id missing from local cache) | Bridge captures stderr; replies `error: resume_failed, message: "Claude does not recognize session <id>"`. Web shows inline "Session unavailable — [Open new session in this folder]". |
-| `codex exec resume <id>` rejected | Same shape; bridge surfaces stderr verbatim. |
-| `projectPath` no longer exists | Bridge stat-checks before spawn. Missing → `resume_failed: "Project path no longer exists: <path>"`. Inline "[Open new session]" CTA. |
-| `projectPath` outside `BRIDGE_ALLOWED_DIRS` (allowlist tightened since session was created) | `resume_failed: "Project path is not in BRIDGE_ALLOWED_DIRS"`. Same inline path. |
+| `claude --resume <id>` rejected by Claude (id missing from local cache) | Bridge captures stderr; replies `error: code='resume_failed', message: "Claude does not recognize session <id>", sessionId: webSessionId`. Web shows inline "Session unavailable — [Open new session in this folder]". |
+| `codex exec resume <id>` rejected (first send after resume fails) | Same shape; bridge surfaces stderr verbatim. The driver was seeded with the resume id but the spawn fails on the first send. |
+| `projectPath` no longer exists | Bridge stat-checks before spawn. Missing → `error: code='project_path_missing', message: "Project path no longer exists: <path>"`. Inline "[Open new session]" CTA. |
+| `projectPath` outside `BRIDGE_ALLOWED_DIRS` (allowlist tightened since session was created) | `error: code='project_path_disallowed', message: "Project path is not in BRIDGE_ALLOWED_DIRS"`. Same inline path. |
+| Path 2 resume: client supplies `(agent, sessionId)` not present in scanner cache or filesystem | `error: code='history_session_not_found', message: "No history session found for <agent>:<sessionId>"`. Web auto-refreshes history list. |
 | Double-click Resume | Bridge dedupes: in-flight resume returns the same promise; second WS reply mirrors the first. |
 | Bridge restart mid-session | Registry persists; on startup all sessions load with `alive: false`. Existing reconnect-replay uses transcript fallback. User clicks Resume to continue. |
 | History entry's CLI session file deleted between scan and click | Bridge stat-checks JSONL existence at resume time. Missing → `resume_failed: "session file no longer exists"`. Tell user; auto-refresh history. |
@@ -334,9 +377,17 @@ Click handler                                             ⇣
 
 ## 9. Security
 
-- **Allowlist enforcement**: history scanner filters every entry through `BRIDGE_ALLOWED_DIRS` + Phase 3 denylist (DENIED_PATH_SEGMENTS, DENIED_SEGMENT_RUNS, DENIED_BASENAMES_CI, DENIED_BASENAME_PATTERNS). Both directory pre-filter AND post-parse ground-truth cwd are checked. No leak of paths outside allowlist.
-- **Spawn arguments**: Claude session id is a uuid (validated `[0-9a-f-]{36}` regex before passing to `--resume`). Codex session id is similarly validated. Project path is realpath'd and re-checked against allowlist before being passed as `cwd:`. No shell metacharacters reach `spawn()` — `child_process.spawn(cmd, args, { cwd })` doesn't invoke a shell.
-- **Registry file**: `.bridge/sessions.json` written with `0o600` mode (owner-only). Located inside `.bridge/` which is project-local and `.gitignore`d.
+- **Allowlist enforcement (history scan)**: history scanner enforces `BRIDGE_ALLOWED_DIRS` + Phase 3 denylist (DENIED_PATH_SEGMENTS, DENIED_SEGMENT_RUNS, DENIED_BASENAMES_CI, DENIED_BASENAME_PATTERNS) ONLY against the file's ground-truth `cwd` (extracted from content). Dir-name decoding is never trusted. No leak of paths outside allowlist.
+- **Allowlist enforcement (resume)**: every resume — both Path 1 (bridge-known) and Path 2 (native history) — re-validates `projectPath` against `BRIDGE_ALLOWED_DIRS` + Phase 3 denylist immediately before spawn. The earlier scanner check is not load-bearing for security; the resume-time check is.
+- **Native-history resume binding (anti-spoofing)**: client cannot supply an arbitrary `(agent, sessionId, projectPath)` tuple to coax the bridge into spawning at a wrong path. Bridge invariants:
+  1. Look up `(agent, sessionId)` in the scanner cache (re-running the scan if cache is stale or absent).
+  2. If not found → reject (`history_session_not_found`).
+  3. The `projectPath` the bridge spawns under is ALWAYS the file's ground-truth `cwd`, NOT the client-supplied hint.
+  4. Validate ground-truth `cwd` against allowlist; reject if it fails.
+  This means even if the operator's web client is compromised and sends `{agent: 'claude', sessionId: 'arbitrary', projectPath: '/safe'}`, the bridge will still only spawn against the actual `cwd` in Claude's recorded session metadata, and only if that cwd is allowed.
+- **Spawn arguments**: Claude/Codex session id is a uuid (validated `^[0-9a-f-]{36}$` regex case-insensitive before passing to `--resume`). `cwd` is realpath'd. `child_process.spawn(cmd, args, { cwd })` doesn't invoke a shell, so no metacharacter risk.
+- **Registry file**: `.bridge/sessions.json` written with `0o600` mode (owner-only). Located inside `.bridge/` which is project-local and `.gitignore`d. Tmp file inherits same mode.
+- **Concurrency**: registry writes are serialized through an in-process promise chain (see §3 Persisted Registry). No two writers can produce a torn file.
 - **No new env vars**, no new endpoints beyond the two WS message types, no new exfiltration surface.
 - **History scan does NOT read message content beyond the first user-message text (truncated to 80 chars).** Other event types are ignored. No tool-output, no assistant-text, no file content leaks into history rows.
 
