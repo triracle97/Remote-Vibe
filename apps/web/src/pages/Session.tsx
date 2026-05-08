@@ -9,6 +9,7 @@ import { Chat } from '../features/chat/Chat';
 import { useNewSession } from '../features/project-picker/useNewSession';
 import { streamTranscript } from '../services/transcript-fetcher';
 import { FileExplorer } from '../features/file-explorer/FileExplorer';
+import { HistoryPanel } from '../features/history/HistoryPanel';
 
 interface SessionProps {
   client: BridgeClient;
@@ -91,6 +92,7 @@ export function Session({ client }: SessionProps): JSX.Element {
         onSelect={(nid) => navigate(`/session/${nid}`)}
         onNewSession={newSession.open}
       />
+      <HistoryPanel />
       {session && (
         <Chat
           session={session}
