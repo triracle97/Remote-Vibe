@@ -81,6 +81,24 @@ describe('AtTagAutocomplete', () => {
     expect(rows[0]?.textContent).toContain('@src/foo.ts');
   });
 
+  it('renders file suggestions with readable filename and full path spans', () => {
+    seed('s1', [
+      hit({
+        insertText: '@src/deeply/nested/VeryLongComponent.tsx',
+        fullPath: '/repo/src/deeply/nested/VeryLongComponent.tsx',
+      }),
+    ]);
+    const { container } = render(
+      <AtTagAutocomplete sessionId="s1" text="@V" cursor={2} onPick={vi.fn()} />,
+    );
+    expect(container.querySelector('.autocomplete-row-title')?.textContent).toBe(
+      'VeryLongComponent.tsx',
+    );
+    expect(container.querySelector('.autocomplete-row-path')?.textContent).toBe(
+      '/repo/src/deeply/nested/VeryLongComponent.tsx',
+    );
+  });
+
   it('clicking a row inserts the hit insertText with trailing space, replacing the trigger', () => {
     seed('s1', [hit({ insertText: '@src/foo.ts', fullPath: '/repo/src/foo.ts' })]);
     const onPick = vi.fn();

@@ -21,6 +21,11 @@ function MarkdownRendererImpl({ source }: MarkdownRendererProps): JSX.Element {
         ]}
         components={{
           code: CodeBlock as never,
+          table: ({ children }) => (
+            <div className="md-table-wrap">
+              <table>{children}</table>
+            </div>
+          ),
         }}
       >
         {source}

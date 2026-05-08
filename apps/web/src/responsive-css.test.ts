@@ -61,4 +61,16 @@ describe('mobile responsive CSS contract', () => {
     expect(mobileVisibleIndex).toBeGreaterThanOrEqual(0);
     expect(baseHiddenIndex).toBeLessThan(mobileVisibleIndex);
   });
+
+  it('defines polished markdown and mobile file-tag contracts', () => {
+    const appCss = readCss('src/App.css');
+    const markdownCss = readCss('src/features/markdown/markdown.css');
+
+    expect(markdownCss).toMatch(/\.md-rendered\s*{[^}]*font-family:\s*ui-sans-serif/s);
+    expect(markdownCss).toMatch(/\.md-table-wrap\s*{[^}]*overflow-x:\s*auto/s);
+    expect(markdownCss).toMatch(/@media\s*\(max-width:\s*720px\)[\s\S]*?\.md-rendered\s*{[^}]*font-size:\s*0\.95rem/s);
+    expect(appCss).toMatch(/@media\s*\(max-width:\s*640px\)[\s\S]*?\.at-tag-autocomplete\s*{[^}]*bottom:\s*calc\(8rem \+ env\(safe-area-inset-bottom\)\)/s);
+    expect(appCss).toMatch(/\.autocomplete-row-title\s*{[^}]*text-overflow:\s*ellipsis/s);
+    expect(appCss).toMatch(/\.autocomplete-row-path\s*{[^}]*text-overflow:\s*ellipsis/s);
+  });
 });

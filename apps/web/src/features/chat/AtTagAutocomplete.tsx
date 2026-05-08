@@ -62,6 +62,11 @@ export const AtTagAutocomplete = forwardRef<AtTagAutocompleteHandle, AtTagAutoco
       onPick(newText, newCursor);
     };
 
+    const filenameFor = (fullPath: string): string => {
+      const parts = fullPath.split('/').filter(Boolean);
+      return parts[parts.length - 1] ?? fullPath;
+    };
+
     useImperativeHandle(
       ref,
       (): AtTagAutocompleteHandle => ({
@@ -109,7 +114,13 @@ export const AtTagAutocomplete = forwardRef<AtTagAutocompleteHandle, AtTagAutoco
             }}
             title={h.fullPath}
           >
-            <span className="autocomplete-row-primary">{h.insertText}</span>
+            <span className="autocomplete-row-primary">
+              <span className="autocomplete-row-head">
+                <span className="autocomplete-row-title">{filenameFor(h.fullPath)}</span>
+                <span className="autocomplete-row-insert">{h.insertText}</span>
+              </span>
+              <span className="autocomplete-row-path">{h.fullPath}</span>
+            </span>
             <span className="autocomplete-row-time">{relTime(h.mtime)}</span>
           </button>
         ))}

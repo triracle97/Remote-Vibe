@@ -62,6 +62,15 @@ describe('MarkdownRenderer', () => {
     expect(container.querySelector('table thead th')?.textContent).toBe('a');
   });
 
+  it('wraps GFM tables in a horizontal scroll container', () => {
+    const { container } = render(
+      <MarkdownRenderer source={'| a | b |\n|---|---|\n| 1 | 2 |'} />,
+    );
+    const wrap = container.querySelector('.md-table-wrap');
+    expect(wrap).toBeTruthy();
+    expect(wrap?.querySelector('table')).toBeTruthy();
+  });
+
   it('escapes raw <script> in source — no script element materializes', () => {
     const { container } = render(
       <MarkdownRenderer source={`Try <script>alert(1)</script> here`} />,

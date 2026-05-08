@@ -1,37 +1,73 @@
-.md-rendered { color: #ddd; line-height: 1.45; word-break: break-word; }
-.md-rendered h1 { font-size: 1.4rem; margin: 0.5rem 0 0.4rem; border-bottom: 1px solid #2a2a2a; padding-bottom: 0.25rem; }
-.md-rendered h2 { font-size: 1.2rem; margin: 0.5rem 0 0.4rem; }
-.md-rendered h3 { font-size: 1.05rem; margin: 0.4rem 0 0.3rem; }
-.md-rendered h4, .md-rendered h5, .md-rendered h6 { font-size: 0.95rem; margin: 0.4rem 0 0.3rem; color: #aaa; }
-.md-rendered p { margin: 0.4rem 0; }
-.md-rendered ul, .md-rendered ol { margin: 0.4rem 0; padding-left: 1.5rem; }
-.md-rendered li { margin: 0.15rem 0; }
-.md-rendered blockquote { border-left: 3px solid #444; padding: 0.1rem 0.6rem; margin: 0.4rem 0; color: #aaa; }
-.md-rendered hr { border: 0; border-top: 1px solid #2a2a2a; margin: 0.6rem 0; }
-.md-rendered a { color: #6fa8ff; text-decoration: none; }
+.md-rendered {
+  color: #e3e7ee;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 0.94rem;
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.md-rendered > :first-child { margin-top: 0; }
+.md-rendered > :last-child { margin-bottom: 0; }
+.md-rendered h1 {
+  color: #f6f8fb;
+  font-size: 1.35rem;
+  line-height: 1.2;
+  margin: 0.85rem 0 0.45rem;
+  border-bottom: 1px solid rgba(124, 150, 190, 0.22);
+  padding-bottom: 0.35rem;
+}
+.md-rendered h2 { color: #f1f4f8; font-size: 1.18rem; line-height: 1.28; margin: 0.8rem 0 0.4rem; }
+.md-rendered h3 { color: #eef2f7; font-size: 1.04rem; line-height: 1.32; margin: 0.7rem 0 0.35rem; }
+.md-rendered h4, .md-rendered h5, .md-rendered h6 {
+  color: #b9c4d2;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  margin: 0.65rem 0 0.3rem;
+}
+.md-rendered p { margin: 0.45rem 0; }
+.md-rendered ul, .md-rendered ol { margin: 0.45rem 0; padding-left: 1.35rem; }
+.md-rendered li { margin: 0.2rem 0; padding-left: 0.15rem; }
+.md-rendered li > p { margin: 0.2rem 0; }
+.md-rendered blockquote {
+  border-left: 3px solid #4c7bd9;
+  padding: 0.18rem 0 0.18rem 0.75rem;
+  margin: 0.65rem 0;
+  color: #b7c2d2;
+  background: rgba(111, 168, 255, 0.07);
+}
+.md-rendered hr { border: 0; border-top: 1px solid rgba(124, 150, 190, 0.22); margin: 0.85rem 0; }
+.md-rendered a { color: #8db8ff; text-decoration: none; text-underline-offset: 0.18em; }
 .md-rendered a:hover { text-decoration: underline; }
-.md-rendered table { border-collapse: collapse; margin: 0.4rem 0; }
-.md-rendered th, .md-rendered td { border: 1px solid #2a2a2a; padding: 0.2rem 0.5rem; }
-.md-rendered th { background: #1a1a1a; font-weight: 600; }
+.md-table-wrap {
+  overflow-x: auto;
+  margin: 0.65rem 0;
+  border: 1px solid rgba(124, 150, 190, 0.22);
+  border-radius: 6px;
+}
+.md-rendered table { width: 100%; min-width: 28rem; border-collapse: collapse; margin: 0; }
+.md-rendered th, .md-rendered td { border-bottom: 1px solid rgba(124, 150, 190, 0.18); padding: 0.42rem 0.6rem; text-align: left; }
+.md-rendered tr:last-child td { border-bottom: 0; }
+.md-rendered th { background: rgba(141, 184, 255, 0.08); color: #f1f4f8; font-weight: 650; }
 
 .md-inline-code {
   font-family: ui-monospace, Menlo, monospace;
   font-size: 0.85em;
-  background: #1a1a1a;
-  padding: 0.05rem 0.3rem;
-  border-radius: 3px;
-  border: 1px solid #2a2a2a;
+  color: #f2d28b;
+  background: rgba(242, 210, 139, 0.1);
+  padding: 0.08rem 0.32rem;
+  border-radius: 4px;
+  border: 1px solid rgba(242, 210, 139, 0.18);
 }
 
 .md-code-block {
   position: relative;
   background: #0d1117;
-  border: 1px solid #2a2a2a;
+  border: 1px solid rgba(124, 150, 190, 0.22);
   border-radius: 6px;
   overflow: hidden;
-  margin: 0.5rem 0;
+  margin: 0.65rem 0;
 }
-.md-code-block pre { margin: 0; padding: 0.7rem 0.8rem; overflow-x: auto; font-family: ui-monospace, Menlo, monospace; font-size: 0.82rem; }
+.md-code-block pre { margin: 0; padding: 0.9rem 0.85rem 0.75rem; overflow-x: auto; font-family: ui-monospace, Menlo, monospace; font-size: 0.82rem; line-height: 1.55; }
 .md-code-block pre code { background: transparent; padding: 0; border: 0; font-size: inherit; }
 .md-code-lang {
   position: absolute; top: 0.2rem; left: 0.6rem;
@@ -53,3 +89,21 @@
 .md-mermaid-error { background: #2a1010; border: 1px solid #4a1a1a; border-radius: 6px; padding: 0.5rem; margin: 0.5rem 0; }
 .md-mermaid-error-caption { color: #f88; font-size: 0.75rem; margin-bottom: 0.4rem; }
 .md-mermaid-error pre { background: #1a0a0a; color: #ddd; margin: 0; padding: 0.4rem 0.6rem; font-size: 0.8rem; overflow-x: auto; }
+
+@media (max-width: 720px) {
+  .md-rendered {
+    font-size: 0.95rem;
+    line-height: 1.58;
+  }
+  .md-rendered h1 { font-size: 1.22rem; }
+  .md-rendered h2 { font-size: 1.1rem; }
+  .md-rendered ul, .md-rendered ol { padding-left: 1.15rem; }
+  .md-table-wrap {
+    margin-left: -0.15rem;
+    margin-right: -0.15rem;
+  }
+  .md-code-block pre {
+    font-size: 0.78rem;
+    padding: 0.8rem 0.7rem 0.7rem;
+  }
+}
