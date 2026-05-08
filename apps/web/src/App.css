@@ -193,6 +193,9 @@ body { margin: 0; }
     max-height: none;
     border-bottom: 0;
   }
+  .mobile-nav-content .history-list {
+    max-height: none;
+  }
 }
 
 /* Session rename inline (T13) */
