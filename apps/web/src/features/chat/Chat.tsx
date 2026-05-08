@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { SessionView } from '../../store/sessions';
+import { useSessionsStore } from '../../store/sessions';
 import { MessageBubble } from './MessageBubble';
 import { InputBox } from './InputBox';
+import { ResumePrompt } from './ResumePrompt';
 import { useImagePaste } from '../image-attach/useImagePaste';
 import './Chat.css';
 
@@ -26,6 +29,7 @@ export function Chat({
   errorBanner,
   inputDisabled,
 }: ChatProps): JSX.Element {
+  const navigate = useNavigate();
   const scrollRef = useRef<HTMLDivElement>(null);
   // useImagePaste lives at Chat level so drag-drop on the entire chat area
   // and paste on the textarea inside InputBox feed the same image list.
@@ -88,6 +92,20 @@ export function Chat({
       </div>
       {dragOver && imagesEnabled && (
         <div className="image-attach-drop-overlay">Drop image to attach</div>
+      )}
+      {!session.alive && (
+        session.events.length > 0 ? (
+          <ResumePrompt
+            webSessionId={session.sessionId}
+            alive={session.alive}
+            onResume={() => void useSessionsStore.getState().resume(session.sessionId)}
+          />
+        ) : (
+          <div className="resume-prompt">
+            <span>session ended; transcript unavailable — </span>
+            <button type="button" onClick={() => navigate('/')}>New session</button>
+          </div>
+        )
       )}
       <InputBox
         onSend={onSend}
