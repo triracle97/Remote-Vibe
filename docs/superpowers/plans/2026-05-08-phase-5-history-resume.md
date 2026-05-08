@@ -1662,11 +1662,31 @@ private instantiateCodexWithResumeSeed(entry: RegistryEntry, codexSessionId: str
  * way the web learns about the new session for native-history Codex.
  */
 private emitSynthesizedSessionCreated(webSessionId: string, entry: RegistryEntry): void {
-  this.broadcast({
+  // Route through the SAME existing helper that fresh-spawn uses
+  // (`appendAndBroadcast()` or equivalent) so the event:
+  //   - Gets the next sequence number from InternalSession.nextSeq (avoids
+  //     seq collision with the first real event from the resumed driver)
+  //   - Is appended to the ring buffer (so reconnect-replay sees it)
+  //   - Is written to the transcript JSONL (so cold-history merge sees it)
+  //   - Is broadcast to all connected sockets
+  //
+  // Pseudocode (adapt to actual existing helper signature):
+  //   this.appendAndBroadcast(webSessionId, {
+  //     type: 'system',
+  //     event: 'session_created',
+  //     agent: entry.agent,
+  //     projectPath: entry.projectPath,
+  //     createdAt: entry.createdAt,
+  //     ...(entry.account ? { account: entry.account } : {}),
+  //   });
+  //
+  // The helper already handles `sessionId`, `seq`, transcript writes, ring
+  // buffer, and socket broadcast. Do NOT hard-code `seq: 1` or call a raw
+  // broadcast — that bypasses the bookkeeping and can collide with the
+  // first real event from the resumed driver.
+  this.appendAndBroadcast(webSessionId, {
     type: 'system',
     event: 'session_created',
-    sessionId: webSessionId,
-    seq: 1, // bridge's existing seq mechanism handles uniqueness; adapt to actual API
     agent: entry.agent,
     projectPath: entry.projectPath,
     createdAt: entry.createdAt,
