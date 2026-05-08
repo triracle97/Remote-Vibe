@@ -1,6 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SessionManager } from '../session.js';
+import type { AgentDriver, DriverFactoryArgs } from '../session.js';
+import { SessionRegistry } from '../session-registry.js';
 import type { AgentEvent, ServerLifecycleMsg, ServerStreamMsg } from '../types.js';
 
 class FakeProc extends EventEmitter {
@@ -331,6 +336,321 @@ describe('SessionManager', () => {
     mgr.sendInput(s.sessionId, 'hi', [{ mime: 'image/png', base64: 'AAA=' }]);
     expect(procs[0]!.sentText).toEqual(['hi']);
     expect(procs[0]!.sentImages).toEqual([[{ mime: 'image/png', base64: 'AAA=' }]]);
+  });
+
+  describe('Phase 5 — resume', () => {
+    let tmp: string;
+    let registryPath: string;
+
+    beforeEach(() => {
+      tmp = mkdtempSync(join(tmpdir(), 'sessmgr-'));
+      registryPath = join(tmp, 'sessions.json');
+    });
+    afterEach(async () => {
+      // Let any in-flight registry writes drain before we delete the dir,
+      // otherwise the SessionRegistry write queue logs noisy ENOENTs.
+      await new Promise((r) => setTimeout(r, 10));
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    interface SpawnArg {
+      agent: string;
+      projectPath: string;
+      account?: string;
+      resumeArgs?: string[];
+      codexResumeSeed?: string;
+    }
+
+    class TrackedDriver extends EventEmitter implements AgentDriver {
+      sentText: string[] = [];
+      killed = false;
+      readonly args: SpawnArg;
+      // Mirror codex/claude's optional stderrTail interface.
+      stderrBuf = '';
+      // Mirror Codex's `resumed` flag for tests that want to assert via the driver.
+      resumed = false;
+      // Mirror Codex's seeded session id (set by factory below if codexResumeSeed provided).
+      codexSessionId: string | null = null;
+      constructor(args: SpawnArg) {
+        super();
+        this.args = args;
+      }
+      sendUserText(s: string) { this.sentText.push(s); }
+      kill() { this.killed = true; this.emit('exit', 0); }
+      stderrTail() { return this.stderrBuf; }
+    }
+
+    function makeMgrWithRegistry(opts: {
+      allowedDirs?: string[];
+      claudeResumeSettleMs?: number;
+      onSpawn?: (driver: TrackedDriver, args: SpawnArg) => void;
+    } = {}) {
+      const allowedDirs = opts.allowedDirs ?? [tmp];
+      const drivers: TrackedDriver[] = [];
+      const spawned: SpawnArg[] = [];
+      const registry = new SessionRegistry(registryPath);
+      const factory = (args: DriverFactoryArgs): AgentDriver => {
+        const arg: SpawnArg = {
+          agent: args.agent,
+          projectPath: args.projectPath,
+          ...(args.account ? { account: args.account.name } : {}),
+          ...(args.resumeArgs ? { resumeArgs: args.resumeArgs } : {}),
+          ...(args.codexResumeSeed ? { codexResumeSeed: args.codexResumeSeed } : {}),
+        };
+        spawned.push(arg);
+        const d = new TrackedDriver(arg);
+        if (args.codexResumeSeed) {
+          d.codexSessionId = args.codexResumeSeed;
+          d.resumed = true;
+        }
+        if (args.resumeArgs && args.resumeArgs.length > 0) {
+          d.resumed = true;
+        }
+        drivers.push(d);
+        opts.onSpawn?.(d, arg);
+        return d;
+      };
+      const accounts = new Map([
+        ['default', { name: 'default', codexHome: '/tmp/codex-home' } as const],
+      ]);
+      const mgr = new SessionManager({
+        allowedDirs,
+        bufferCap: 100,
+        driverFactory: factory,
+        realpath: async (p) => p,
+        registry,
+        accounts: accounts as unknown as Map<string, import('../accounts.js').CodexAccount>,
+        // Pluggable stat: use the real fs stat for these tests since we mkdir
+        // real directories under tmp.
+        claudeResumeSettleMs: opts.claudeResumeSettleMs ?? 50,
+      });
+      return { mgr, registry, drivers, spawned };
+    }
+
+    it('resume(webSessionId) for Claude spawns with --resume <claudeId> and projectPath cwd', async () => {
+      const { mgr, registry, drivers, spawned } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-1',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-1.jsonl',
+        claudeSessionId: 'claude-uuid-1',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+      });
+      await mgr.resume('web-1');
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.agent).toBe('claude');
+      expect(spawned[0]!.projectPath).toBe(join(tmp, 'proj'));
+      expect(spawned[0]!.resumeArgs).toEqual(['--resume', 'claude-uuid-1']);
+      expect(drivers[0]!.resumed).toBe(true);
+    });
+
+    it('resume(webSessionId) for Codex instantiates driver seeded with codexSessionId; no spawn-per-turn yet', async () => {
+      const { mgr, registry, drivers, spawned } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-2',
+        agent: 'codex',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-2.jsonl',
+        claudeSessionId: null,
+        codexSessionId: 'codex-uuid-2',
+        createdAt: 0,
+        account: 'default',
+      });
+      await mgr.resume('web-2');
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.agent).toBe('codex');
+      expect(spawned[0]!.codexResumeSeed).toBe('codex-uuid-2');
+      expect(drivers[0]!.codexSessionId).toBe('codex-uuid-2');
+      expect(mgr.isAlive('web-2')).toBe(true);
+    });
+
+    it('resume rejects with cli_session_id_unknown when registry entry has null cliSessionId', async () => {
+      const { mgr, registry } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-3',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-3.jsonl',
+        claudeSessionId: null,
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+      });
+      await expect(mgr.resume('web-3')).rejects.toMatchObject({ code: 'cli_session_id_unknown' });
+    });
+
+    it('resume rejects with project_path_missing when projectPath is missing from disk', async () => {
+      const { mgr, registry } = makeMgrWithRegistry();
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-4',
+        agent: 'claude',
+        projectPath: join(tmp, 'does-not-exist'),
+        transcriptPath: '.bridge/transcripts/web-4.jsonl',
+        claudeSessionId: 'claude-uuid-4',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+      });
+      await expect(mgr.resume('web-4')).rejects.toMatchObject({ code: 'project_path_missing' });
+    });
+
+    it('resume rejects with project_path_disallowed when projectPath is outside allowlist', async () => {
+      const allowed = join(tmp, 'allowed');
+      const disallowed = join(tmp, 'disallowed');
+      mkdirSync(allowed, { recursive: true });
+      mkdirSync(disallowed, { recursive: true });
+      const { mgr, registry } = makeMgrWithRegistry({ allowedDirs: [allowed] });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-5',
+        agent: 'claude',
+        projectPath: disallowed,
+        transcriptPath: '.bridge/transcripts/web-5.jsonl',
+        claudeSessionId: 'claude-uuid-5',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+      });
+      await expect(mgr.resume('web-5')).rejects.toMatchObject({ code: 'project_path_disallowed' });
+    });
+
+    it('concurrent resume() calls dedup — second returns the same in-flight promise', async () => {
+      const { mgr, registry } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-6',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-6.jsonl',
+        claudeSessionId: 'claude-uuid-6',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+      });
+      const before = mgr.spawnCallCount;
+      const a = mgr.resume('web-6');
+      const b = mgr.resume('web-6');
+      await Promise.all([a, b]);
+      expect(mgr.spawnCallCount - before).toBe(1);
+    });
+
+    it('resume rejects with claude_resume_rejected when claude exits non-zero with rejection-shaped stderr', async () => {
+      const { mgr, registry } = makeMgrWithRegistry({
+        claudeResumeSettleMs: 200,
+        onSpawn: (driver) => {
+          driver.stderrBuf = 'Error: No conversation found with session ID stale-claude-id';
+          // Fire exit asynchronously so the resume() call enters its
+          // wait-for-settle window first.
+          setImmediate(() => driver.emit('exit', 1));
+        },
+      });
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-7',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-7.jsonl',
+        claudeSessionId: 'stale-claude-id',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+      });
+      await expect(mgr.resume('web-7')).rejects.toMatchObject({ code: 'claude_resume_rejected' });
+    });
+
+    it('resume succeeds for codex; codex_resume_rejected surfaces on first send_text via broadcast', async () => {
+      const { mgr, registry, drivers } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-8',
+        agent: 'codex',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-8.jsonl',
+        claudeSessionId: null,
+        codexSessionId: 'stale-codex-id',
+        createdAt: 0,
+        account: 'default',
+      });
+      await mgr.resume('web-8'); // succeeds
+      const broadcasts: unknown[] = [];
+      mgr.on('broadcast', (m) => broadcasts.push(m));
+      // Simulate the driver's first turn failing with the resume-reject result.
+      drivers[0]!.emit('event', { kind: 'result', error: 'codex_resume_rejected' } satisfies AgentEvent);
+      const err = broadcasts.find((b) => (b as { type: string }).type === 'error') as
+        | { code: string; sessionId: string }
+        | undefined;
+      expect(err).toBeDefined();
+      expect(err?.code).toBe('codex_resume_rejected');
+      expect(err?.sessionId).toBe('web-8');
+    });
+
+    it('on driver cli_session_id event, registry entry is updated', async () => {
+      const { mgr, registry, drivers } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      const s = await mgr.create({ agent: 'claude', projectPath: join(tmp, 'proj') });
+      // Simulate the driver emitting cli_session_id (Phase 4 contract).
+      drivers[0]!.emit('cli_session_id', 'fresh-claude-uuid');
+      // Wait for the async registry write triggered by onCliSessionId. We
+      // poll briefly so the test isn't tied to a specific event-loop turn.
+      const deadline = Date.now() + 200;
+      while (Date.now() < deadline && registry.get(s.sessionId)?.claudeSessionId !== 'fresh-claude-uuid') {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(registry.get(s.sessionId)?.claudeSessionId).toBe('fresh-claude-uuid');
+    });
+
+    it('create() writes an up-front registry entry with null cliSessionIds', async () => {
+      const { mgr, registry } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      const s = await mgr.create({ agent: 'claude', projectPath: join(tmp, 'proj') });
+      const entry = registry.get(s.sessionId);
+      expect(entry).toBeDefined();
+      expect(entry?.agent).toBe('claude');
+      expect(entry?.projectPath).toBe(join(tmp, 'proj'));
+      expect(entry?.claudeSessionId).toBeNull();
+      expect(entry?.codexSessionId).toBeNull();
+    });
+
+    it('attachSession synthesizes a session_created lifecycle event so web learns of resumed webSessionId', async () => {
+      const { mgr, registry } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-syn',
+        agent: 'codex',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-syn.jsonl',
+        claudeSessionId: null,
+        codexSessionId: 'codex-uuid-syn',
+        createdAt: 12345,
+        account: 'default',
+      });
+      const broadcasts: unknown[] = [];
+      mgr.on('broadcast', (m) => broadcasts.push(m));
+      await mgr.resume('web-syn');
+      const created = broadcasts.find(
+        (b) => (b as { type: string; event?: string }).event === 'session_created',
+      ) as ServerLifecycleMsg | undefined;
+      expect(created).toBeDefined();
+      expect(created?.sessionId).toBe('web-syn');
+      expect(created?.agent).toBe('codex');
+      expect(created?.account).toBe('default');
+    });
   });
 
   it('records user prompts in the PromptStore on sendInput', async () => {

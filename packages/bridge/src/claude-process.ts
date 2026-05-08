@@ -9,7 +9,7 @@ const KILL_GRACE_MS = 5000;
 
 export type SpawnFn = (cmd: string, args: string[], options: SpawnOptions) => ChildProcessByStdio<Writable, Readable, Readable>;
 
-const CLAUDE_FLAGS = [
+const CLAUDE_FLAG_TOKENS = [
   '-p',
   '--dangerously-skip-permissions',
   '--output-format',
@@ -18,11 +18,33 @@ const CLAUDE_FLAGS = [
   'stream-json',
   '--include-partial-messages',
   '--verbose',
-].join(' ');
+];
+const CLAUDE_FLAGS = CLAUDE_FLAG_TOKENS.join(' ');
+
+/**
+ * Resume args are uuids + literal `--resume`, so they need no quoting in
+ * practice. We still validate to be defensive: reject anything that contains
+ * shell metacharacters or whitespace, since a bad value would let the caller
+ * inject arbitrary shell at the `exec claude ...` line.
+ */
+function assertResumeArgSafe(token: string): void {
+  if (!/^[A-Za-z0-9_./-]+$/.test(token)) {
+    throw new Error(`unsafe resume arg token: ${token}`);
+  }
+}
 
 export interface ClaudeProcessEvents {
   event: (e: AgentEvent) => void;
   exit: (code: number | null, reason?: string) => void;
+}
+
+export interface ClaudeProcessOpts {
+  spawn?: SpawnFn;
+  /**
+   * When set, the spawn args are prepended with these tokens (e.g. ['--resume', '<id>']).
+   * Used by SessionManager.resume() to ask Claude to resume an existing CLI conversation.
+   */
+  resumeArgs?: string[];
 }
 
 export class ClaudeProcess extends EventEmitter {
@@ -31,11 +53,19 @@ export class ClaudeProcess extends EventEmitter {
   private stderrBuf = Buffer.alloc(0);
   private killed = false;
   private claudeSessionIdEmitted = false;
+  /** True iff this driver was spawned with --resume; used by SessionManager to classify exit reason. */
+  readonly resumed: boolean;
 
-  constructor(projectPath: string, opts: { spawn?: SpawnFn } = {}) {
+  constructor(projectPath: string, opts: ClaudeProcessOpts = {}) {
     super();
     const spawnFn = (opts.spawn ?? (nodeSpawn as unknown as SpawnFn));
-    const argv = ['-li', '-c', `exec claude ${CLAUDE_FLAGS}`];
+    const resumeArgs = opts.resumeArgs ?? [];
+    for (const t of resumeArgs) assertResumeArgSafe(t);
+    this.resumed = resumeArgs.length > 0;
+    // Resume tokens are prepended to the existing claude argv so the final
+    // shell command is `exec claude --resume <id> -p --dangerously-skip-permissions ...`.
+    const claudePrefix = resumeArgs.length > 0 ? `${resumeArgs.join(' ')} ` : '';
+    const argv = ['-li', '-c', `exec claude ${claudePrefix}${CLAUDE_FLAGS}`];
     this.child = spawnFn('zsh', argv, {
       cwd: projectPath,
       env: process.env,

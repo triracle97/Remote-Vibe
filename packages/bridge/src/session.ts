@@ -1,11 +1,13 @@
 import { EventEmitter } from 'node:events';
-import { realpath as fsRealpath } from 'node:fs/promises';
+import { realpath as fsRealpath, stat as fsStat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ClaudeProcess } from './claude-process.js';
 import type { TranscriptStore } from './transcript-store.js';
 import type { CodexAccount } from './accounts.js';
 import type { PromptStore } from './prompt-store.js';
 import type { ImageStore } from './image-store.js';
+import type { SessionRegistry, RegistryEntry } from './session-registry.js';
 import type {
   AgentEvent,
   AgentKind,
@@ -37,6 +39,10 @@ export interface DriverFactoryArgs {
   agent: AgentKind;
   projectPath: string;
   account?: CodexAccount;
+  /** Phase 5 — Claude resume tokens (e.g. ['--resume', '<id>']). */
+  resumeArgs?: string[];
+  /** Phase 5 — Codex CLI session uuid to seed driver state. */
+  codexResumeSeed?: string;
 }
 
 export interface SessionManagerOpts {
@@ -51,6 +57,14 @@ export interface SessionManagerOpts {
   accounts?: Map<string, CodexAccount>;
   promptStore?: PromptStore;
   imageStore?: ImageStore;
+  /** Phase 5 — disk-persisted webSessionId → metadata map. */
+  registry?: SessionRegistry;
+  /** Phase 5 — directory under which transcript files live (relative). */
+  transcriptDir?: string;
+  /** Phase 5 — pluggable stat fn for the resume-time projectPath existence check. */
+  stat?: (p: string) => Promise<{ isDirectory(): boolean }>;
+  /** Phase 5 — early-exit window before classifying claude --resume as alive. */
+  claudeResumeSettleMs?: number;
 }
 
 export class PathOutsideAllowlistError extends Error {
@@ -84,6 +98,13 @@ export class SessionManager extends EventEmitter {
   private readonly accounts: Map<string, CodexAccount>;
   private readonly promptStore: PromptStore | undefined;
   private readonly imageStore: ImageStore | undefined;
+  private readonly registry: SessionRegistry | undefined;
+  private readonly transcriptDir: string;
+  private readonly stat: (p: string) => Promise<{ isDirectory(): boolean }>;
+  private readonly claudeResumeSettleMs: number;
+  private readonly resumeInFlight = new Map<string, Promise<void>>();
+  /** Track spawn count for tests / observability. Incremented on every driver instantiation. */
+  spawnCallCount = 0;
 
   constructor(opts: SessionManagerOpts) {
     super();
@@ -94,14 +115,23 @@ export class SessionManager extends EventEmitter {
     this.accounts = opts.accounts ?? new Map();
     this.promptStore = opts.promptStore;
     this.imageStore = opts.imageStore;
+    this.registry = opts.registry;
+    this.transcriptDir = opts.transcriptDir ?? join('.bridge', 'transcripts');
+    this.stat = opts.stat ?? ((p) => fsStat(p));
+    this.claudeResumeSettleMs = opts.claudeResumeSettleMs ?? 1500;
     if (opts.driverFactory) {
-      this.driverFactory = opts.driverFactory;
+      const userFactory = opts.driverFactory;
+      this.driverFactory = (args) => {
+        this.spawnCallCount += 1;
+        return userFactory(args);
+      };
     } else if (opts.spawnClaude) {
       const spawnClaude = opts.spawnClaude;
       this.driverFactory = ({ agent, projectPath }) => {
         if (agent !== 'claude') {
           throw new Error(`agent ${agent} not supported by this SessionManager (claude-only factory)`);
         }
+        this.spawnCallCount += 1;
         return spawnClaude(projectPath) as unknown as AgentDriver;
       };
     } else {
@@ -119,6 +149,10 @@ export class SessionManager extends EventEmitter {
     const inside = this.allowedDirs.some((d) => real === d || real.startsWith(d + '/'));
     if (!inside) throw new PathOutsideAllowlistError(projectPath);
     return real;
+  }
+
+  private isAllowedDir(realPath: string): boolean {
+    return this.allowedDirs.some((d) => realPath === d || realPath.startsWith(d + '/'));
   }
 
   private resolveAccount(agent: AgentKind, requested: string | undefined): CodexAccount | undefined {
@@ -151,7 +185,7 @@ export class SessionManager extends EventEmitter {
   }): Promise<SessionInfo> {
     const real = await this.validatePath(params.projectPath);
     const account = this.resolveAccount(params.agent, params.account);
-    const sessionId = randomUUID();
+    const sessionId = this.mintWebSessionId();
     const proc = this.driverFactory({
       agent: params.agent,
       projectPath: real,
@@ -169,7 +203,24 @@ export class SessionManager extends EventEmitter {
       alive: true,
       ...(account ? { account: account.name } : {}),
     };
-    this.sessions.set(sessionId, internal);
+    this.registerInternalSession(internal);
+
+    // Write registry entry up-front so cli_session_id capture (handled inside
+    // registerInternalSession's event wiring) has an entry to update. The
+    // entry starts with both CLI ids null; the first cli_session_id event
+    // fills the appropriate one.
+    if (this.registry) {
+      await this.registry.add({
+        webSessionId: sessionId,
+        agent: params.agent,
+        projectPath: real,
+        transcriptPath: this.transcriptPathFor(sessionId),
+        claudeSessionId: null,
+        codexSessionId: null,
+        createdAt: internal.createdAt,
+        account: account ? account.name : null,
+      });
+    }
 
     this.appendAndBroadcast(internal, {
       type: 'system',
@@ -183,9 +234,6 @@ export class SessionManager extends EventEmitter {
       ...(params.correlationId ? { correlationId: params.correlationId } : {}),
     });
 
-    proc.on('event', (e: AgentEvent) => this.onProcEvent(internal, e));
-    proc.on('exit', (code: number | null, reason?: string) => this.onProcExit(internal, code, reason));
-
     return {
       sessionId,
       agent: internal.agent,
@@ -193,6 +241,303 @@ export class SessionManager extends EventEmitter {
       createdAt: internal.createdAt,
       ...(account ? { account: account.name } : {}),
     };
+  }
+
+  /**
+   * Resume a previously-known dead session by webSessionId (Path 1).
+   * Looks up the registry entry, validates path + cliSessionId presence,
+   * then either spawns Claude with --resume or instantiates a Codex driver
+   * seeded with the codexSessionId (no spawn — Codex spawns per-turn).
+   *
+   * Concurrent calls for the same webSessionId share a single in-flight
+   * promise so a double-click on a list entry doesn't double-spawn.
+   */
+  async resume(webSessionId: string): Promise<void> {
+    const existing = this.resumeInFlight.get(webSessionId);
+    if (existing) return existing;
+    const promise = this.doResume(webSessionId).finally(() => {
+      this.resumeInFlight.delete(webSessionId);
+    });
+    this.resumeInFlight.set(webSessionId, promise);
+    return promise;
+  }
+
+  private async doResume(webSessionId: string): Promise<void> {
+    if (!this.registry) {
+      throw resumeError('history_session_not_found', 'Resume requires a SessionRegistry');
+    }
+    const entry = this.registry.get(webSessionId);
+    if (!entry) {
+      throw resumeError('history_session_not_found', `Unknown webSessionId ${webSessionId}`);
+    }
+    const cliId = entry.agent === 'claude' ? entry.claudeSessionId : entry.codexSessionId;
+    if (cliId === null) {
+      throw resumeError(
+        'cli_session_id_unknown',
+        'Bridge never captured the CLI session id for this entry',
+      );
+    }
+    // Path existence check.
+    try {
+      const stat = await this.stat(entry.projectPath);
+      if (!stat.isDirectory()) {
+        throw new Error('not a directory');
+      }
+    } catch {
+      throw resumeError(
+        'project_path_missing',
+        `Project path no longer exists: ${entry.projectPath}`,
+      );
+    }
+    // Allowlist re-check (allowlist may have tightened since entry was created).
+    let real: string;
+    try {
+      real = await this.realpath(entry.projectPath);
+    } catch {
+      throw resumeError(
+        'project_path_disallowed',
+        `Project path is not in BRIDGE_ALLOWED_DIRS: ${entry.projectPath}`,
+      );
+    }
+    if (!this.isAllowedDir(real)) {
+      throw resumeError(
+        'project_path_disallowed',
+        `Project path is not in BRIDGE_ALLOWED_DIRS: ${entry.projectPath}`,
+      );
+    }
+    // Per-agent dispatch.
+    if (entry.agent === 'claude') {
+      await this.spawnClaudeWithResume(entry, cliId);
+    } else {
+      this.instantiateCodexWithResumeSeed(entry, cliId);
+    }
+  }
+
+  /**
+   * Native-history first-resume entry point (Path 2). Called by the WS handler
+   * with a HistoryEntry that the scanner already verified. Issues a brand-new
+   * webSessionId, persists registry, then runs the same per-agent
+   * spawn/instantiate logic as Path 1.
+   */
+  async resumeFromHistoryEntry(
+    entry: { agent: AgentKind; sessionId: string; projectPath: string },
+    accountName: string | null,
+  ): Promise<string> {
+    if (!this.registry) {
+      throw resumeError('history_session_not_found', 'Resume requires a SessionRegistry');
+    }
+    // Re-validate cwd (scanner may be stale; allowlist may have tightened).
+    let real: string;
+    try {
+      real = await this.realpath(entry.projectPath);
+    } catch {
+      throw resumeError(
+        'project_path_missing',
+        `Project path no longer exists: ${entry.projectPath}`,
+      );
+    }
+    if (!this.isAllowedDir(real)) {
+      throw resumeError(
+        'project_path_disallowed',
+        `Project path is not in BRIDGE_ALLOWED_DIRS: ${entry.projectPath}`,
+      );
+    }
+    const webSessionId = this.mintWebSessionId();
+    await this.registry.add({
+      webSessionId,
+      agent: entry.agent,
+      projectPath: real,
+      transcriptPath: this.transcriptPathFor(webSessionId),
+      claudeSessionId: entry.agent === 'claude' ? entry.sessionId : null,
+      codexSessionId: entry.agent === 'codex' ? entry.sessionId : null,
+      createdAt: Date.now(),
+      account: accountName,
+    });
+    await this.resume(webSessionId);
+    return webSessionId;
+  }
+
+  private mintWebSessionId(): string {
+    return randomUUID();
+  }
+
+  private transcriptPathFor(webSessionId: string): string {
+    return join(this.transcriptDir, `${webSessionId}.jsonl`);
+  }
+
+  private async spawnClaudeWithResume(entry: RegistryEntry, claudeSessionId: string): Promise<void> {
+    let driver: AgentDriver;
+    try {
+      // Claude is not codex; resolveAccount returns undefined for claude.
+      // Spread account only if defined to satisfy exactOptionalPropertyTypes.
+      const account = entry.account ? this.resolveAccount('claude', entry.account) : undefined;
+      driver = this.driverFactory({
+        agent: 'claude',
+        projectPath: entry.projectPath,
+        ...(account ? { account } : {}),
+        resumeArgs: ['--resume', claudeSessionId],
+      });
+    } catch (err) {
+      throw resumeError(
+        'resume_spawn_failed',
+        `Spawn failed: ${(err as Error).message}`,
+      );
+    }
+    // Watch for an immediate exit-with-rejection during the first event
+    // window. If the child exits inside the settle window AND stderr matches
+    // a known rejection phrasing, throw `claude_resume_rejected`. If it
+    // exits but stderr is something else (segfault, perm error), throw
+    // `resume_spawn_failed`. Otherwise the driver settles as alive and we
+    // attach normally.
+    const earlyExit = await this.waitForEarlyExitOrSettle(driver);
+    if (earlyExit !== null) {
+      if (this.isClaudeResumeRejection(earlyExit.stderr)) {
+        throw resumeError(
+          'claude_resume_rejected',
+          earlyExit.stderr || 'claude rejected resume',
+        );
+      }
+      throw resumeError(
+        'resume_spawn_failed',
+        earlyExit.stderr || `claude exited with code ${earlyExit.code ?? '?'}`,
+      );
+    }
+    this.attachSession(entry.webSessionId, driver, entry);
+  }
+
+  /**
+   * Resolve(null) if the driver stays alive past `claudeResumeSettleMs`.
+   * Resolve({code, stderr}) if the driver fires `exit` first. We attempt to
+   * read stderr from a `stderrTail()` method if the concrete driver exposes
+   * one (ClaudeProcess does); otherwise we fall back to the empty string.
+   */
+  private waitForEarlyExitOrSettle(
+    driver: AgentDriver,
+  ): Promise<null | { code: number | null; stderr: string }> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const onExit = (code: number | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const tail = (driver as unknown as { stderrTail?: () => string }).stderrTail;
+        const stderr = typeof tail === 'function' ? tail.call(driver) : '';
+        resolve({ code, stderr });
+      };
+      driver.once('exit', onExit);
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        driver.off('exit', onExit);
+        resolve(null);
+      }, this.claudeResumeSettleMs);
+      // Don't keep the test runner alive on this timer.
+      (timer as { unref?: () => void }).unref?.();
+    });
+  }
+
+  /**
+   * Substring/regex match on the stderr tail to recognize Claude's
+   * `--resume <missing-id>` rejection. Claude phrasings change across
+   * versions; we tolerate any of the known shapes.
+   */
+  private isClaudeResumeRejection(stderr: string): boolean {
+    const patterns = [
+      /no conversation found/i,
+      /session not found/i,
+      /unknown session/i,
+      /invalid session/i,
+    ];
+    return patterns.some((p) => p.test(stderr));
+  }
+
+  private instantiateCodexWithResumeSeed(entry: RegistryEntry, codexSessionId: string): void {
+    // Codex is spawn-per-turn. We instantiate the driver with the seed but
+    // don't spawn — the resume rejection (if any) surfaces via the existing
+    // turn-error path on the user's first send_text after resume. The driver
+    // emits `result.error = 'codex_resume_rejected'` (CodexProcess change)
+    // and onProcEvent broadcasts a typed error.
+    const account = entry.account
+      ? this.resolveAccount('codex', entry.account) ?? undefined
+      : this.resolveAccount('codex', undefined);
+    const driver = this.driverFactory({
+      agent: 'codex',
+      projectPath: entry.projectPath,
+      ...(account ? { account } : {}),
+      codexResumeSeed: codexSessionId,
+    });
+    this.attachSession(entry.webSessionId, driver, entry);
+  }
+
+  /**
+   * Wire a freshly-created or freshly-resumed driver into the in-memory
+   * session map, attach event handlers, then synthesize the lifecycle
+   * `session_created` event so the web learns about the new webSessionId.
+   * For the resume path this is the ONLY reliable signal for Codex (which
+   * doesn't spawn until first send) and serves as a redundant-but-idempotent
+   * marker for Claude.
+   */
+  private attachSession(
+    webSessionId: string,
+    driver: AgentDriver,
+    entry: RegistryEntry,
+  ): void {
+    const internal: InternalSession = {
+      sessionId: webSessionId,
+      agent: entry.agent,
+      projectPath: entry.projectPath,
+      createdAt: entry.createdAt,
+      proc: driver,
+      buffer: [],
+      nextSeq: 1,
+      alive: true,
+      ...(entry.account ? { account: entry.account } : {}),
+    };
+    this.registerInternalSession(internal);
+    this.emitSynthesizedSessionCreated(internal);
+    this.emit('session_resumed', { webSessionId, alive: true });
+  }
+
+  private emitSynthesizedSessionCreated(s: InternalSession): void {
+    this.appendAndBroadcast(s, {
+      type: 'system',
+      event: 'session_created',
+      sessionId: s.sessionId,
+      seq: s.nextSeq++,
+      agent: s.agent,
+      projectPath: s.projectPath,
+      createdAt: s.createdAt,
+      ...(s.account ? { account: s.account } : {}),
+    });
+  }
+
+  /**
+   * Shared registration logic used by BOTH fresh-spawn (`create`) and resume
+   * (`attachSession`) paths. Inserts the InternalSession into the map and
+   * wires the driver event handlers (event/exit/cli_session_id). Caller is
+   * responsible for any lifecycle event broadcast.
+   */
+  private registerInternalSession(internal: InternalSession): void {
+    this.sessions.set(internal.sessionId, internal);
+    internal.proc.on('event', (e: AgentEvent) => this.onProcEvent(internal, e));
+    internal.proc.on('exit', (code: number | null, reason?: string) =>
+      this.onProcExit(internal, code, reason),
+    );
+    internal.proc.on('cli_session_id', (id: string) => {
+      void this.onCliSessionId(internal, id);
+    });
+  }
+
+  private async onCliSessionId(s: InternalSession, id: string): Promise<void> {
+    if (!this.registry) return;
+    const patch = s.agent === 'claude'
+      ? { claudeSessionId: id }
+      : { codexSessionId: id };
+    try {
+      await this.registry.update(s.sessionId, patch);
+    } catch (err) {
+      console.warn('[session-registry] update failed:', err);
+    }
   }
 
   private onProcEvent(s: InternalSession, e: AgentEvent): void {
@@ -226,6 +571,15 @@ export class SessionManager extends EventEmitter {
         code: 'codex_session_id_missing',
         message:
           'Codex did not emit a session_id; subsequent turns will start a fresh session (no resume).',
+        sessionId: s.sessionId,
+      });
+    }
+    if (e.kind === 'result' && (e as { error?: string }).error === 'codex_resume_rejected') {
+      this.emit('broadcast', {
+        type: 'error',
+        code: 'codex_resume_rejected',
+        message:
+          'Codex rejected the resumed session id; the conversation may have been deleted or expired.',
         sessionId: s.sessionId,
       });
     }
@@ -298,6 +652,19 @@ export class SessionManager extends EventEmitter {
     return this.sessions.has(sessionId);
   }
 
+  /**
+   * Test/inspection accessor — returns the live driver for a webSessionId
+   * if any. Used by tests that need to assert on driver-internal state
+   * (e.g. that codexResumeSeed populated codexSessionId).
+   */
+  getDriver(sessionId: string): AgentDriver | undefined {
+    return this.sessions.get(sessionId)?.proc;
+  }
+
+  isAlive(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.alive === true;
+  }
+
   sendInput(
     sessionId: string,
     text: string,
@@ -332,4 +699,12 @@ export class SessionManager extends EventEmitter {
     for (const s of this.sessions.values()) s.proc.kill();
     this.transcriptStore?.closeAll();
   }
+}
+
+interface ResumeError extends Error {
+  code: string;
+}
+
+function resumeError(code: string, message: string): ResumeError {
+  return Object.assign(new Error(message), { code });
 }

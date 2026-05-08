@@ -17,13 +17,38 @@ export interface CodexProcessOpts {
   projectPath: string;
   codexHome: string;
   spawn?: SpawnFn;
+  /**
+   * When set, pre-populates this.codexSessionId so the next sendUserText
+   * invokes `codex exec resume <id>`. Used by SessionManager.resume() to
+   * resume a previously-known Codex CLI session on the user's first turn.
+   */
+  codexResumeSeed?: string;
 }
 
 export class CodexProcess extends EventEmitter {
   private readonly projectPath: string;
   private readonly codexHome: string;
   private readonly spawnFn: SpawnFn;
+  /**
+   * The Codex CLI session uuid for this driver. Mutates from null → uuid on
+   * first session_id event from the CLI; once set, sendUserText switches to
+   * `codex exec resume <id>` so the CLI continues the same conversation.
+   */
   private codexSessionId: string | null = null;
+  /**
+   * True iff this driver was instantiated with codexResumeSeed (a stale uuid
+   * persisted from a prior session). Used so the SessionManager can classify
+   * the FIRST turn's exit as `codex_resume_rejected` if it fails.
+   */
+  readonly resumed: boolean;
+  /**
+   * Flips true once a `session_id` event is observed during this driver's
+   * lifetime. For non-resumed drivers this is the first time codex emits one;
+   * for resumed drivers it's the moment the CLI confirms our seed survived
+   * (accepted resume). When still false at first-turn exit on a resumed
+   * driver, we treat it as a rejection of the seed.
+   */
+  private resumeAcknowledged = false;
   private currentTurnProc: ChildProcessByStdio<Writable, Readable, Readable> | null = null;
   // activeChild tracks the "accepted" child for stdout/stderr data guards.
   // It is set when a new child is spawned and cleared only when a newer child
@@ -42,6 +67,12 @@ export class CodexProcess extends EventEmitter {
     this.projectPath = opts.projectPath;
     this.codexHome = opts.codexHome;
     this.spawnFn = opts.spawn ?? (nodeSpawn as unknown as SpawnFn);
+    if (opts.codexResumeSeed) {
+      this.codexSessionId = opts.codexResumeSeed;
+      this.resumed = true;
+    } else {
+      this.resumed = false;
+    }
   }
 
   sendUserText(text: string, _images?: ReadonlyArray<{ mime: string; base64: string }>): void {
@@ -135,6 +166,10 @@ export class CodexProcess extends EventEmitter {
         }
         this.codexSessionId = parsed.id;
         this.currentTurnSawSessionId = true;
+        // Either way, the CLI is alive enough to echo a session id, so a
+        // resumed driver can no longer be classified as `codex_resume_rejected`
+        // for any future failure on this driver.
+        this.resumeAcknowledged = true;
         continue;
       }
       const ev = parsed as AgentEvent;
@@ -191,11 +226,21 @@ export class CodexProcess extends EventEmitter {
       if (sessionIdMissing) {
         result.error = 'codex_session_id_missing';
       } else if (nonZeroExit) {
-        const tail = this.stderrBuf.toString('utf8').trim();
-        if (tail.length > 0) {
-          result.error = tail.length > 1024 ? tail.slice(-1024) : tail;
+        // First-turn failure on a resumed driver = stale uuid; classify so the
+        // SessionManager can broadcast a typed `codex_resume_rejected` error.
+        // After this first turn, `resumed` stays true but `currentTurnSawSessionId`
+        // would have flipped on success, so we use the absence of a captured
+        // session-id event during the lifetime of this driver as the resume
+        // signal: the CLI didn't echo our seeded id.
+        if (this.resumed && !this.resumeAcknowledged) {
+          result.error = 'codex_resume_rejected';
         } else {
-          result.error = `codex exec exited with code ${code}`;
+          const tail = this.stderrBuf.toString('utf8').trim();
+          if (tail.length > 0) {
+            result.error = tail.length > 1024 ? tail.slice(-1024) : tail;
+          } else {
+            result.error = `codex exec exited with code ${code}`;
+          }
         }
       }
       this.emit('event', result);
