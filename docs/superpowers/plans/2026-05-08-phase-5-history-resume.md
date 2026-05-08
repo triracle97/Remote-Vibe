@@ -1990,12 +1990,14 @@ case 'resume_session': {
     });
   } catch (err) {
     const code = (err as { code?: string }).code ?? 'resume_spawn_failed';
+    // exactOptionalPropertyTypes: omit `sessionId` when not present rather
+    // than passing `undefined` (which would not satisfy the optional-prop type).
     this.send(socket, {
       type: 'error',
       code: code as never,
       message: (err as Error).message,
-      sessionId: 'webSessionId' in msg ? msg.webSessionId : undefined,
       correlationId: msg.correlationId,
+      ...('webSessionId' in msg ? { sessionId: msg.webSessionId } : {}),
     });
   }
   break;
@@ -2338,8 +2340,9 @@ import { HistoryPanel } from './HistoryPanel';
 import { useHistoryStore } from './historyStore';
 
 vi.mock('../../store/sessions', () => ({
+  // getState is a vi.fn() so tests can mockReturnValue() it per-case.
   useSessionsStore: {
-    getState: () => ({ resumeFromHistory: vi.fn() }),
+    getState: vi.fn(() => ({ resumeFromHistory: vi.fn() })),
   },
 }));
 
