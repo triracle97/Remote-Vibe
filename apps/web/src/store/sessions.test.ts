@@ -1,8 +1,15 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+vi.mock('../services/bridge-client-singleton', () => ({
+  getBridgeClient: vi.fn(),
+}));
+
 import { useSessionsStore } from './sessions';
+import { getBridgeClient } from '../services/bridge-client-singleton';
 
 beforeEach(() => {
   useSessionsStore.setState({ sessions: {}, order: [], activeId: null, transcriptOnly: {} });
+  vi.clearAllMocks();
 });
 
 describe('sessions store', () => {
@@ -250,5 +257,99 @@ describe('sessions store', () => {
     const events = useSessionsStore.getState().sessions['s1']!.events;
     const delta = events.find((e) => 'seq' in e && e.seq === 2)!;
     expect((delta as { superseded?: boolean }).superseded).toBeUndefined();
+  });
+
+  it('error session_dead flips per-session alive=false', () => {
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+    store.applyServerMsg({
+      type: 'error',
+      code: 'session_dead',
+      message: 'session is not alive',
+      sessionId: 's1',
+      correlationId: 'c1',
+    });
+    expect(useSessionsStore.getState().sessions['s1']!.alive).toBe(false);
+  });
+
+  it('resume(webSessionId) sends resume_session via WS and resolves on session_resumed reply', async () => {
+    const send = vi.fn();
+    (getBridgeClient as ReturnType<typeof vi.fn>).mockReturnValue({ send });
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+
+    const promise = store.resume('s1');
+    expect(send).toHaveBeenCalledTimes(1);
+    const sent = send.mock.calls[0]![0] as {
+      type: string;
+      webSessionId: string;
+      correlationId: string;
+    };
+    expect(sent.type).toBe('resume_session');
+    expect(sent.webSessionId).toBe('s1');
+    expect(typeof sent.correlationId).toBe('string');
+
+    // Deliver the reply with the matching correlationId.
+    useSessionsStore.getState().applyServerMsg({
+      type: 'session_resumed',
+      webSessionId: 's1',
+      alive: true,
+      correlationId: sent.correlationId,
+    });
+    await expect(promise).resolves.toBe('s1');
+  });
+
+  it('resumeFromHistory(entry) sends resume_session with agent + sessionId + projectPath', async () => {
+    const send = vi.fn();
+    (getBridgeClient as ReturnType<typeof vi.fn>).mockReturnValue({ send });
+    const entry = {
+      agent: 'claude' as const,
+      sessionId: 'cli-uuid',
+      projectPath: '/p',
+      mtime: 1,
+      firstPrompt: 'hi',
+    };
+    const promise = useSessionsStore.getState().resumeFromHistory(entry);
+    expect(send).toHaveBeenCalledTimes(1);
+    const sent = send.mock.calls[0]![0] as {
+      type: string;
+      agent: string;
+      sessionId: string;
+      projectPath: string;
+      correlationId: string;
+    };
+    expect(sent.type).toBe('resume_session');
+    expect(sent.agent).toBe('claude');
+    expect(sent.sessionId).toBe('cli-uuid');
+    expect(sent.projectPath).toBe('/p');
+    expect(typeof sent.correlationId).toBe('string');
+
+    // Bridge issues a fresh webSessionId; deliver the reply.
+    useSessionsStore.getState().applyServerMsg({
+      type: 'session_resumed',
+      webSessionId: 'newWebId',
+      alive: true,
+      correlationId: sent.correlationId,
+    });
+    await expect(promise).resolves.toBe('newWebId');
+  });
+
+  it('on session_resumed reply for known webSessionId, alive flips to true', () => {
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+    store.applyServerMsg({
+      type: 'error',
+      code: 'session_dead',
+      message: 'd',
+      sessionId: 's1',
+      correlationId: 'c',
+    });
+    store.applyServerMsg({
+      type: 'session_resumed',
+      webSessionId: 's1',
+      alive: true,
+      correlationId: 'c2',
+    });
+    expect(useSessionsStore.getState().sessions['s1']!.alive).toBe(true);
   });
 });

@@ -1,5 +1,21 @@
 import { create } from 'zustand';
 import type { AgentKind, HistoryEntry, ServerLifecycleMsg, ServerMsg, ServerStreamMsg } from '../types/protocol';
+import { getBridgeClient } from '../services/bridge-client-singleton';
+
+// correlationId → resolver/rejecter for in-flight resume requests.
+// Lives at module scope (not store state) because Zustand state must remain
+// JSON-serializable for replay/devtools — promise resolvers are not.
+const pendingResumes = new Map<
+  string,
+  {
+    resolve: (webSessionId: string) => void;
+    reject: (err: { code: string; message: string }) => void;
+  }
+>();
+
+function newResumeCorrelationId(): string {
+  return `resume-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export type SessionEvent = (ServerLifecycleMsg | ServerStreamMsg) & {
   /**
@@ -56,8 +72,15 @@ interface SessionsStore {
   setActive(id: string): void;
   markTranscriptOnly(id: string): void;
   /**
-   * Resume a session from a HistoryEntry. T9 placeholder — full implementation
-   * lands in T11 (Phase 5). Returns the new web-side session id once ready.
+   * Resume a known web session via the bridge's registry lookup. Sends a
+   * `resume_session` with `webSessionId`; resolves on the matching
+   * `session_resumed` reply with the (possibly new) webSessionId.
+   */
+  resume(webSessionId: string): Promise<string>;
+  /**
+   * Resume from a native CLI history entry. Sends `resume_session` with
+   * agent + sessionId + projectPath; bridge mints a fresh webSessionId and
+   * the returned promise resolves with it on the matching reply.
    */
   resumeFromHistory(entry: HistoryEntry): Promise<string>;
 }
@@ -194,10 +217,43 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       return;
     }
 
+    if (m.type === 'session_resumed') {
+      const existing = get().sessions[m.webSessionId];
+      if (existing) {
+        set((s) => ({
+          sessions: { ...s.sessions, [m.webSessionId]: { ...existing, alive: true } },
+        }));
+      }
+      const pending = pendingResumes.get(m.correlationId);
+      if (pending) {
+        pendingResumes.delete(m.correlationId);
+        pending.resolve(m.webSessionId);
+      }
+      return;
+    }
+
     if (m.type === 'error') {
-      // Bridge error messages are surfaced via the connection store
-      // (App routes them there) so the UI can display them. The sessions
-      // store ignores them — they are not session-scoped events.
+      // Per-session: session_dead flips alive=false on the matching session
+      // so <ResumePrompt /> renders. The global error banner is suppressed
+      // for this code in App.tsx; other error codes still bubble up there.
+      if (m.code === 'session_dead' && m.sessionId) {
+        const existing = get().sessions[m.sessionId];
+        if (existing) {
+          set((s) => ({
+            sessions: {
+              ...s.sessions,
+              [m.sessionId!]: { ...existing, alive: false },
+            },
+          }));
+        }
+      }
+      // Reject any in-flight resume promise keyed to this correlationId so
+      // callers (HistoryPanel / InputBox) can surface the failure.
+      if (m.correlationId && pendingResumes.has(m.correlationId)) {
+        const pending = pendingResumes.get(m.correlationId)!;
+        pendingResumes.delete(m.correlationId);
+        pending.reject({ code: m.code, message: m.message });
+      }
       return;
     }
   },
@@ -211,8 +267,31 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     set((s) => ({ transcriptOnly: { ...s.transcriptOnly, [id]: true } }));
   },
 
-  // T9 placeholder; replaced in T11.
-  resumeFromHistory: async (_entry: HistoryEntry): Promise<string> => {
-    throw new Error('Not implemented yet');
+  async resume(webSessionId: string): Promise<string> {
+    const correlationId = newResumeCorrelationId();
+    const promise = new Promise<string>((resolve, reject) => {
+      pendingResumes.set(correlationId, { resolve, reject });
+    });
+    getBridgeClient().send({
+      type: 'resume_session',
+      webSessionId,
+      correlationId,
+    });
+    return promise;
+  },
+
+  async resumeFromHistory(entry: HistoryEntry): Promise<string> {
+    const correlationId = newResumeCorrelationId();
+    const promise = new Promise<string>((resolve, reject) => {
+      pendingResumes.set(correlationId, { resolve, reject });
+    });
+    getBridgeClient().send({
+      type: 'resume_session',
+      agent: entry.agent,
+      sessionId: entry.sessionId,
+      projectPath: entry.projectPath,
+      correlationId,
+    });
+    return promise;
   },
 }));

@@ -7,3 +7,14 @@ body { margin: 0; }
 .home-main { flex: 1; padding: 2rem; color: #ccc; }
 .home-main h1 { margin-top: 0; }
 .error-banner { color: #f88; background: #2a1010; border: 1px solid #4a1a1a; padding: 0.5rem 0.75rem; border-radius: 4px; }
+.resume-prompt {
+  display: flex; align-items: center; justify-content: center; gap: 0.4rem;
+  padding: 0.4rem 0.6rem; margin: 0.4rem 0;
+  background: #1f1f1f; border: 1px solid #2a2a2a; border-radius: 4px;
+  color: #aaa; font-size: 0.85rem;
+}
+.resume-prompt-button {
+  background: #2a2a2a; color: #6fa8ff; border: 1px solid #3a3a3a;
+  padding: 0.2rem 0.6rem; cursor: pointer; border-radius: 3px;
+}
+.resume-prompt-button:hover { background: #333; }

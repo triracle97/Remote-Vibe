@@ -67,8 +67,12 @@ export function App(): JSX.Element {
       if (m.type === 'error') {
         if (m.code === 'session_dead' && m.sessionId) {
           markTranscriptOnly(m.sessionId);
+          // Per-session-only: do NOT raise the global error banner. The
+          // sessions store's apply(m) below flips alive=false; <ResumePrompt />
+          // (or the transcript-unavailable notice) renders in Session.tsx.
+        } else {
+          setError(`${m.code}: ${m.message}`);
         }
-        setError(`${m.code}: ${m.message}`);
       } else {
         setError(null);
       }
