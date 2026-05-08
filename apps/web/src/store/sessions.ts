@@ -13,6 +13,15 @@ const pendingResumes = new Map<
   }
 >();
 
+// correlationId → resolver/rejecter for in-flight rename requests.
+const pendingRenames = new Map<
+  string,
+  {
+    resolve: () => void;
+    reject: (err: { code: string; message: string }) => void;
+  }
+>();
+
 function newResumeCorrelationId(): string {
   return `resume-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -60,6 +69,7 @@ export interface SessionView {
   lastSeq: number;
   alive: boolean;
   account?: string;
+  name?: string | null;
 }
 
 interface SessionsStore {
@@ -83,6 +93,11 @@ interface SessionsStore {
    * the returned promise resolves with it on the matching reply.
    */
   resumeFromHistory(entry: HistoryEntry): Promise<string>;
+  /**
+   * Rename a session. Sends `rename_session`; resolves on the matching
+   * `session_renamed` reply, rejects on `error` with the same correlationId.
+   */
+  renameSession(sessionId: string, name: string): Promise<void>;
 }
 
 export const useSessionsStore = create<SessionsStore>((set, get) => ({
@@ -217,6 +232,23 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       return;
     }
 
+    if (m.type === 'session_renamed') {
+      const existing = get().sessions[m.sessionId];
+      if (existing) {
+        set((s) => ({
+          sessions: { ...s.sessions, [m.sessionId]: { ...existing, name: m.name } },
+        }));
+      }
+      // Resolve the pending promise only when correlationId matches an in-flight rename.
+      // Bridge auto-name broadcasts use correlationId: '' and will NOT match any entry.
+      const pending = pendingRenames.get(m.correlationId);
+      if (pending) {
+        pendingRenames.delete(m.correlationId);
+        pending.resolve();
+      }
+      return;
+    }
+
     if (m.type === 'session_resumed') {
       const existing = get().sessions[m.webSessionId];
       if (existing) {
@@ -252,6 +284,12 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       if (m.correlationId && pendingResumes.has(m.correlationId)) {
         const pending = pendingResumes.get(m.correlationId)!;
         pendingResumes.delete(m.correlationId);
+        pending.reject({ code: m.code, message: m.message });
+      }
+      // Reject any in-flight rename promise keyed to this correlationId.
+      if (m.correlationId && pendingRenames.has(m.correlationId)) {
+        const pending = pendingRenames.get(m.correlationId)!;
+        pendingRenames.delete(m.correlationId);
         pending.reject({ code: m.code, message: m.message });
       }
       return;
@@ -293,5 +331,13 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       correlationId,
     });
     return promise;
+  },
+
+  async renameSession(sessionId: string, name: string): Promise<void> {
+    const correlationId = `rename-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    return new Promise((resolve, reject) => {
+      pendingRenames.set(correlationId, { resolve, reject });
+      getBridgeClient().send({ type: 'rename_session', sessionId, name, correlationId });
+    });
   },
 }));

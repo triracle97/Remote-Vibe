@@ -352,4 +352,68 @@ describe('sessions store', () => {
     });
     expect(useSessionsStore.getState().sessions['s1']!.alive).toBe(true);
   });
+
+  it('renameSession() sends rename_session via WS and resolves on session_renamed reply', async () => {
+    const send = vi.fn();
+    (getBridgeClient as ReturnType<typeof vi.fn>).mockReturnValue({ send });
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+
+    const promise = store.renameSession('s1', 'My New Name');
+    expect(send).toHaveBeenCalledTimes(1);
+    const sent = send.mock.calls[0]![0] as {
+      type: string;
+      sessionId: string;
+      name: string;
+      correlationId: string;
+    };
+    expect(sent.type).toBe('rename_session');
+    expect(sent.sessionId).toBe('s1');
+    expect(sent.name).toBe('My New Name');
+    expect(typeof sent.correlationId).toBe('string');
+
+    // Deliver the reply with the matching correlationId.
+    useSessionsStore.getState().applyServerMsg({
+      type: 'session_renamed',
+      sessionId: 's1',
+      name: 'My New Name',
+      correlationId: sent.correlationId,
+    });
+    await expect(promise).resolves.toBeUndefined();
+    expect(useSessionsStore.getState().sessions['s1']!.name).toBe('My New Name');
+  });
+
+  it('session_renamed with empty correlationId (bridge auto-name) updates name without resolving a promise', () => {
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+
+    // Bridge auto-name broadcasts with correlationId: '' — no pending entry to resolve.
+    expect(() => {
+      store.applyServerMsg({
+        type: 'session_renamed',
+        sessionId: 's1',
+        name: 'Auto Name',
+        correlationId: '',
+      });
+    }).not.toThrow();
+    expect(useSessionsStore.getState().sessions['s1']!.name).toBe('Auto Name');
+  });
+
+  it('renameSession() rejects on error reply with matching correlationId', async () => {
+    const send = vi.fn();
+    (getBridgeClient as ReturnType<typeof vi.fn>).mockReturnValue({ send });
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+
+    const promise = store.renameSession('s1', 'Bad Name!');
+    const sent = send.mock.calls[0]![0] as { correlationId: string };
+
+    store.applyServerMsg({
+      type: 'error',
+      code: 'session_name_invalid',
+      message: 'name too long',
+      correlationId: sent.correlationId,
+    });
+    await expect(promise).rejects.toMatchObject({ code: 'session_name_invalid' });
+  });
 });
