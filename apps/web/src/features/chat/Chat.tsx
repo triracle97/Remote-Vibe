@@ -13,7 +13,7 @@ interface ChatProps {
   session: SessionView;
   onSend(text: string, images?: ReadonlyArray<{ mime: string; base64: string }>): void;
   onStop(): void;
-  onOpenMobileNav?(): void;
+  onOpenMobileNav?(opener?: HTMLElement): void;
   onToggleDrawer?(): void;
   drawerOpen?: boolean;
   banner?: string | null;
@@ -76,7 +76,7 @@ export function Chat({
           <button
             type="button"
             className="chat-mobile-menu"
-            onClick={onOpenMobileNav}
+            onClick={(event) => onOpenMobileNav(event.currentTarget)}
             aria-label="Open sessions and history"
           >
             ☰

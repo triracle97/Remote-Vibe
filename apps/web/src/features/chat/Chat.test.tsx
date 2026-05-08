@@ -54,7 +54,9 @@ describe('Chat', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(getByLabelText(/open sessions and history/i));
+    const trigger = getByLabelText(/open sessions and history/i);
+    fireEvent.click(trigger);
     expect(onOpenMobileNav).toHaveBeenCalledTimes(1);
+    expect(onOpenMobileNav).toHaveBeenCalledWith(trigger);
   });
 });

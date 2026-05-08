@@ -15,10 +15,14 @@ vi.mock('../features/file-explorer/FileExplorer', () => ({
 }));
 
 vi.mock('../features/chat/Chat', () => ({
-  Chat: ({ onOpenMobileNav }: { onOpenMobileNav?: () => void }) => (
+  Chat: ({ onOpenMobileNav }: { onOpenMobileNav?: (opener?: HTMLElement) => void }) => (
     <main data-testid="chat">
       {onOpenMobileNav && (
-        <button type="button" aria-label="Open sessions and history" onClick={onOpenMobileNav}>
+        <button
+          type="button"
+          aria-label="Open sessions and history"
+          onClick={(event) => onOpenMobileNav(event.currentTarget)}
+        >
           menu
         </button>
       )}
@@ -159,7 +163,6 @@ describe('Session mobile shell', () => {
   it('closes with Escape and restores focus to the chat trigger', () => {
     const { getByLabelText, getByRole, queryByRole } = renderSession();
     const trigger = getByLabelText(/open sessions and history/i);
-    trigger.focus();
     fireEvent.click(trigger);
     const drawer = getByRole('dialog', { name: /mobile navigation/i });
     fireEvent.keyDown(drawer, { key: 'Escape' });

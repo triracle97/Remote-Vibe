@@ -107,9 +107,8 @@ export function Session({ client }: SessionProps): JSX.Element {
       returnTarget.focus();
     }
   };
-  const openMobileNav = (): void => {
-    mobileNavReturnFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const openMobileNav = (opener?: HTMLElement): void => {
+    mobileNavReturnFocusRef.current = opener ?? null;
     setMobileNavTab('sessions');
     setMobileNavOpen(true);
   };
