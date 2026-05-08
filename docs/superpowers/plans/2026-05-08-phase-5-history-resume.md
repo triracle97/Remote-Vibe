@@ -595,7 +595,7 @@ describe('HistoryScanner', () => {
     const path = makeClaudeFile('-foo-bar-baz', 'aaa.jsonl', cwd, 'first user prompt');
     setMtime(path, 10);
 
-    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd] });
+    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd], allowlistGate: (cwd) => [cwd].some((a) => cwd === a || cwd.startsWith(a + "/")) });
     const result = await scanner.list();
     expect(result.claude).toHaveLength(1);
     expect(result.claude[0]!.projectPath).toBe(cwd);
@@ -610,7 +610,7 @@ describe('HistoryScanner', () => {
     writeFileSync(path, JSON.stringify({ type: 'last-prompt' }) + '\n');
     setMtime(path, 5);
 
-    const scanner = new HistoryScanner({ homeDir, allowedDirs: [homeDir] });
+    const scanner = new HistoryScanner({ homeDir, allowedDirs: [homeDir], allowlistGate: (cwd) => [homeDir].some((a) => cwd === a || cwd.startsWith(a + "/")) });
     const result = await scanner.list();
     expect(result.claude).toHaveLength(0);
   });
@@ -623,7 +623,7 @@ describe('HistoryScanner', () => {
 
     const allowed = join(homeDir, 'allowed');
     mkdirSync(allowed, { recursive: true });
-    const scanner = new HistoryScanner({ homeDir, allowedDirs: [allowed] });
+    const scanner = new HistoryScanner({ homeDir, allowedDirs: [allowed], allowlistGate: (cwd) => [allowed].some((a) => cwd === a || cwd.startsWith(a + "/")) });
     const result = await scanner.list();
     expect(result.claude).toHaveLength(0);
   });
@@ -638,7 +638,7 @@ describe('HistoryScanner', () => {
       const path = makeClaudeFile('-project', fname, cwd, `prompt ${i}`);
       setMtime(path, i === 99 ? 0.001 : 1000 - i); // newest = i=99
     }
-    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd] });
+    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd], allowlistGate: (cwd) => [cwd].some((a) => cwd === a || cwd.startsWith(a + "/")) });
     const result = await scanner.list();
     expect(result.claude).toHaveLength(50);
     expect(result.claude[0]!.firstPrompt).toBe('prompt 99'); // newest first
@@ -652,7 +652,7 @@ describe('HistoryScanner', () => {
     const path = join(dir, 'bad.jsonl');
     writeFileSync(path, 'not json at all\n' + JSON.stringify({ type: 'user', cwd, message: { content: 'hi' } }) + '\n');
     setMtime(path, 5);
-    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd] });
+    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd], allowlistGate: (cwd) => [cwd].some((a) => cwd === a || cwd.startsWith(a + "/")) });
     const result = await scanner.list();
     // Either the file is dropped (no parseable user) OR survives via the
     // valid second line. Both behaviors are acceptable as long as no throw.
@@ -665,7 +665,7 @@ describe('HistoryScanner', () => {
     const long = 'x'.repeat(200);
     const path = makeClaudeFile('-p', 'a.jsonl', cwd, long);
     setMtime(path, 1);
-    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd] });
+    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd], allowlistGate: (cwd) => [cwd].some((a) => cwd === a || cwd.startsWith(a + "/")) });
     const result = await scanner.list();
     expect(result.claude[0]!.firstPrompt).toHaveLength(80);
   });
@@ -675,7 +675,7 @@ describe('HistoryScanner', () => {
     mkdirSync(cwd, { recursive: true });
     const path = makeCodexFile('2026', '04', '20', 'rollout-x.jsonl', 'codex-uuid-1', cwd, 'first codex prompt');
     setMtime(path, 5);
-    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd] });
+    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd], allowlistGate: (cwd) => [cwd].some((a) => cwd === a || cwd.startsWith(a + "/")) });
     const result = await scanner.list();
     expect(result.codex).toHaveLength(1);
     expect(result.codex[0]!.sessionId).toBe('codex-uuid-1');
@@ -688,7 +688,7 @@ describe('HistoryScanner', () => {
     mkdirSync(allowed, { recursive: true });
     const path = makeCodexFile('2026', '04', '20', 'rollout-y.jsonl', 'codex-uuid-2', '/forbidden', 'hi');
     setMtime(path, 5);
-    const scanner = new HistoryScanner({ homeDir, allowedDirs: [allowed] });
+    const scanner = new HistoryScanner({ homeDir, allowedDirs: [allowed], allowlistGate: (cwd) => [allowed].some((a) => cwd === a || cwd.startsWith(a + "/")) });
     const result = await scanner.list();
     expect(result.codex).toHaveLength(0);
   });
@@ -697,7 +697,7 @@ describe('HistoryScanner', () => {
     const cwd = join(homeDir, 'p');
     mkdirSync(cwd, { recursive: true });
     makeClaudeFile('-p', 'a.jsonl', cwd, 'hi');
-    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd] });
+    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd], allowlistGate: (cwd) => [cwd].some((a) => cwd === a || cwd.startsWith(a + "/")) });
     const spy = vi.spyOn(scanner as unknown as { scanClaude: () => Promise<unknown> }, 'scanClaude');
     await scanner.list();
     await scanner.list();
@@ -708,7 +708,7 @@ describe('HistoryScanner', () => {
     const cwd = join(homeDir, 'p');
     mkdirSync(cwd, { recursive: true });
     makeClaudeFile('-p', 'a.jsonl', cwd, 'hi');
-    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd] });
+    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd], allowlistGate: (cwd) => [cwd].some((a) => cwd === a || cwd.startsWith(a + "/")) });
     const spy = vi.spyOn(scanner as unknown as { scanClaude: () => Promise<unknown> }, 'scanClaude');
     await scanner.list();
     scanner.invalidateCache();
@@ -716,9 +716,25 @@ describe('HistoryScanner', () => {
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
+  it('findEntry returns undefined when backing file was deleted between scan and lookup', async () => {
+    const cwd = join(homeDir, 'p');
+    mkdirSync(cwd, { recursive: true });
+    const path = makeClaudeFile('-p', 'aaa.jsonl', cwd, 'hi');
+    setMtime(path, 5);
+    const scanner = new HistoryScanner({ homeDir, allowedDirs: [cwd], allowlistGate: (c) => c.startsWith(homeDir) });
+    // First call: populates cache + filePathByKey.
+    const first = await scanner.findEntry('claude', 'aaa');
+    expect(first).toBeDefined();
+    // Delete the backing file.
+    rmSync(path);
+    // Second call: cache still has the entry, but findEntry re-stats and rejects.
+    const second = await scanner.findEntry('claude', 'aaa');
+    expect(second).toBeUndefined();
+  });
+
   it('returns [] for both agents when home dirs are missing', async () => {
     const empty = mkdtempSync(join(tmpdir(), 'empty-'));
-    const scanner = new HistoryScanner({ homeDir: empty, allowedDirs: [empty] });
+    const scanner = new HistoryScanner({ homeDir: empty, allowedDirs: [empty], allowlistGate: () => true });
     const result = await scanner.list();
     expect(result.claude).toEqual([]);
     expect(result.codex).toEqual([]);
@@ -746,6 +762,13 @@ import type { HistoryEntry } from './types.js';
 interface ScannerOpts {
   homeDir: string;
   allowedDirs: string[];
+  /**
+   * Phase 3 allowlist + denylist gate. Should return true iff the path is
+   * inside `allowedDirs` AND none of the Phase 3 denylist patterns match.
+   * Tests can stub this with a simple prefix check; production code wires
+   * the real gate from `fs-api.ts`.
+   */
+  allowlistGate: (cwd: string) => Promise<boolean> | boolean;
 }
 
 interface CandidateFile {
@@ -762,6 +785,12 @@ const CACHE_TTL_MS = 60_000;
 
 export class HistoryScanner {
   private cache: { value: { claude: HistoryEntry[]; codex: HistoryEntry[] }; expiresAt: number } | null = null;
+  /**
+   * Side channel from (agent, sessionId) → backing file path. Populated during
+   * each scan. Used by findEntry() to re-stat the file at resume time so a
+   * deleted-between-scan-and-click case is detected.
+   */
+  private filePathByKey = new Map<string, string>();
 
   constructor(private readonly opts: ScannerOpts) {}
 
@@ -780,14 +809,28 @@ export class HistoryScanner {
   }
 
   /**
-   * Look up an entry by (agent, sessionId). Used by SessionManager.resume()
-   * Path 2 to verify a native-history session id maps to a real, allowlisted file.
-   * Re-runs the scan if cache is missing.
+   * Look up an entry by (agent, sessionId) AND re-validate the backing file
+   * still exists on disk. This catches the spec's "JSONL deleted between scan
+   * and click" case. Returns undefined if either the cache lookup or the
+   * disk-stat fails.
+   *
+   * Used by SessionManager.resume() Path 2 to verify a native-history session
+   * id maps to a real, currently-on-disk file. Re-runs the scan if cache is
+   * missing.
    */
   async findEntry(agent: 'claude' | 'codex', sessionId: string): Promise<HistoryEntry | undefined> {
     const list = await this.list();
     const arr = agent === 'claude' ? list.claude : list.codex;
-    return arr.find((e) => e.sessionId === sessionId);
+    const entry = arr.find((e) => e.sessionId === sessionId);
+    if (!entry) return undefined;
+    const filePath = this.filePathByKey.get(`${agent}:${sessionId}`);
+    if (!filePath) return undefined;
+    try {
+      await fsp.access(filePath); // throws ENOENT if deleted
+    } catch {
+      return undefined;
+    }
+    return entry;
   }
 
   private async scanClaude(): Promise<HistoryEntry[]> {
@@ -827,10 +870,13 @@ export class HistoryScanner {
     for (const c of top) {
       const parsed = await this.parseClaudeFile(c.filePath);
       if (parsed === null) continue;
-      if (!this.isAllowed(parsed.cwd)) continue;
+      const allowed = await this.opts.allowlistGate(parsed.cwd);
+      if (!allowed) continue;
+      const sid = basename(c.filePath, '.jsonl');
+      this.filePathByKey.set(`claude:${sid}`, c.filePath);
       out.push({
         agent: 'claude',
-        sessionId: basename(c.filePath, '.jsonl'),
+        sessionId: sid,
         projectPath: parsed.cwd,
         mtime: c.mtime,
         firstPrompt: parsed.firstPrompt,
@@ -880,7 +926,12 @@ export class HistoryScanner {
     for (const c of top) {
       const parsed = await this.parseCodexFile(c.filePath);
       if (parsed === null) continue;
-      if (!this.isAllowed(parsed.cwd)) continue;
+      const allowed = await this.opts.allowlistGate(parsed.cwd);
+      if (!allowed) continue;
+      // Track filePath alongside the entry so resume-time validation can
+      // re-stat the backing file. Stored in a side-channel map keyed by
+      // (agent, sessionId) — see filePathFor() below.
+      this.filePathByKey.set(`codex:${parsed.sessionId}`, c.filePath);
       out.push({
         agent: 'codex',
         sessionId: parsed.sessionId,
@@ -984,15 +1035,11 @@ export class HistoryScanner {
     return { sessionId, cwd, firstPrompt };
   }
 
-  private isAllowed(cwd: string): boolean {
-    // Re-uses the same prefix check as Phase 3 fs-api allowlist gate.
-    // (Full denylist gates are intentionally NOT applied here — denylist is
-    // about node_modules/.git etc. which never appear as a project's `cwd`.)
-    for (const allowed of this.opts.allowedDirs) {
-      const normalized = allowed.endsWith('/') ? allowed : allowed + '/';
-      if (cwd === allowed || cwd.startsWith(normalized)) return true;
-    }
-    return false;
+  private async isAllowed(cwd: string): Promise<boolean> {
+    // Spec §9 requires realpath + Phase 3 fs-api allowlist + denylist for
+    // history scan. Re-use the Phase 3 helper directly — single SSOT for
+    // the gate logic, so any future denylist tightening flows through here.
+    return this.allowlistGate(cwd);
   }
 }
 ```
@@ -1188,6 +1235,8 @@ git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(bridge): drivers 
 
 **Files:**
 - Modify: `packages/bridge/src/session.ts`
+- Modify: `packages/bridge/src/claude-process.ts` (driver constructor accepts `resumeArgs`)
+- Modify: `packages/bridge/src/codex-process.ts` (driver constructor accepts `codexResumeSeed`)
 - Modify: `packages/bridge/src/__tests__/session.test.ts`
 
 `SessionManager` gains: (a) `resume()` method, (b) up-front registry-entry creation on every fresh session spawn, (c) subscription to driver `cli_session_id` events that calls `sessionRegistry.update()`.
@@ -1321,6 +1370,47 @@ it('concurrent resume() calls dedup — second returns the first promise', async
   expect(mgr.spawnCallCount).toBe(1);
 });
 
+it('resume rejects with claude_resume_rejected when claude --resume exits non-zero with rejection-shaped stderr', async () => {
+  const mgr = makeMgr({ /* mock spawn to produce immediate exit-with-stderr "No conversation found with session ID <id>" */ });
+  await mgr.registry.add({
+    webSessionId: 'web-7',
+    agent: 'claude',
+    projectPath: '/tmp/proj',
+    transcriptPath: '.bridge/transcripts/web-7.jsonl',
+    claudeSessionId: 'stale-claude-id',
+    codexSessionId: null,
+    createdAt: 0,
+    account: null,
+  });
+  await expect(mgr.resume('web-7')).rejects.toMatchObject({ code: 'claude_resume_rejected' });
+});
+
+it('resume succeeds for codex even though spawn defers; codex_resume_rejected surfaces on first send_text not on resume()', async () => {
+  // resume() itself does NOT spawn Codex; the rejection (if any) appears
+  // when the user sends their first message after resume. The test asserts:
+  //   - resume() resolves cleanly even with a stale codexSessionId.
+  //   - First send_text triggers `codex exec resume <id>`, which (in this
+  //     mocked test) exits non-zero, and the existing Phase 2 turn-error
+  //     broadcast is amended to use 'codex_resume_rejected' code.
+  const mgr = makeMgr({ /* mock codex to fail the resume turn */ });
+  await mgr.registry.add({
+    webSessionId: 'web-8',
+    agent: 'codex',
+    projectPath: '/tmp/proj',
+    transcriptPath: '.bridge/transcripts/web-8.jsonl',
+    claudeSessionId: null,
+    codexSessionId: 'stale-codex-id',
+    createdAt: 0,
+    account: 'default',
+  });
+  await mgr.resume('web-8'); // succeeds
+  // Now send_text and expect the broadcast.
+  const sentErrors: { code: string }[] = [];
+  mgr.on('session_error', (e: { code: string }) => sentErrors.push(e));
+  await mgr.sendText('web-8', 'hello after stale resume');
+  expect(sentErrors.some((e) => e.code === 'codex_resume_rejected')).toBe(true);
+});
+
 it('on driver cli_session_id event, registry entry is updated', async () => {
   const mgr = makeMgr(/* ... */);
   // Spawn a fresh session (existing behavior — ensure registry entry created up-front).
@@ -1416,30 +1506,83 @@ private async doResume(webSessionId: string): Promise<void> {
 
 private async spawnClaudeWithResume(entry: RegistryEntry, claudeSessionId: string): Promise<void> {
   // Use the same factory the existing initial-spawn path uses, but pass --resume.
-  // The exact factory signature depends on the existing code; the key is to add
-  // ['--resume', claudeSessionId] to the args list.
+  // Distinguish two failure modes:
+  //   - Spawn outright fails (binary not on PATH, fork error)        → resume_spawn_failed
+  //   - Process exits non-zero with stderr containing the substring  → claude_resume_rejected
+  //     "session" + "not found" / "unknown" / "invalid" (pattern match
+  //     to recognize "Claude does not recognize session <id>" -style errors)
+  let session: AgentDriver;
   try {
-    const session = await this.driverFactory({
+    session = await this.driverFactory({
       agent: 'claude',
       projectPath: entry.projectPath,
       account: entry.account,
-      resumeArgs: ['--resume', claudeSessionId], // factory understands this prefix
+      resumeArgs: ['--resume', claudeSessionId],
     });
-    this.attachSession(entry.webSessionId, session, entry);
   } catch (err) {
     throw Object.assign(new Error(`Spawn failed: ${(err as Error).message}`), {
       code: 'resume_spawn_failed',
     });
   }
+  // Watch for an immediate exit-with-rejection during the first event window.
+  // The driver emits 'exit' or 'error' if Claude rejects --resume <id>.
+  const earlyExit = await this.waitForEarlyExitOrSettle(session, /* ms */ 1500);
+  if (earlyExit !== null && this.isClaudeResumeRejection(earlyExit.stderr)) {
+    throw Object.assign(new Error(earlyExit.stderr || 'claude rejected resume'), {
+      code: 'claude_resume_rejected',
+    });
+  }
+  if (earlyExit !== null) {
+    // Non-rejection exit (e.g. permission error, segfault). Treat as generic.
+    throw Object.assign(new Error(earlyExit.stderr || `exit ${earlyExit.code}`), {
+      code: 'resume_spawn_failed',
+    });
+  }
+  this.attachSession(entry.webSessionId, session, entry);
+}
+
+/**
+ * Wait briefly to see if the driver's child exits before any user input is sent.
+ * Returns null if the driver settles into a normal running state.
+ * Implementation note: hook into the existing exit/error events the driver
+ * already emits in Phase 1/2; collect stderr from the existing channel.
+ */
+private waitForEarlyExitOrSettle(_driver: AgentDriver, _timeoutMs: number): Promise<null | { code: number; stderr: string }> {
+  // Adapt to the existing AgentDriver event surface — the bridge already
+  // tracks `exit` events with code + accumulated stderr. The contract is
+  // resolve(null) if the driver is alive past `timeoutMs`, else resolve
+  // with the exit metadata.
+  return Promise.resolve(null); // implementer fills in real wiring
+}
+
+private isClaudeResumeRejection(stderr: string): boolean {
+  // Claude's actual stderr text on `--resume <missing-id>` is something like:
+  //   "Error: No conversation found with session ID <id>"
+  // or:
+  //   "Session not found"
+  // Substring match across known phrasings.
+  const patterns = [/no conversation found/i, /session not found/i, /unknown session/i, /invalid session/i];
+  return patterns.some((p) => p.test(stderr));
 }
 
 private instantiateCodexWithResumeSeed(entry: RegistryEntry, codexSessionId: string): void {
   // Codex is spawn-per-turn; we instantiate the driver but don't spawn.
+  // Resume rejection (codex_resume_rejected) cannot fire here — it can only
+  // surface when the user's first send_text after resume invokes
+  // `codex exec resume <id>` and Codex exits non-zero. The CodexDriver's
+  // existing turn-error event path is responsible for emitting that error
+  // via the standard error broadcast (see Phase 2 spec). This task does NOT
+  // change the existing turn-error path; the new error code is added to the
+  // typed union in Task 1, and the existing code that produces a typed
+  // turn-failure reply is updated to use 'codex_resume_rejected' when the
+  // current turn was a resume attempt (i.e. driver.codexSessionId was
+  // already populated at turn start AND the turn failed). One-line check
+  // in the existing turn-error code path.
   const session = this.driverFactory({
     agent: 'codex',
     projectPath: entry.projectPath,
     account: entry.account,
-    codexResumeSeed: codexSessionId, // factory pre-populates this.codexSessionId
+    codexResumeSeed: codexSessionId,
   });
   this.attachSession(entry.webSessionId, session, entry);
 }
@@ -1477,11 +1620,37 @@ npm run bridge:test -- session
 
 Expected: 7 new tests pass; existing tests still pass.
 
+**Driver constructor changes (required for the SessionManager test seam to work):**
+
+In `packages/bridge/src/claude-process.ts`, extend the constructor options:
+
+```ts
+interface ClaudeDriverOpts {
+  // ... existing fields
+  /** When set, the spawn args are prepended with these tokens (e.g. ['--resume', '<id>']). */
+  resumeArgs?: string[];
+}
+```
+
+In the spawn-arg construction inside the driver, prepend `opts.resumeArgs ?? []` to the existing args list before `-p --dangerously-skip-permissions ...`.
+
+In `packages/bridge/src/codex-process.ts`, extend the constructor options:
+
+```ts
+interface CodexDriverOpts {
+  // ... existing fields
+  /** When set, pre-populates this.codexSessionId so the next sendUserText invokes `codex exec resume`. */
+  codexResumeSeed?: string;
+}
+```
+
+In the constructor body, after existing init: `if (opts.codexResumeSeed) this.codexSessionId = opts.codexResumeSeed;`. The existing `codexSessionId === null` guard in sendUserText (which decides whether to use `exec` or `exec resume`) then naturally picks the resume path on first turn.
+
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /Volumes/WDSSD/Code/mac-remote-terminal add packages/bridge/src/session.ts packages/bridge/src/__tests__/session.test.ts
-git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(bridge): SessionManager.resume() + registry integration via cli_session_id"
+git -C /Volumes/WDSSD/Code/mac-remote-terminal add packages/bridge/src/session.ts packages/bridge/src/claude-process.ts packages/bridge/src/codex-process.ts packages/bridge/src/__tests__/session.test.ts
+git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(bridge): SessionManager.resume() + driver resumeArgs/codexResumeSeed + registry integration"
 ```
 
 ---
@@ -1724,9 +1893,18 @@ In the boot function (likely `async function main()`), add immediately before Se
 const registry = new SessionRegistry(join('.bridge', 'sessions.json'));
 await registry.load();
 
+// Wire the Phase 3 fs-api allowlist+denylist gate. The exact import depends
+// on what `fs-api.ts` exports — it likely has a helper shaped roughly like
+// `validateProjectPath(cwd, allowedDirs) → Promise<boolean>` or a function
+// that throws on rejection. Adapt the export name; the contract is
+// "return true iff the path passes BOTH allowlist prefix check AND Phase 3
+// denylist patterns, using realpath where applicable."
+import { isProjectPathAllowed } from './fs-api.js'; // adjust if the export uses a different name
+
 const historyScanner = new HistoryScanner({
   homeDir: homedir(),
   allowedDirs: env.BRIDGE_ALLOWED_DIRS,
+  allowlistGate: (cwd) => isProjectPathAllowed(cwd, env.BRIDGE_ALLOWED_DIRS),
 });
 ```
 
@@ -2109,6 +2287,7 @@ If `path-browserify` is NOT already a dep, inline `basenameSafe` and remove the 
 
 ```tsx
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useHistoryStore } from './historyStore';
 import { useSessionsStore } from '../../store/sessions';
 import { HistoryRow } from './HistoryRow';
@@ -2119,6 +2298,8 @@ type Tab = 'claude' | 'codex';
 export function HistoryPanel(): JSX.Element {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('claude');
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  const navigate = useNavigate();
   const claude = useHistoryStore((s) => s.claude);
   const codex = useHistoryStore((s) => s.codex);
   const loading = useHistoryStore((s) => s.loading);
@@ -2127,6 +2308,22 @@ export function HistoryPanel(): JSX.Element {
   useEffect(() => {
     if (open) fetch();
   }, [open, fetch]);
+
+  const onRowClick = async (entry: HistoryEntry): Promise<void> => {
+    setResumeError(null);
+    try {
+      const webSessionId = await useSessionsStore.getState().resumeFromHistory(entry);
+      navigate(`/session/${webSessionId}`);
+    } catch (err) {
+      const e = err as { code?: string; message?: string };
+      setResumeError(e.message ?? 'Resume failed');
+      // history_session_not_found: refresh history list so the deleted entry disappears.
+      if (e.code === 'history_session_not_found') {
+        useHistoryStore.getState().invalidate();
+        useHistoryStore.getState().fetch();
+      }
+    }
+  };
 
   const list = tab === 'claude' ? claude : codex;
   const visible = list.slice(0, 50);
@@ -2158,6 +2355,9 @@ export function HistoryPanel(): JSX.Element {
               Codex ({codex.length})
             </button>
           </div>
+          {resumeError !== null && (
+            <div className="history-error">{resumeError}</div>
+          )}
           <div className="history-list">
             {loading && <div className="history-loading">Loading…</div>}
             {!loading && visible.length === 0 && (
@@ -2167,7 +2367,7 @@ export function HistoryPanel(): JSX.Element {
               <HistoryRow
                 key={`${entry.agent}-${entry.sessionId}`}
                 entry={entry}
-                onClick={() => useSessionsStore.getState().resumeFromHistory(entry)}
+                onClick={() => void onRowClick(entry)}
               />
             ))}
           </div>
@@ -2199,6 +2399,10 @@ export function HistoryPanel(): JSX.Element {
 
 .history-list { max-height: 40vh; overflow-y: auto; }
 .history-loading, .history-empty { color: #666; padding: 0.5rem 0.2rem; font-size: 0.8rem; text-align: center; }
+.history-error {
+  color: #f88; background: #2a1010; border: 1px solid #4a1a1a; border-radius: 3px;
+  padding: 0.3rem 0.5rem; margin-bottom: 0.4rem; font-size: 0.75rem;
+}
 
 .history-row {
   display: flex; flex-direction: column; gap: 0.05rem;
@@ -2444,17 +2648,34 @@ import { useConnectionStore } from './connection';
 
 // Inside the create() body, alongside existing actions:
 
-resume(webSessionId: string) {
-  const correlationId = `resume-${Date.now()}`;
+// Pending-resume map: correlationId → {resolve, reject}. The applyServerMsg
+// branch for session_resumed / matching error looks up the entry and resolves.
+// This is the only way to make resume() awaitable from InputBox's "Resume + send"
+// flow, where we need to wait for the bridge to finish spawning before sending
+// the queued message.
+//
+// Add to the store's outer scope (not inside create()):
+const pendingResumes = new Map<string, { resolve: (webSessionId: string) => void; reject: (err: { code: string; message: string }) => void }>();
+
+// Inside the create() body:
+async resume(webSessionId: string): Promise<string> {
+  const correlationId = `resume-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const promise = new Promise<string>((resolve, reject) => {
+    pendingResumes.set(correlationId, { resolve, reject });
+  });
   useConnectionStore.getState().send({
     type: 'resume_session',
     webSessionId,
     correlationId,
   });
+  return promise;
 },
 
-resumeFromHistory(entry: HistoryEntry) {
-  const correlationId = `resume-${Date.now()}`;
+async resumeFromHistory(entry: HistoryEntry): Promise<string> {
+  const correlationId = `resume-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const promise = new Promise<string>((resolve, reject) => {
+    pendingResumes.set(correlationId, { resolve, reject });
+  });
   useConnectionStore.getState().send({
     type: 'resume_session',
     agent: entry.agent,
@@ -2462,6 +2683,8 @@ resumeFromHistory(entry: HistoryEntry) {
     projectPath: entry.projectPath,
     correlationId,
   });
+  // Caller (HistoryPanel) awaits this and navigates to /session/<id> on resolve.
+  return promise;
 },
 ```
 
@@ -2484,8 +2707,22 @@ if (m.type === 'session_resumed') {
       sessions: { ...s.sessions, [m.webSessionId]: { ...existing, alive: true } },
     }));
   }
-  // Bridge issued a new webSessionId for native-history Path 2 — caller should navigate.
+  // Resolve the pending resume promise so the caller (HistoryPanel for Path 2,
+  // InputBox for "Resume + send") can navigate / flush queued message.
+  const pending = pendingResumes.get(m.correlationId);
+  if (pending) {
+    pendingResumes.delete(m.correlationId);
+    pending.resolve(m.webSessionId);
+  }
   return;
+}
+if (m.type === 'error' && m.correlationId && pendingResumes.has(m.correlationId)) {
+  const pending = pendingResumes.get(m.correlationId)!;
+  pendingResumes.delete(m.correlationId);
+  pending.reject({ code: m.code, message: m.message });
+  // Fall through if this error is also session-scoped (e.g. session_dead) so
+  // existing per-session handling still runs. The pending-promise rejection
+  // and the per-session state update can both happen for the same message.
 }
 ```
 
