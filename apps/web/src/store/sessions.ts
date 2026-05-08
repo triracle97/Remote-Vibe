@@ -250,12 +250,24 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     }
 
     if (m.type === 'session_resumed') {
-      const existing = get().sessions[m.webSessionId];
-      if (existing) {
-        set((s) => ({
-          sessions: { ...s.sessions, [m.webSessionId]: { ...existing, alive: true } },
-        }));
-      }
+      // Defensive sidebar slot: reserve a place in `order` even if the
+      // accompanying session_created broadcast hasn't been applied yet (e.g.,
+      // backgrounded tab, message-queue race). Once session_created lands it
+      // populates sessions[webSessionId] and the existing slot stays put.
+      // Without this push the user had to refresh to see freshly-resumed
+      // sessions in the sidebar.
+      set((s) => {
+        const existing = s.sessions[m.webSessionId];
+        const orderHasIt = s.order.includes(m.webSessionId);
+        if (!existing && orderHasIt) return s;
+        if (!existing && !orderHasIt) {
+          return { order: [...s.order, m.webSessionId] };
+        }
+        return {
+          sessions: { ...s.sessions, [m.webSessionId]: { ...existing!, alive: true } },
+          order: orderHasIt ? s.order : [...s.order, m.webSessionId],
+        };
+      });
       const pending = pendingResumes.get(m.correlationId);
       if (pending) {
         pendingResumes.delete(m.correlationId);

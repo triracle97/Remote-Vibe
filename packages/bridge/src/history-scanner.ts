@@ -59,6 +59,16 @@ export class HistoryScanner {
   }
 
   /**
+   * Resolve the on-disk JSONL path for a (agent, sessionId) pair previously
+   * surfaced by `list()` / `findEntry()`. Returns undefined if the scanner has
+   * not seen this entry. Used by the resume-from-history flow to replay prior
+   * turns from the CLI's own session file into the bridge's transcript.
+   */
+  filePathFor(agent: 'claude' | 'codex', sessionId: string): string | undefined {
+    return this.filePathByKey.get(`${agent}:${sessionId}`);
+  }
+
+  /**
    * Look up an entry by (agent, sessionId) AND re-validate the backing file
    * still exists on disk. This catches the spec's "JSONL deleted between scan
    * and click" case. Returns undefined if either the cache lookup or the

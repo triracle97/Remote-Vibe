@@ -16,6 +16,7 @@ import type {
   ServerSessionRenamedMsg,
   ServerStreamMsg,
 } from './types.js';
+import { loadReplayEvents, type ReplayEvent } from './native-history-replay.js';
 
 export interface SessionInfo {
   sessionId: string;
@@ -117,6 +118,13 @@ export class SessionManager extends EventEmitter {
   private readonly claudeResumeSettleMs: number;
   private readonly notifier: Notifier | null;
   private readonly resumeInFlight = new Map<string, Promise<void>>();
+  /**
+   * Phase 7 — replay-on-resume. Populated by `resumeFromHistoryEntry` BEFORE
+   * `resume()` runs; drained by `attachSession` immediately after the
+   * synthesized `session_created` (seq=1) and BEFORE driver listeners wire,
+   * so prior CLI turns occupy seq=2..N+1 and live driver events follow.
+   */
+  private readonly pendingReplays = new Map<string, ReplayEvent[]>();
   /** Track spawn count for tests / observability. Incremented on every driver instantiation. */
   spawnCallCount = 0;
 
@@ -531,7 +539,17 @@ export class SessionManager extends EventEmitter {
    * spawn/instantiate logic as Path 1.
    */
   async resumeFromHistoryEntry(
-    entry: { agent: AgentKind; sessionId: string; projectPath: string },
+    entry: {
+      agent: AgentKind;
+      sessionId: string;
+      projectPath: string;
+      /**
+       * On-disk path to the CLI's own session JSONL. When provided, prior
+       * turns are parsed and replayed into the bridge's transcript so the
+       * web UI shows context immediately on resume.
+       */
+      replayFilePath?: string;
+    },
     accountName: string | null,
   ): Promise<string> {
     if (!this.registry) {
@@ -566,7 +584,27 @@ export class SessionManager extends EventEmitter {
       name: null,
       additionalDirs: [],
     });
-    await this.resume(webSessionId);
+    // Pre-load replay events so attachSession can drain them synchronously
+    // BETWEEN the synthesized session_created and driver listener wiring.
+    // Errors during parse are non-fatal — resume should succeed even if the
+    // CLI file is malformed; the user just gets no history backfill.
+    if (entry.replayFilePath) {
+      try {
+        const events = await loadReplayEvents(entry.agent, entry.replayFilePath);
+        if (events.length > 0) {
+          this.pendingReplays.set(webSessionId, events);
+        }
+      } catch (err) {
+        console.warn('[native-history-replay] parse failed', err);
+      }
+    }
+    try {
+      await this.resume(webSessionId);
+    } finally {
+      // Drop any unconsumed replay payload so a subsequent retry doesn't
+      // double-replay (attachSession deletes on success).
+      this.pendingReplays.delete(webSessionId);
+    }
     return webSessionId;
   }
 
@@ -733,11 +771,29 @@ export class SessionManager extends EventEmitter {
     // flushed stdout synchronously, the real event would steal seq=1 and
     // arrive on the wire before session_created — wrong order.
     this.emitSynthesizedSessionCreated(internal);
+    // Drain any pending replay events (resume-from-history backfill) so
+    // they occupy seq=2..N+1 immediately after session_created and BEFORE
+    // any live driver event takes a seq. Replay events are pre-loaded by
+    // resumeFromHistoryEntry so this drain stays synchronous.
+    this.drainPendingReplay(internal);
     // NOW wire the driver event/exit/cli_session_id listeners. Any
     // subsequent events from the driver flow through onProcEvent +
-    // onCliSessionId, with seq starting at 2.
+    // onCliSessionId, with seq starting at N+2.
     this.wireDriverListeners(internal);
     this.emit('session_resumed', { webSessionId, alive: true });
+  }
+
+  private drainPendingReplay(s: InternalSession): void {
+    const events = this.pendingReplays.get(s.sessionId);
+    if (!events || events.length === 0) return;
+    this.pendingReplays.delete(s.sessionId);
+    for (const e of events) {
+      this.appendAndBroadcast(s, {
+        ...e,
+        sessionId: s.sessionId,
+        seq: s.nextSeq++,
+      } as ServerStreamMsg);
+    }
   }
 
   private emitSynthesizedSessionCreated(s: InternalSession): void {

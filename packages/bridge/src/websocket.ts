@@ -341,7 +341,11 @@ async function handleMessage(
               });
               return;
             }
-            webSessionId = await mgr.resumeFromHistoryEntry(entry, msg.account ?? null);
+            const replayFilePath = historyScanner.filePathFor(msg.agent, msg.sessionId);
+            webSessionId = await mgr.resumeFromHistoryEntry(
+              { ...entry, ...(replayFilePath ? { replayFilePath } : {}) },
+              msg.account ?? null,
+            );
             historyScanner.invalidateCache();
           }
           send({

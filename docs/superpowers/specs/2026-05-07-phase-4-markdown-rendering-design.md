@@ -58,7 +58,7 @@ Bridge: no changes. Markdown is a pure web concern; bridge keeps streaming raw s
 | `apps/web/src/features/markdown/MarkdownRenderer.tsx` | Single entry point. Wraps `<ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={{ code: CodeBlock }}>`. Output wrapped in `<div className="md-rendered">`. `React.memo`-ed on `source` so identical re-renders skip parsing. |
 | `apps/web/src/features/markdown/CodeBlock.tsx` | Custom `code` component injected via `react-markdown`'s `components` prop. Branches by `inline` flag and `className` (which carries `language-<lang>` for fenced blocks). Branches: inline → `<code className="md-inline-code">`; `language-mermaid` → `<MermaidBlock>`; other language → Shiki via `shiki-loader`; unknown / no language → plain `<pre><code>`. Wraps fenced output in `<div className="md-code-block">` with a language label and a copy-to-clipboard button. |
 | `apps/web/src/features/markdown/MermaidBlock.tsx` | `useEffect` calls `mermaid-loader`'s `renderMermaid(uniqueId, source)`. On success, sets a ref'd `<div>`'s `innerHTML` to the SVG. On parse failure, renders the source as a fallback `<pre>` with a "Mermaid parse error: <message>" caption. Memoized on `source`. |
-| `apps/web/src/features/markdown/shiki-loader.ts` | Singleton highlighter. `getHighlighter(): Promise<Highlighter>` returns a memoized promise. Loads `github-dark` theme + curated language set: `ts`, `tsx`, `js`, `jsx`, `json`, `bash`, `sh`, `zsh`, `python`, `rust`, `go`, `yaml`, `toml`, `dockerfile`, `markdown`, `html`, `css`, `sql`, `diff`. `highlight(code, lang): string` returns the `<pre>...</pre>` HTML produced by `highlighter.codeToHtml`. Languages outside the curated set fall through to plain `<pre>`. |
+| `apps/web/src/features/markdown/shiki-loader.ts` | Singleton highlighter. Exports exactly two symbols: `getHighlighter(): Promise<Highlighter>` (returns a memoized promise — first call triggers async load, subsequent calls reuse it) and `CURATED_LANGUAGES: readonly string[]` (the registered set: `ts`, `tsx`, `js`, `jsx`, `json`, `bash`, `sh`, `zsh`, `python`, `rust`, `go`, `yaml`, `toml`, `dockerfile`, `markdown`, `html`, `css`, `sql`, `diff`). The loader resolves a `Highlighter` configured with theme `github-dark` and the curated languages. Callers invoke ONLY `highlighter.codeToHtml(source, { lang, theme: 'github-dark' })`. The loader does NOT export a sync `highlight()` helper — async-only contract avoids the sync-vs-async ambiguity. Languages outside `CURATED_LANGUAGES` are detected at the call site (CodeBlock) and rendered as plain `<pre>` without invoking Shiki. |
 | `apps/web/src/features/markdown/mermaid-loader.ts` | One-time `mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' })`. Exports `async renderMermaid(id: string, source: string): Promise<{ svg: string }>`. The initialize call is idempotent; subsequent imports are cheap. |
 | `apps/web/src/features/markdown/markdown.css` | Styles for `.md-rendered h1/h2/h3/p/ul/ol/li/blockquote/hr`, `.md-rendered table/th/td`, `.md-inline-code`, `.md-code-block`, `.md-code-lang`, `.md-code-copy`, `.md-mermaid`, `.md-mermaid-error`. Tight, dark-themed, matches existing chat palette. |
 
@@ -83,13 +83,16 @@ No changes.
 2. Web receives each `stream_delta` → `applyServerMsg` appends to `events`. `MessageBubble` renders each as a `<span class="bubble-delta">`. Visually: typewriter effect.
 3. When Claude finishes the turn, bridge emits an `assistant` server message with `payload.text` set to the consolidated string and `seq = N`.
 4. `applyServerMsg`'s `assistant` branch (in addition to its existing append) walks backwards through the session's `events` array starting just before the new event (it's appended at index `events.length - 1`). For each preceding event:
-   - If its type is `result`, or `system` (lifecycle), or `assistant` with text payload — STOP. The walk does not cross this boundary.
-   - If its type is `stream_delta` AND its seq < `N` — flag `superseded: true`.
-   - Otherwise — skip and continue.
+   - If its type is **anything other than `stream_delta`** — STOP. The walk does not cross this boundary. Concretely the boundary set is: `result`, `assistant` (any payload — text, tool_use, etc.), `tool_result`, `status`, `user`, `system` (init/session_created/session_ended/etc). This means a contiguous run of `stream_delta` events ending immediately before the new `assistant` is the supersession scope; nothing earlier is touched.
+   - If its type is `stream_delta` — flag `superseded: true`. Continue.
 5. The store commits the events array with the `superseded` flags set.
 6. `MessageBubble` early-returns `null` for any event with `superseded === true`. The streaming spans visually disappear; the rendered markdown bubble appears in their place.
 
-Reload-replay correctness: on reconnect, `get_history` returns the same events. `applyServerMsg` re-runs the supersession walk for each `assistant` event encountered → end state matches live. Transcript-only fallback (Phase 2) likewise re-runs the walk for each event yielded by `streamTranscript`.
+**Idempotency for replay parity.** `applyServerMsg` ignores any `superseded` field on incoming server messages — the bridge protocol does not carry it (server-side `ServerStreamMsg`/`ServerLifecycleMsg` types in Phases 1-3 do not declare `superseded`). The flag is purely a web-store derivative computed by the supersession walk. Replay correctness:
+
+- **Live → reload via `get_history`:** the bridge replays the original `stream_delta` and `assistant` events in order. Each `applyServerMsg('assistant', …)` invocation re-runs the walk on whatever stream_deltas now sit immediately before in the events array. The walk is purely additive — it sets `superseded: true`; it never clears the flag. Re-flagging an already-flagged event is a no-op write of the same boolean.
+- **Live → reload via transcript-only fallback (`streamTranscript`):** transcript JSONL contains the same events in the same order. The store is reset before the fallback streams in (`Session.tsx` calls `useFileExplorerStore.reset()` and the same `useSessionsStore` cleanup pattern is used). `applyServerMsg` runs once per yielded event and reaches the same final state.
+- **Cross-turn isolation:** because the walk's STOP condition is "any non-stream_delta event", stream_deltas from a previous turn (separated by a `result` or another non-delta event) are NOT touched by a later turn's assistant. Tested explicitly.
 
 ### Markdown render path
 
@@ -98,9 +101,20 @@ Reload-replay correctness: on reconnect, `get_history` returns the same events. 
 3. `CodeBlock` receives `({ inline, className, children })`. Branching:
    - `inline === true` → `<code className="md-inline-code">{children}</code>`. Done.
    - className matches `language-mermaid` → `<MermaidBlock source={String(children).trim()} />`.
-   - className matches `language-<lang>` for some lang in the curated Shiki set → call `getHighlighter()`. While the promise is unresolved, render `<pre><code>{children}</code></pre>` (no highlight). Once resolved, on next render, Shiki HTML is produced and rendered inside `<div className="md-code-block">` (via `dangerouslySetInnerHTML` — Shiki output is structured + escaped). Add a `<div className="md-code-lang">{lang}</div>` overlay and a `<button className="md-code-copy">📋</button>` overlay.
-   - className matches `language-<lang>` outside the curated set → `<pre><code>{children}</code></pre>` plain.
-   - No className → `<pre><code>{children}</code></pre>` plain.
+   - className matches `language-<lang>` for some lang in `CURATED_LANGUAGES` → render through the async-highlighter pattern below.
+   - className matches `language-<lang>` outside `CURATED_LANGUAGES` → `<div className="md-code-block">` wrapping `<pre><code>{children}</code></pre>` plain (no Shiki invocation), plus the language label and copy button.
+   - No className → `<pre><code>{children}</code></pre>` plain (no wrapper, no copy button — bare inline-style code).
+
+   **Async-highlighter pattern (Shiki-eligible languages):** `CodeBlock` keeps a piece of local state `const [html, setHtml] = useState<string | null>(null)`. A `useEffect` keyed on `[source, lang]` runs:
+   ```ts
+   let cancelled = false;
+   getHighlighter().then((h) => {
+     if (cancelled) return;
+     setHtml(h.codeToHtml(source, { lang, theme: 'github-dark' }));
+   });
+   return () => { cancelled = true; };
+   ```
+   Render: while `html === null`, output a fallback `<div className="md-code-block"><pre><code>{children}</code></pre></div>` plus the language label and copy button. Once `html` resolves, output `<div className="md-code-block" dangerouslySetInnerHTML={{ __html: html }} />` plus the same overlays. The fallback's first paint shows raw text; the highlighted version replaces it on the next render. There is no separate `setHighlighted` API — `setHtml` is the only state setter.
 4. `MermaidBlock`:
    - `useEffect` triggers on `source` change. Calls `renderMermaid(\`mermaid-\${useId()}\`, source)`.
    - On success: `ref.current.innerHTML = svg`.
@@ -128,20 +142,23 @@ This fires AFTER first paint. The first code-block render before warm-up complet
 | Shiki language not registered | `CodeBlock` falls through to plain `<pre>`. Production: silent. Dev (`import.meta.env.DEV`): a small "language `<lang>` not highlighted" caption shown. |
 | Shiki highlighter still loading at first render | Plain `<pre>` rendered as fallback; subsequent re-render shows highlighted version. Visible flash, acceptable. |
 | KaTeX parse error (`$\frac$` malformed) | KaTeX's default `errorColor: '#cc0000'` and `throwOnError: false` settings render the failed expression as red literal text. No crash. |
-| Markdown source contains `<script>...</script>` | react-markdown's default config drops raw HTML nodes. CSP `script-src 'self'` is the second line of defense. |
+| Markdown source contains `<script>...</script>` (or any other raw HTML) | `react-markdown` is configured WITHOUT `rehype-raw`. Per the lib's default behavior, raw HTML in markdown source is rendered as literal text content (the `<` and `>` become escaped text nodes — `&lt;script&gt;…&lt;/script&gt;`). No `<script>` element materializes in the DOM. CSP `script-src 'self'` is the second line of defense. The acceptance test asserts BOTH: (a) `document.querySelectorAll('script').length === 0` after rendering a `<script>` source, AND (b) the literal `<script>` substring appears as escaped text in `innerHTML`. |
 | `navigator.clipboard.writeText` rejects | Button briefly shows `✗` for 1.5 s then reverts. No exception bubbled. |
 | User pastes a 50 KB code fence | Shiki handles; render time ~O(size). No special handling. If problematic in practice, virtualize later. |
 | Inline `$5 vs $10` (currency, not math) | remark-math requires no whitespace inside `$...$`. The literal string `$5 vs $10` does NOT trigger math rendering. |
 | Streaming text mid-`stream_delta` contains incomplete markdown (e.g. `**bold` without closing `**`) | Streaming bubbles render as raw text spans (NOT markdown), so partial-token ugliness is avoided by design. Markdown only renders on the consolidated `assistant` bubble. |
 | `MarkdownRenderer` receives identical `source` on parent re-render | `React.memo` short-circuits. No re-parse. |
-| Large code fence reaches Shiki before highlighter ready | Plain `<pre>` rendered now; once highlighter resolves, `react-markdown` is re-invoked because `source` changes (new event) — but unchanged events do NOT re-render until they leave/enter viewport via React's reconciliation. To guarantee post-warm-up highlight on already-mounted code blocks, `CodeBlock` subscribes to a "shiki ready" promise via `useEffect` and forces a re-render via `setHighlighted(html)` once the highlighter resolves. |
+| Large code fence reaches Shiki before highlighter ready | Plain `<pre>` fallback rendered immediately (see §5 async-highlighter pattern). The `useEffect` awaits `getHighlighter()` and calls `setHtml` once resolved, triggering a single re-render of the same `CodeBlock` instance. Already-mounted code blocks therefore upgrade in place once the highlighter resolves; new bubbles after warm-up render highlighted on first paint. |
 
 ## 7. Security
 
-- **No raw HTML in markdown source.** `react-markdown`'s default config (we do NOT include `rehype-raw`) drops raw HTML nodes from the AST. `<script>foo</script>` stays as literal text.
+- **No raw HTML in markdown source.** `react-markdown` is configured WITHOUT `rehype-raw`. The default behavior renders raw HTML in markdown source as literal escaped text (the `<` and `>` characters become text-content escapes; the resulting DOM contains zero `<script>`/`<img>`/`<iframe>` elements derived from the source). This is the single SSOT for the raw-HTML claim across §6 and §7.
 - **Mermaid `securityLevel: 'strict'`** disables click handlers and HTML embedding inside diagrams. Mermaid renders SVG; SVG embeds no `<script>` under strict mode.
 - **CSP from Phase 3** (`script-src 'self'`) is the secondary line of defense if anything slips through.
-- **Shiki output uses `dangerouslySetInnerHTML`.** Shiki's output is well-known structured HTML (`<pre><code>...<span style="color:#xxx">...</span></code></pre>`) with escaped text content. It is NOT user-controlled HTML — it's library-generated. Auditing the Shiki package version at impl time confirms no known XSS path.
+- **Shiki output uses `dangerouslySetInnerHTML`.** Shiki's `codeToHtml` (the only Shiki API the codebase calls) emits library-generated HTML with all source bytes HTML-entity-escaped before being wrapped in `<span style="color:#xxx">…</span>`. Concrete acceptance criteria the implementer MUST satisfy:
+  - **Pinned API path.** `shiki-loader.ts` exports a single `getHighlighter()` that returns `Highlighter`, and code-rendering callers invoke ONLY `highlighter.codeToHtml(source, { lang, theme })`. Other Shiki APIs (`getTokens`, `codeToHast`, `codeToTokensBase`) are out of scope and must NOT be used in Phase 4.
+  - **Regression test for hostile content.** A unit test in `shiki-loader.test.ts` feeds a hostile fence body — exactly `</span><img src=x onerror=alert(1)>` — through `highlight(source, 'ts')`, then parses the resulting HTML via `DOMParser` (or a `JSDOM`/`happy-dom` equivalent in Vitest's `happy-dom` env) and asserts: (a) zero `<img>` elements exist in the parsed tree, (b) zero `<script>` elements exist, (c) the literal `<` and `>` characters from the source appear as `&lt;` / `&gt;` text-content escapes in the rendered HTML. This pins the contract and catches a future Shiki regression.
+  - **No additional sanitizer.** A second-pass DOMPurify is intentionally NOT added — pinning the API + the regression test gives equivalent assurance with zero new dep weight. If the test ever fails on a Shiki upgrade, the upgrade is rolled back until either the upstream bug is fixed or DOMPurify is added in a follow-up phase.
 - **Math via KaTeX** renders MathML + HTML; no script execution.
 - **Copy button** uses `navigator.clipboard.writeText(source)` — original markdown source, not the rendered HTML. Safe.
 - **No new env vars, no new bridge endpoints, no new data exfiltration surface.** Phase 4 is pure rendering.
@@ -150,10 +167,10 @@ This fires AFTER first paint. The first code-block render before warm-up complet
 
 ### Web unit tests
 
-- **`MarkdownRenderer.test.tsx`** — bold (`**x**` → `<strong>`), italic (`*x*` → `<em>`), heading (`# Title` → `<h1>`), unordered list, ordered list, link, inline code → `<code>`, fenced code → CodeBlock invoked (mocked), block math `$$x^2$$` → `.katex` element exists, GFM table → `<table>` with `<thead>`, raw `<script>` source → escaped (no `<script>` in DOM).
+- **`MarkdownRenderer.test.tsx`** — bold (`**x**` → `<strong>`), italic (`*x*` → `<em>`), heading (`# Title` → `<h1>`), unordered list, ordered list, link, inline code → `<code>`, fenced code → CodeBlock invoked (mocked), block math `$$x^2$$` → `.katex` element exists, GFM table → `<table>` with `<thead>`. **Raw-HTML escape test (§7 acceptance criterion):** source `Try this: <script>alert(1)</script> and <img src=x onerror=...>` renders to a DOM where `container.querySelectorAll('script').length === 0`, `container.querySelectorAll('img').length === 0`, AND `container.innerHTML` contains the literal substring `&lt;script&gt;` (proving the source bytes survive as escaped text content).
 - **`CodeBlock.test.tsx`** — `inline=true` renders `<code className="md-inline-code">`. Block + `language-mermaid` invokes `<MermaidBlock>` (mocked). Block + `language-typescript` calls `getHighlighter()` (mocked) and renders the result. Block + unknown lang renders plain `<pre>`. Copy button calls `navigator.clipboard.writeText` with original source. Copy button hidden when `navigator.clipboard` undefined.
 - **`MermaidBlock.test.tsx`** — valid source → SVG injected. Invalid source → fallback `<pre>` + error caption. Mock `mermaid.render` to control success/failure deterministically.
-- **`shiki-loader.test.ts`** — `getHighlighter()` returns the same promise on repeated calls. After resolution, `highlight('const x = 1', 'ts')` returns HTML containing `<pre>` and at least one `<span style="color:`. Unknown language returns plain `<pre>{escaped}</pre>`.
+- **`shiki-loader.test.ts`** — `getHighlighter()` returns the same promise on repeated calls. After resolution, `highlighter.codeToHtml('const x = 1', { lang: 'ts', theme: 'github-dark' })` returns HTML containing `<pre>` and at least one `<span style="color:`. **Hostile-content regression test (§7 acceptance criterion):** feed `</span><img src=x onerror=alert(1)>` through `codeToHtml` with `lang: 'ts'`; parse the result via `DOMParser`; assert `parsed.querySelectorAll('img').length === 0`, `parsed.querySelectorAll('script').length === 0`, and that the literal `<` and `>` from the source appear as `&lt;`/`&gt;` text escapes in `innerHTML`.
 - **`mermaid-loader.test.ts`** — `renderMermaid` resolves to `{svg}` for a valid graph. Rejects for invalid input.
 - **`sessions.test.ts` (additions)** — three tests:
   1. After `assistant` event with text payload, all preceding `stream_delta` events in the same turn are flagged `superseded`.

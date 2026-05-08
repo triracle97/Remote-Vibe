@@ -22,6 +22,7 @@ function makeFakeScanner(overrides: Partial<HistoryScanner> = {}): HistoryScanne
     list: vi.fn(async () => ({ claude: [] as HistoryEntry[], codex: [] as HistoryEntry[] })),
     findEntry: vi.fn(async () => undefined),
     invalidateCache: vi.fn(),
+    filePathFor: vi.fn(() => undefined),
     ...overrides,
   } as unknown as HistoryScanner;
 }
