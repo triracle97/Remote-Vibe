@@ -1,11 +1,13 @@
 import { useEffect, useMemo } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { BridgeClient } from './services/bridge-client';
+import { setBridgeClient } from './services/bridge-client-singleton';
 import { useConnectionStore } from './store/connection';
 import { useSessionsStore } from './store/sessions';
 import { useAccountsStore } from './store/accounts';
 import { usePromptHistoryStore } from './store/prompt-history';
 import { useFileExplorerStore } from './store/file-explorer';
+import { useHistoryStore } from './features/history/historyStore';
 import { Home } from './pages/Home';
 import { Session } from './pages/Session';
 
@@ -17,6 +19,10 @@ export function App(): JSX.Element {
   const applyAccountList = useAccountsStore((s) => s.applyAccountList);
 
   const client = useMemo(() => new BridgeClient(), []);
+
+  useEffect(() => {
+    setBridgeClient(client);
+  }, [client]);
 
   useEffect(() => {
     const offOpen = client.on('open', () => {
@@ -52,6 +58,10 @@ export function App(): JSX.Element {
       }
       if (m.type === 'file_result') {
         useFileExplorerStore.getState().applyFileResult(m);
+        return;
+      }
+      if (m.type === 'history_list') {
+        useHistoryStore.getState().applyServerMsg(m);
         return;
       }
       if (m.type === 'error') {
