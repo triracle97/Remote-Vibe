@@ -23,6 +23,12 @@ export interface CodexProcessOpts {
    * resume a previously-known Codex CLI session on the user's first turn.
    */
   codexResumeSeed?: string;
+  /**
+   * Phase 6: additional working dirs stored for diagnostics. The Codex CLI
+   * does NOT support a `--add-dir` equivalent, so these are not passed to
+   * spawn. SessionManager surfaces a one-time warning at construction.
+   */
+  additionalDirs?: string[];
 }
 
 export class CodexProcess extends EventEmitter {
@@ -72,6 +78,15 @@ export class CodexProcess extends EventEmitter {
       this.resumed = true;
     } else {
       this.resumed = false;
+    }
+    // Phase 6: warn once per spawn if the caller passed additionalDirs. The
+    // Codex CLI lacks `--add-dir`, so we have nowhere to forward them; the
+    // diagnostic helps developers spot Profiles authored with Claude in mind
+    // that are then run against Codex.
+    if (opts.additionalDirs && opts.additionalDirs.length > 0) {
+      console.warn(
+        `[codex] ignoring ${opts.additionalDirs.length} additional dir(s) — CLI lacks --add-dir`,
+      );
     }
   }
 

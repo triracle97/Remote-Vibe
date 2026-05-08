@@ -7,11 +7,13 @@ import type { TranscriptStore } from './transcript-store.js';
 import type { CodexAccount } from './accounts.js';
 import type { PromptStore } from './prompt-store.js';
 import type { ImageStore } from './image-store.js';
+import type { Notifier } from './notifier.js';
 import type { SessionRegistry, RegistryEntry } from './session-registry.js';
 import type {
   AgentEvent,
   AgentKind,
   ServerLifecycleMsg,
+  ServerSessionRenamedMsg,
   ServerStreamMsg,
 } from './types.js';
 
@@ -43,6 +45,8 @@ export interface DriverFactoryArgs {
   resumeArgs?: string[];
   /** Phase 5 — Codex CLI session uuid to seed driver state. */
   codexResumeSeed?: string;
+  /** Phase 6 — additional working dirs (Claude: --add-dir; Codex: ignored with warning). */
+  additionalDirs?: string[];
 }
 
 export interface SessionManagerOpts {
@@ -65,6 +69,8 @@ export interface SessionManagerOpts {
   stat?: (p: string) => Promise<{ isDirectory(): boolean }>;
   /** Phase 5 — early-exit window before classifying claude --resume as alive. */
   claudeResumeSettleMs?: number;
+  /** Phase 6 — Telegram notifier; subscribed to input/result/session_ended. */
+  notifier?: Notifier;
 }
 
 export class PathOutsideAllowlistError extends Error {
@@ -88,6 +94,13 @@ export class UnknownAccountError extends Error {
   }
 }
 
+export class InvalidSessionNameError extends Error {
+  code = 'session_name_invalid' as const;
+  constructor(message: string) {
+    super(message);
+  }
+}
+
 export class SessionManager extends EventEmitter {
   private readonly sessions = new Map<string, InternalSession>();
   private readonly allowedDirs: string[];
@@ -102,6 +115,7 @@ export class SessionManager extends EventEmitter {
   private readonly transcriptDir: string;
   private readonly stat: (p: string) => Promise<{ isDirectory(): boolean }>;
   private readonly claudeResumeSettleMs: number;
+  private readonly notifier: Notifier | null;
   private readonly resumeInFlight = new Map<string, Promise<void>>();
   /** Track spawn count for tests / observability. Incremented on every driver instantiation. */
   spawnCallCount = 0;
@@ -119,6 +133,7 @@ export class SessionManager extends EventEmitter {
     this.transcriptDir = opts.transcriptDir ?? join('.bridge', 'transcripts');
     this.stat = opts.stat ?? ((p) => fsStat(p));
     this.claudeResumeSettleMs = opts.claudeResumeSettleMs ?? 1500;
+    this.notifier = opts.notifier ?? null;
     if (opts.driverFactory) {
       const userFactory = opts.driverFactory;
       this.driverFactory = (args) => {
@@ -219,6 +234,8 @@ export class SessionManager extends EventEmitter {
         codexSessionId: null,
         createdAt: internal.createdAt,
         account: account ? account.name : null,
+        name: null,
+        additionalDirs: [],
       });
     }
 
@@ -241,6 +258,200 @@ export class SessionManager extends EventEmitter {
       createdAt: internal.createdAt,
       ...(account ? { account: account.name } : {}),
     };
+  }
+
+  /**
+   * Phase 6 — Multi-dir spawn. Generalisation of `create()` that accepts a
+   * primary cwd plus additional working dirs. Validation:
+   *   - dirs must be non-empty
+   *   - every dir must pass the same allowlist+realpath check as projectPath
+   *   - exact-match duplicates are de-duped (after realpath resolution)
+   *
+   * Per-agent semantics:
+   *   - Claude: dirs[1..] are passed as `--add-dir <dir>` via the driver.
+   *   - Codex: dirs[1..] are stored in the registry for diagnostics; the
+   *     CodexProcess constructor logs a one-time warning that they are
+   *     ignored (Codex CLI lacks a `--add-dir` equivalent).
+   *
+   * Returns the same SessionInfo shape as `create()` so existing callers
+   * (e.g. websocket handlers) can forward without translation.
+   */
+  async spawnSession(params: {
+    agent: AgentKind;
+    dirs: string[];
+    account?: string;
+    correlationId?: string;
+  }): Promise<SessionInfo & { webSessionId: string }> {
+    if (!Array.isArray(params.dirs) || params.dirs.length === 0) {
+      throw new PathOutsideAllowlistError('(empty)');
+    }
+    // Validate every dir BEFORE we mint or spawn anything; first failure
+    // surfaces the offending raw path. Resolved real paths replace the raw
+    // values for downstream use (so dedup/allowlist are consistent).
+    const realDirs: string[] = [];
+    for (const d of params.dirs) {
+      const real = await this.validatePath(d);
+      realDirs.push(real);
+    }
+    // Exact-match dedup on the resolved paths. Order is preserved so
+    // dirs[0] stays the primary cwd.
+    const seen = new Set<string>();
+    const dirs: string[] = [];
+    for (const r of realDirs) {
+      if (seen.has(r)) continue;
+      seen.add(r);
+      dirs.push(r);
+    }
+    const primary = dirs[0]!;
+    const additionalDirs = dirs.slice(1);
+    const account = this.resolveAccount(params.agent, params.account);
+    const sessionId = this.mintWebSessionId();
+    const proc = this.driverFactory({
+      agent: params.agent,
+      projectPath: primary,
+      ...(account ? { account } : {}),
+      ...(additionalDirs.length > 0 ? { additionalDirs } : {}),
+    });
+
+    const internal: InternalSession = {
+      sessionId,
+      agent: params.agent,
+      projectPath: primary,
+      createdAt: Date.now(),
+      proc,
+      buffer: [],
+      nextSeq: 1,
+      alive: true,
+      ...(account ? { account: account.name } : {}),
+    };
+    this.registerInternalSession(internal);
+
+    if (this.registry) {
+      await this.registry.add({
+        webSessionId: sessionId,
+        agent: params.agent,
+        projectPath: primary,
+        transcriptPath: this.transcriptPathFor(sessionId),
+        claudeSessionId: null,
+        codexSessionId: null,
+        createdAt: internal.createdAt,
+        account: account ? account.name : null,
+        name: null,
+        additionalDirs,
+      });
+    }
+
+    this.appendAndBroadcast(internal, {
+      type: 'system',
+      event: 'session_created',
+      sessionId,
+      seq: internal.nextSeq++,
+      agent: internal.agent,
+      projectPath: internal.projectPath,
+      createdAt: internal.createdAt,
+      ...(account ? { account: account.name } : {}),
+      ...(params.correlationId ? { correlationId: params.correlationId } : {}),
+    });
+
+    return {
+      sessionId,
+      webSessionId: sessionId,
+      agent: internal.agent,
+      projectPath: internal.projectPath,
+      createdAt: internal.createdAt,
+      ...(account ? { account: account.name } : {}),
+    };
+  }
+
+  /**
+   * Phase 6 — input lifecycle hook. Called from `sendInput` (and tests) to:
+   *   (a) start the notifier turn timer,
+   *   (b) auto-name the session on the first input if the registry entry
+   *       still has `name === null`. Truncated to 60 chars; trimmed; the
+   *       fallback `'(empty)'` is used when the slice is whitespace-only.
+   * Either step is a no-op if its precondition isn't met. The method returns
+   * a Promise so callers can await the registry write in tests; production
+   * call sites fire-and-forget.
+   */
+  async handleInput(webSessionId: string, text: string): Promise<void> {
+    this.notifier?.noteInput(webSessionId);
+    if (!this.registry) return;
+    const entry = this.registry.get(webSessionId);
+    if (!entry || entry.name !== null) return;
+    const sliced = text.slice(0, 60);
+    const trimmed = sliced.trim();
+    const name = trimmed.length === 0 ? '(empty)' : trimmed;
+    try {
+      await this.registry.update(webSessionId, { name });
+    } catch (err) {
+      console.warn('[session-registry] auto-name update failed:', err);
+      return;
+    }
+    // Broadcast a session_renamed lifecycle event so the web UI can update
+    // its session list / page title in lock-step with the registry write.
+    // Reuses the same wire-shape as user-driven renameSession.
+    this.broadcastSessionRenamed(webSessionId, name);
+  }
+
+  /**
+   * Phase 6 — result lifecycle hook. Looks up the registry entry and hands
+   * it to the notifier (which decides whether to send Telegram based on
+   * elapsed turn duration). No-op if the registry isn't configured.
+   */
+  async handleResult(webSessionId: string): Promise<void> {
+    if (!this.notifier) return;
+    if (!this.registry) return;
+    const entry = this.registry.get(webSessionId);
+    if (!entry) return;
+    await this.notifier.noteResult(entry);
+  }
+
+  /**
+   * Phase 6 — user-initiated rename. Validates name (trim → reject empty →
+   * ≤200 chars → reject control chars), persists registry, broadcasts a
+   * `session_renamed` lifecycle event so all connected clients re-render.
+   * Throws `session_name_invalid` on validation failure;
+   * `history_session_not_found` if the registry has no such entry.
+   */
+  async renameSession(webSessionId: string, name: string): Promise<void> {
+    if (typeof name !== 'string') {
+      throw new InvalidSessionNameError('Invalid session name');
+    }
+    const trimmed = name.trim();
+    if (trimmed.length === 0 || trimmed.length > 200) {
+      throw new InvalidSessionNameError('Invalid session name');
+    }
+    // eslint-disable-next-line no-control-regex
+    if (/[ -]/.test(trimmed)) {
+      throw new InvalidSessionNameError('Invalid session name');
+    }
+    if (!this.registry) {
+      throw resumeError('history_session_not_found', 'Rename requires a SessionRegistry');
+    }
+    const entry = this.registry.get(webSessionId);
+    if (!entry) {
+      throw resumeError('history_session_not_found', `Unknown webSessionId ${webSessionId}`);
+    }
+    await this.registry.update(webSessionId, { name: trimmed });
+    this.broadcastSessionRenamed(webSessionId, trimmed);
+  }
+
+  /**
+   * Emit a session_renamed lifecycle event. Used by both auto-name (on first
+   * input) and user-driven rename. The event sits outside the seq machinery
+   * because it's idempotent metadata (the registry is the source of truth);
+   * we use an empty correlationId on the wire shape and emit through the
+   * same `broadcast` event as everything else so connected websockets pick
+   * it up via the existing fan-out.
+   */
+  private broadcastSessionRenamed(webSessionId: string, name: string): void {
+    const msg: ServerSessionRenamedMsg = {
+      type: 'session_renamed',
+      sessionId: webSessionId,
+      name,
+      correlationId: '',
+    };
+    this.emit('broadcast', msg);
   }
 
   /**
@@ -352,6 +563,8 @@ export class SessionManager extends EventEmitter {
       codexSessionId: entry.agent === 'codex' ? entry.sessionId : null,
       createdAt: Date.now(),
       account: accountName,
+      name: null,
+      additionalDirs: [],
     });
     await this.resume(webSessionId);
     return webSessionId;
@@ -604,6 +817,11 @@ export class SessionManager extends EventEmitter {
         break;
     }
     this.appendAndBroadcast(s, msg);
+    // Phase 6: notifier — result lifecycle hook. Fired for any result
+    // (success or error). Notifier internally checks duration ≥ threshold.
+    if (e.kind === 'result') {
+      void this.handleResult(s.sessionId);
+    }
     // If a Codex turn surfaced a session_id_missing error inside the result,
     // also broadcast a typed ServerErrorMsg so the frontend can route it via
     // the standard error channel (App.tsx may show a distinct UI for it).
@@ -651,6 +869,9 @@ export class SessionManager extends EventEmitter {
     void this.imageStore?.cleanup(s.sessionId).catch((err) =>
       console.warn('[image-audit] cleanup', err),
     );
+    // Phase 6: notifier — session_ended lifecycle hook so the notifier can
+    // drop any per-session state (turn timers, failure counters).
+    this.notifier?.noteSessionEnd(s.sessionId);
     this.sessions.delete(s.sessionId);
   }
 
@@ -729,6 +950,9 @@ export class SessionManager extends EventEmitter {
         .writeAuditCopy(sessionId, images.slice())
         .catch((err) => console.warn('[image-audit]', err));
     }
+    // Phase 6: notifier — input lifecycle hook. Auto-name on first input is
+    // also handled here (entry.name === null path). Both are best-effort.
+    void this.handleInput(sessionId, text);
   }
 
   stop(sessionId: string): void {

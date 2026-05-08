@@ -45,6 +45,13 @@ export interface ClaudeProcessOpts {
    * Used by SessionManager.resume() to ask Claude to resume an existing CLI conversation.
    */
   resumeArgs?: string[];
+  /**
+   * Phase 6: additional working dirs. Each is passed as `--add-dir <dir>` to
+   * Claude so it can read/write files outside the primary cwd. Each path is
+   * validated by `assertResumeArgSafe` (same allowlist as `resumeArgs`) to
+   * prevent shell-meta injection at the `exec claude ...` line.
+   */
+  additionalDirs?: string[];
 }
 
 export class ClaudeProcess extends EventEmitter {
@@ -62,10 +69,21 @@ export class ClaudeProcess extends EventEmitter {
     const resumeArgs = opts.resumeArgs ?? [];
     for (const t of resumeArgs) assertResumeArgSafe(t);
     this.resumed = resumeArgs.length > 0;
+    // Phase 6: --add-dir flags follow resumeArgs but precede the standard
+    // CLAUDE_FLAGS. Each token is validated through the same shell-safety
+    // gate as resumeArgs; absolute filesystem paths are valid under the
+    // [A-Za-z0-9_./-] allowlist.
+    const additionalDirs = opts.additionalDirs ?? [];
+    const addDirArgs: string[] = [];
+    for (const d of additionalDirs) {
+      assertResumeArgSafe(d);
+      addDirArgs.push('--add-dir', d);
+    }
     // Resume tokens are prepended to the existing claude argv so the final
-    // shell command is `exec claude --resume <id> -p --dangerously-skip-permissions ...`.
+    // shell command is `exec claude --resume <id> --add-dir <dir>... -p --dangerously-skip-permissions ...`.
     const claudePrefix = resumeArgs.length > 0 ? `${resumeArgs.join(' ')} ` : '';
-    const argv = ['-li', '-c', `exec claude ${claudePrefix}${CLAUDE_FLAGS}`];
+    const addDirPrefix = addDirArgs.length > 0 ? `${addDirArgs.join(' ')} ` : '';
+    const argv = ['-li', '-c', `exec claude ${claudePrefix}${addDirPrefix}${CLAUDE_FLAGS}`];
     this.child = spawnFn('zsh', argv, {
       cwd: projectPath,
       env: process.env,

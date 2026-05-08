@@ -769,4 +769,271 @@ describe('SessionManager', () => {
       { text: 'remember me', projectPath: '/Users/test/proj', agent: 'claude' },
     ]);
   });
+
+  describe('Phase 6 — multi-dir, auto-name, rename, notifier', () => {
+    let tmp: string;
+    let registryPath: string;
+
+    beforeEach(() => {
+      tmp = mkdtempSync(join(tmpdir(), 'sessmgr-p6-'));
+      registryPath = join(tmp, 'sessions.json');
+    });
+    afterEach(async () => {
+      // Phase 6 tests fire async registry.update from handleInput +
+      // sendInput. Wait long enough for the write queue to drain before
+      // deleting the tmp dir, otherwise the rename in persist() ENOENTs.
+      await new Promise((r) => setTimeout(r, 50));
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    interface SpawnArg {
+      agent: string;
+      projectPath: string;
+      account?: string;
+      additionalDirs?: string[];
+    }
+
+    class TrackedDriver extends EventEmitter implements AgentDriver {
+      sentText: string[] = [];
+      killed = false;
+      readonly args: SpawnArg;
+      stderrBuf = '';
+      constructor(args: SpawnArg) {
+        super();
+        this.args = args;
+      }
+      sendUserText(s: string) { this.sentText.push(s); }
+      kill() { this.killed = true; this.emit('exit', 0); }
+      stderrTail() { return this.stderrBuf; }
+    }
+
+    async function makeRegistry(): Promise<SessionRegistry> {
+      const r = new SessionRegistry(registryPath);
+      await r.load();
+      return r;
+    }
+
+    async function makeMgrP6(opts: {
+      allowedDirs?: string[];
+      registry?: SessionRegistry;
+      notifier?: {
+        noteInput: (id: string) => void;
+        noteResult: (entry: unknown) => Promise<void> | void;
+        noteSessionEnd: (id: string) => void;
+      };
+    } = {}) {
+      const allowedDirs = opts.allowedDirs ?? [tmp];
+      const drivers: TrackedDriver[] = [];
+      const spawned: SpawnArg[] = [];
+      const registry = opts.registry ?? (await makeRegistry());
+      const factory = (args: DriverFactoryArgs): AgentDriver => {
+        const arg: SpawnArg = {
+          agent: args.agent,
+          projectPath: args.projectPath,
+          ...(args.account ? { account: args.account.name } : {}),
+          ...(args.additionalDirs ? { additionalDirs: args.additionalDirs } : {}),
+        };
+        spawned.push(arg);
+        const d = new TrackedDriver(arg);
+        drivers.push(d);
+        return d;
+      };
+      const accounts = new Map([
+        ['default', { name: 'default', codexHome: '/tmp/codex-home' } as const],
+      ]);
+      const mgr = new SessionManager({
+        allowedDirs,
+        bufferCap: 100,
+        driverFactory: factory,
+        realpath: async (p) => p,
+        registry,
+        accounts: accounts as unknown as Map<string, import('../accounts.js').CodexAccount>,
+        ...(opts.notifier
+          ? { notifier: opts.notifier as unknown as import('../notifier.js').Notifier }
+          : {}),
+      });
+      return { mgr, registry, drivers, spawned };
+    }
+
+    it('spawnSession with dirs[a, b, c] passes additionalDirs to Claude driver', async () => {
+      const a = join(tmp, 'a');
+      const b = join(tmp, 'b');
+      const c = join(tmp, 'c');
+      mkdirSync(a, { recursive: true });
+      mkdirSync(b, { recursive: true });
+      mkdirSync(c, { recursive: true });
+      const { mgr, spawned } = await makeMgrP6();
+      const sess = await mgr.spawnSession({
+        agent: 'claude',
+        dirs: [a, b, c],
+      });
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.agent).toBe('claude');
+      expect(spawned[0]!.projectPath).toBe(a);
+      expect(spawned[0]!.additionalDirs).toEqual([b, c]);
+      // Registry persisted with additionalDirs and name=null.
+      const { registry } = await makeMgrP6({ registry: await (async () => {
+        const r = new SessionRegistry(registryPath);
+        await r.load();
+        return r;
+      })() });
+      const entry = registry.get(sess.webSessionId);
+      expect(entry?.additionalDirs).toEqual([b, c]);
+      expect(entry?.name).toBeNull();
+    });
+
+    it('spawnSession with codex + multiple dirs forwards additionalDirs to driver factory', async () => {
+      const a = join(tmp, 'a');
+      const b = join(tmp, 'b');
+      mkdirSync(a, { recursive: true });
+      mkdirSync(b, { recursive: true });
+      const { mgr, spawned } = await makeMgrP6();
+      await mgr.spawnSession({
+        agent: 'codex',
+        dirs: [a, b],
+        account: 'default',
+      });
+      // The driver factory receives additionalDirs; the warn happens inside
+      // the real CodexProcess constructor (covered by codex-process.test.ts).
+      // Here we assert SessionManager wires the value through.
+      expect(spawned[0]!.agent).toBe('codex');
+      expect(spawned[0]!.additionalDirs).toEqual([b]);
+    });
+
+    it('first user input auto-sets session.name truncated to 60 chars', async () => {
+      const a = join(tmp, 'a');
+      mkdirSync(a, { recursive: true });
+      const { mgr, registry } = await makeMgrP6();
+      const sess = await mgr.spawnSession({ agent: 'claude', dirs: [a] });
+      const longText = 'fix login bug in OAuth flow that was reported by QA team yesterday afternoon';
+      await mgr.handleInput(sess.webSessionId, longText);
+      const entry = registry.get(sess.webSessionId);
+      expect(entry?.name).toBe(longText.slice(0, 60).trim());
+      // Subsequent input does NOT overwrite the name.
+      await mgr.handleInput(sess.webSessionId, 'a totally different prompt');
+      const entry2 = registry.get(sess.webSessionId);
+      expect(entry2?.name).toBe(longText.slice(0, 60).trim());
+    });
+
+    it('first input that is whitespace-only auto-sets name to (empty)', async () => {
+      const a = join(tmp, 'a');
+      mkdirSync(a, { recursive: true });
+      const { mgr, registry } = await makeMgrP6();
+      const sess = await mgr.spawnSession({ agent: 'claude', dirs: [a] });
+      await mgr.handleInput(sess.webSessionId, '   \t\n   ');
+      expect(registry.get(sess.webSessionId)?.name).toBe('(empty)');
+    });
+
+    it('renameSession validates + persists + broadcasts session_renamed', async () => {
+      const a = join(tmp, 'a');
+      mkdirSync(a, { recursive: true });
+      const { mgr, registry } = await makeMgrP6();
+      const sess = await mgr.spawnSession({ agent: 'claude', dirs: [a] });
+      const events: { type: string }[] = [];
+      mgr.on('broadcast', (e) => events.push(e));
+      await mgr.renameSession(sess.webSessionId, 'my session');
+      expect(registry.get(sess.webSessionId)?.name).toBe('my session');
+      const renamed = events.find((e) => e.type === 'session_renamed') as
+        | { type: 'session_renamed'; sessionId: string; name: string }
+        | undefined;
+      expect(renamed).toBeDefined();
+      expect(renamed?.sessionId).toBe(sess.webSessionId);
+      expect(renamed?.name).toBe('my session');
+    });
+
+    it('renameSession rejects empty / whitespace / overlong / control-char names', async () => {
+      const a = join(tmp, 'a');
+      mkdirSync(a, { recursive: true });
+      const { mgr } = await makeMgrP6();
+      const sess = await mgr.spawnSession({ agent: 'claude', dirs: [a] });
+      await expect(mgr.renameSession(sess.webSessionId, '')).rejects.toMatchObject({
+        code: 'session_name_invalid',
+      });
+      await expect(mgr.renameSession(sess.webSessionId, '   ')).rejects.toMatchObject({
+        code: 'session_name_invalid',
+      });
+      await expect(
+        mgr.renameSession(sess.webSessionId, 'x'.repeat(201)),
+      ).rejects.toMatchObject({ code: 'session_name_invalid' });
+      await expect(
+        mgr.renameSession(sess.webSessionId, 'foo bar'),
+      ).rejects.toMatchObject({ code: 'session_name_invalid' });
+    });
+
+    it('notifier.noteInput is called when sendInput fires', async () => {
+      const a = join(tmp, 'a');
+      mkdirSync(a, { recursive: true });
+      const noteInput = vi.fn();
+      const noteResult = vi.fn(async () => {});
+      const noteSessionEnd = vi.fn();
+      const { mgr } = await makeMgrP6({
+        notifier: { noteInput, noteResult, noteSessionEnd },
+      });
+      const sess = await mgr.spawnSession({ agent: 'claude', dirs: [a] });
+      mgr.sendInput(sess.webSessionId, 'hello');
+      expect(noteInput).toHaveBeenCalledWith(sess.webSessionId);
+    });
+
+    it('notifier.noteResult is called when a result event broadcasts', async () => {
+      const a = join(tmp, 'a');
+      mkdirSync(a, { recursive: true });
+      const noteInput = vi.fn();
+      const noteResult = vi.fn(async () => {});
+      const noteSessionEnd = vi.fn();
+      const { mgr, drivers } = await makeMgrP6({
+        notifier: { noteInput, noteResult, noteSessionEnd },
+      });
+      const sess = await mgr.spawnSession({ agent: 'claude', dirs: [a] });
+      drivers[0]!.emit('event', { kind: 'result', durationMs: 1000 } satisfies AgentEvent);
+      // Allow the void-promise inside onProcEvent to settle.
+      await new Promise((r) => setImmediate(r));
+      expect(noteResult).toHaveBeenCalledTimes(1);
+      const arg = noteResult.mock.calls[0]![0] as { webSessionId: string };
+      expect(arg.webSessionId).toBe(sess.webSessionId);
+    });
+
+    it('notifier.noteSessionEnd is called when the driver exits', async () => {
+      const a = join(tmp, 'a');
+      mkdirSync(a, { recursive: true });
+      const noteInput = vi.fn();
+      const noteResult = vi.fn(async () => {});
+      const noteSessionEnd = vi.fn();
+      const { mgr, drivers } = await makeMgrP6({
+        notifier: { noteInput, noteResult, noteSessionEnd },
+      });
+      const sess = await mgr.spawnSession({ agent: 'claude', dirs: [a] });
+      drivers[0]!.emit('exit', 0);
+      expect(noteSessionEnd).toHaveBeenCalledWith(sess.webSessionId);
+    });
+
+    it('spawnSession dedups exact-match duplicate dirs', async () => {
+      const a = join(tmp, 'a');
+      const b = join(tmp, 'b');
+      mkdirSync(a, { recursive: true });
+      mkdirSync(b, { recursive: true });
+      const { mgr, spawned } = await makeMgrP6();
+      await mgr.spawnSession({
+        agent: 'claude',
+        dirs: [a, b, a, b],
+      });
+      expect(spawned[0]!.projectPath).toBe(a);
+      expect(spawned[0]!.additionalDirs).toEqual([b]);
+    });
+
+    it('spawnSession rejects an empty dirs array', async () => {
+      const { mgr } = await makeMgrP6();
+      await expect(
+        mgr.spawnSession({ agent: 'claude', dirs: [] }),
+      ).rejects.toMatchObject({ code: 'path_outside_allowlist' });
+    });
+
+    it('spawnSession rejects when any dir is outside the allowlist', async () => {
+      const a = join(tmp, 'a');
+      mkdirSync(a, { recursive: true });
+      const { mgr } = await makeMgrP6();
+      await expect(
+        mgr.spawnSession({ agent: 'claude', dirs: [a, '/etc'] }),
+      ).rejects.toMatchObject({ code: 'path_outside_allowlist' });
+    });
+  });
 });
