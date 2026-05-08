@@ -3,6 +3,7 @@ import type { AgentEvent } from './types.js';
 interface RawClaudeMsg {
   type: string;
   subtype?: string;
+  session_id?: string;
   message?: {
     content?: Array<
       | { type: 'text'; text: string }
@@ -18,7 +19,13 @@ interface RawClaudeMsg {
   duration_ms?: number;
 }
 
-export function parseClaudeLine(line: string): AgentEvent | null {
+// Claude parser may yield either a normal AgentEvent or a session-id discriminant
+// surfaced from the `system` init line so the driver can capture Claude's
+// session uuid without polluting the downstream `event` channel. Mirrors the
+// CodexParseResult pattern in codex-parser.ts.
+export type ClaudeParseResult = AgentEvent | { kind: 'session_id'; id: string };
+
+export function parseClaudeLine(line: string): ClaudeParseResult | null {
   let raw: RawClaudeMsg;
   try {
     raw = JSON.parse(line) as RawClaudeMsg;
@@ -67,8 +74,19 @@ export function parseClaudeLine(line: string): AgentEvent | null {
       if (typeof raw.duration_ms === 'number') out.durationMs = raw.duration_ms;
       return out;
     }
-    case 'system':
+    case 'system': {
+      // Claude's `--output-format stream-json` system init line carries
+      // `session_id`; surface it as a typed result so the driver can capture
+      // the CLI's session uuid for resume/registry purposes.
+      if (
+        typeof raw.subtype === 'string' &&
+        raw.subtype === 'init' &&
+        typeof raw.session_id === 'string'
+      ) {
+        return { kind: 'session_id', id: raw.session_id };
+      }
       return null;
+    }
     default:
       return null;
   }

@@ -12,8 +12,18 @@ const fixture = readFileSync(
 const lines = fixture.trim().split('\n');
 
 describe('parseClaudeLine', () => {
-  it('returns null for the system init line', () => {
-    expect(parseClaudeLine(lines[0]!)).toBeNull();
+  it('returns session_id discriminant for Claude system init line', () => {
+    expect(parseClaudeLine(lines[0]!)).toEqual({ kind: 'session_id', id: 'sess-1' });
+  });
+
+  it('returns session_id discriminant for an explicit Claude system init payload', () => {
+    const line = JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-uuid-xyz' });
+    expect(parseClaudeLine(line)).toEqual({ kind: 'session_id', id: 'claude-uuid-xyz' });
+  });
+
+  it('returns null for a system line without subtype=init', () => {
+    const line = JSON.stringify({ type: 'system', subtype: 'other', session_id: 'whatever' });
+    expect(parseClaudeLine(line)).toBeNull();
   });
 
   it('parses a content_block_delta into stream_delta', () => {

@@ -30,6 +30,7 @@ export class ClaudeProcess extends EventEmitter {
   private stdoutBuf = '';
   private stderrBuf = Buffer.alloc(0);
   private killed = false;
+  private claudeSessionIdEmitted = false;
 
   constructor(projectPath: string, opts: { spawn?: SpawnFn } = {}) {
     super();
@@ -69,8 +70,19 @@ export class ClaudeProcess extends EventEmitter {
       const line = this.stdoutBuf.slice(0, nl);
       this.stdoutBuf = this.stdoutBuf.slice(nl + 1);
       if (line.length === 0) continue;
-      const ev = parseClaudeLine(line);
-      if (ev) this.emit('event', ev);
+      const parsed = parseClaudeLine(line);
+      if (parsed === null) continue;
+      if (parsed.kind === 'session_id') {
+        // Capture Claude's CLI session uuid — emit once per driver lifetime
+        // so SessionManager can persist it. Do NOT pass through to the
+        // downstream `event` channel.
+        if (!this.claudeSessionIdEmitted) {
+          this.emit('cli_session_id', parsed.id);
+          this.claudeSessionIdEmitted = true;
+        }
+        continue;
+      }
+      this.emit('event', parsed);
     }
   }
 

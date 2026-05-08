@@ -193,6 +193,37 @@ describe('ClaudeProcess', () => {
     ]);
   });
 
+  it('emits cli_session_id when Claude system init event arrives', async () => {
+    const fakes = makeFakeChild();
+    const spawn = vi.fn().mockReturnValue(fakes.child);
+    const proc = new ClaudeProcess('/p', { spawn });
+    const captured: string[] = [];
+    const events: unknown[] = [];
+    proc.on('cli_session_id', (id: string) => captured.push(id));
+    proc.on('event', (e) => events.push(e));
+
+    fakes.pushStdout(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-uuid-xyz' }) + '\n');
+    await new Promise((r) => setImmediate(r));
+
+    expect(captured).toEqual(['claude-uuid-xyz']);
+    // session id must NOT pass through to the downstream `event` channel.
+    expect(events).toEqual([]);
+  });
+
+  it('emits cli_session_id only ONCE per Claude driver lifetime', async () => {
+    const fakes = makeFakeChild();
+    const spawn = vi.fn().mockReturnValue(fakes.child);
+    const proc = new ClaudeProcess('/p', { spawn });
+    const captured: string[] = [];
+    proc.on('cli_session_id', (id: string) => captured.push(id));
+
+    fakes.pushStdout(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'a' }) + '\n');
+    fakes.pushStdout(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'b' }) + '\n');
+    await new Promise((r) => setImmediate(r));
+
+    expect(captured).toEqual(['a']);
+  });
+
   it('kill() sends SIGTERM then SIGKILL after grace', async () => {
     vi.useFakeTimers();
     const fakes = makeFakeChild();

@@ -205,6 +205,44 @@ describe('CodexProcess', () => {
     expect(events.find((e) => (e as { text?: string }).text === 'fresh from child-2')).toBeDefined();
   });
 
+  it('emits cli_session_id when codex parser yields a session_init line', async () => {
+    const fakes = makeFakeChild();
+    const spawn = vi.fn().mockReturnValue(fakes.child);
+    const proc = new CodexProcess({ projectPath: '/p', codexHome: '/c', spawn });
+    const captured: string[] = [];
+    proc.on('cli_session_id', (id: string) => captured.push(id));
+
+    proc.sendUserText('hi');
+    fakes.pushStdout('{"type":"session_init","session_id":"codex-uuid-aaa"}\n');
+    await new Promise((r) => setImmediate(r));
+
+    expect(captured).toEqual(['codex-uuid-aaa']);
+  });
+
+  it('emits cli_session_id only ONCE per driver lifetime even if session_init line repeats', async () => {
+    const fakes1 = makeFakeChild();
+    const spawn = vi.fn();
+    spawn.mockReturnValueOnce(fakes1.child);
+    const proc = new CodexProcess({ projectPath: '/p', codexHome: '/c', spawn });
+    const captured: string[] = [];
+    proc.on('cli_session_id', (id: string) => captured.push(id));
+
+    proc.sendUserText('first');
+    fakes1.pushStdout('{"type":"session_init","session_id":"codex-uuid-aaa"}\n');
+    fakes1.exit(0);
+    await new Promise((r) => setImmediate(r));
+
+    // Second turn — driver has codexSessionId already; even though codex
+    // resends the session_init line, we must NOT re-emit cli_session_id.
+    const fakes2 = makeFakeChild();
+    spawn.mockReturnValueOnce(fakes2.child);
+    proc.sendUserText('second');
+    fakes2.pushStdout('{"type":"session_init","session_id":"codex-uuid-bbb"}\n');
+    await new Promise((r) => setImmediate(r));
+
+    expect(captured).toEqual(['codex-uuid-aaa']);
+  });
+
   it('kill() emits a single exit even when no turn is in flight', () => {
     const fakes = makeFakeChild();
     const spawn = vi.fn().mockReturnValue(fakes.child);

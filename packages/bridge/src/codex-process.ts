@@ -126,7 +126,13 @@ export class CodexProcess extends EventEmitter {
       const parsed = parseCodexLine(line);
       if (!parsed) continue;
       if ('id' in parsed) {
-        // session_id capture — store but do NOT emit upstream.
+        // session_id capture — store + emit `cli_session_id` upstream so the
+        // SessionManager can persist the CLI's session uuid into the registry.
+        // Idempotent: only emit on the FIRST observation per driver lifetime.
+        // The `=== null` guard MUST evaluate before the assignment below.
+        if (this.codexSessionId === null) {
+          this.emit('cli_session_id', parsed.id);
+        }
         this.codexSessionId = parsed.id;
         this.currentTurnSawSessionId = true;
         continue;
