@@ -94,8 +94,8 @@ Two paths converge into the same `resume()` flow on the bridge. Each is asymmetr
 - Web sends `resume_session { agent, sessionId, projectPath, account?, correlationId }` (no `webSessionId`).
 - Bridge **must verify** the (agent, sessionId) pair against the scanned history before doing anything else (see §9 Security):
   - Look up the entry in the scanner cache (or rescan if absent). The scanner already establishes the file's ground-truth `cwd` via parsing.
-  - If no entry exists for (agent, sessionId) → reject with `error: resume_failed, code: 'history_session_not_found'`.
-  - If the file's ground-truth `cwd` is not inside `BRIDGE_ALLOWED_DIRS` → reject with `error: resume_failed, code: 'project_path_disallowed'`.
+  - If no entry exists for (agent, sessionId) → reject with `error: code='history_session_not_found'`.
+  - If the file's ground-truth `cwd` is not inside `BRIDGE_ALLOWED_DIRS` → reject with `error: code='project_path_disallowed'`.
   - The client-supplied `projectPath` is treated as a HINT only; the bridge always uses the ground-truth `cwd` from the file when spawning. (If the hint disagrees, log a warning to bridge stderr but proceed with the ground truth.)
 - Bridge issues a new webSessionId, persists registry with `claudeSessionId = sessionId` or `codexSessionId = sessionId`, then runs the same per-agent resume logic as Path 1 (Claude spawns; Codex seeds driver).
 - Reply: `session_resumed { webSessionId, alive: true }`.
@@ -107,12 +107,46 @@ The same web sessionId is preserved across resumes for Path 1 — URL stays stab
 
 Path 1 (bridge-known resume) only works if the registry entry contains a valid `claudeSessionId` or `codexSessionId`. Phase 5 must therefore extend the existing fresh-session-spawn flow (Phases 1-2) to capture that id and persist it. Concrete contract:
 
-- **On first spawn of a new bridge session** (existing `+ New session` flow): bridge creates a registry entry up-front with the known fields (`webSessionId`, `agent`, `projectPath`, `transcriptPath`, `createdAt`, `account`) and `claudeSessionId/codexSessionId = null`. Persists registry.
-- **Claude**: when the ClaudeDriver's stream emits the `system` init event (Phase 1's existing parser already extracts the `session_id` field), bridge writes the captured value into the registry entry (`claudeSessionId = <captured>`) and persists. This happens within the first turn, well before any death/restart.
-- **Codex**: when the CodexDriver's first turn produces the `session_meta` event (Phase 2's existing parser already extracts `payload.id` from the first JSONL line), bridge writes the captured value (`codexSessionId = <captured>`) and persists.
-- **If a session dies before the id arrives** (rare: Claude crashes during init): the registry entry has `claudeSessionId = null`. Resume cannot work for that entry — the UI surfaces a `resume_failed` with `code: 'cli_session_id_unknown'` and CTA "[Open new session]". Acceptable degradation; logged to bridge stderr.
+**Up-front entry creation**
 
-This contract integrates with the existing P1/P2 driver event-handling code — no new driver state, just a registry mutation on the same event the parser already inspects. Plan task: extend `SessionManager.handleDriverEvent()` (or the equivalent integration point) to call `sessionRegistry.update(webSessionId, { claudeSessionId | codexSessionId })`.
+On first spawn of a new bridge session (existing `+ New session` flow): bridge creates a registry entry up-front with the known fields (`webSessionId`, `agent`, `projectPath`, `transcriptPath`, `createdAt`, `account`) and `claudeSessionId/codexSessionId = null`. Persists registry.
+
+**Driver-side id-capture event**
+
+Each driver gets a new internal event the SessionManager subscribes to:
+
+```ts
+// In types-internal.ts (bridge-only, not over the wire):
+type DriverInternalEvent =
+  | { kind: 'cli_session_id_captured', id: string }
+  | /* existing internal driver events */;
+```
+
+The drivers emit this event the first time they observe the CLI's own session id:
+
+- **Claude**: existing P1 `claudeProcess.ts` parser handles Claude's `system` event with `subtype: 'init'` (which carries `session_id`). The parser already extracts `session_id` internally for use in `session_created` events. Phase 5 modifies it to ALSO emit `{ kind: 'cli_session_id_captured', id: <session_id> }` upstream once, on first observation. Idempotent if init re-fires (later observations are no-ops).
+- **Codex**: existing P2 `codexProcess.ts` parser handles Codex's `--json` `session_meta` line by storing `parsed.id` into `this.codexSessionId` and `continue`-ing without emitting upstream (current behavior is "store but do NOT emit"). Phase 5 modifies that branch to ALSO emit `{ kind: 'cli_session_id_captured', id: parsed.id }` once per session lifetime. The store-and-continue still applies for internal use; the new emission is purely for the SessionManager.
+
+**SessionManager integration**
+
+`SessionManager` subscribes to each driver's events and on `cli_session_id_captured`:
+
+```ts
+sessionRegistry.update(webSessionId, agent === 'claude'
+  ? { claudeSessionId: id }
+  : { codexSessionId: id });
+// registry write is serialized via the §3 promise-chain
+```
+
+This happens within the first turn (Claude: at init; Codex: at first `session_meta` line of the first `codex exec` invocation), well before any death/restart.
+
+**Failure mode**
+
+If a session dies before the id arrives (rare: Claude crashes during init / Codex's first turn produces no session_meta line), the registry entry stays with `claudeSessionId = null`. Resume against that entry returns `error: code='cli_session_id_unknown'`. The UI surfaces "[Open new session]" CTA. Acceptable degradation; logged to bridge stderr.
+
+**Plan task scope**
+
+The plan splits this contract across (a) parser-level emission additions in claudeProcess.ts and codexProcess.ts, (b) new internal event type in types-internal.ts, (c) SessionManager subscription handler that calls `sessionRegistry.update()`. Three small surgical changes; no refactor of existing driver state machines.
 
 ### Persisted registry
 
@@ -214,19 +248,23 @@ interface ServerSessionResumedMsg {
   correlationId: string;
 }
 
-// Resume failure (typed error). The new error includes optional sessionId so
-// the web can route the message to the right per-session view (matches the
-// existing session_dead error shape from Phase 1, which also carries sessionId).
+// Resume failures use a single typed `code` field (matches the existing P1
+// ServerErrorMsg shape — there is NO subcode/reason field). Each resume
+// failure mode gets its own code; pick the most specific applicable. The
+// optional `sessionId` lets the web route the message to the right
+// per-session view (matches existing `session_dead` shape from Phase 1).
 interface ServerErrorMsg {
   type: 'error';
   code:
-    | 'resume_failed'
     | 'history_session_not_found'   // (agent, sessionId) not in scanner cache or filesystem
     | 'project_path_disallowed'     // ground-truth cwd outside BRIDGE_ALLOWED_DIRS
     | 'project_path_missing'        // projectPath no longer exists on disk
     | 'cli_session_id_unknown'      // registry entry never captured the CLI's session id (rare: child died during init)
+    | 'claude_resume_rejected'      // `claude --resume <id>` exited non-zero (id missing from Claude's local cache)
+    | 'codex_resume_rejected'       // `codex exec resume <id>` exited non-zero
+    | 'resume_spawn_failed'         // generic spawn error not categorized above (e.g. ENOENT on `claude` binary)
     | /* existing codes... */;
-  message: string;
+  message: string;                  // human-readable detail (e.g. captured stderr)
   sessionId?: string;               // present when the error is scoped to a specific session
   correlationId: string;
 }
@@ -370,11 +408,13 @@ Click handler                                             ⇣
 
 | Failure | Behavior |
 |---|---|
-| `claude --resume <id>` rejected by Claude (id missing from local cache) | Bridge captures stderr; replies `error: code='resume_failed', message: "Claude does not recognize session <id>", sessionId: webSessionId`. Web shows inline "Session unavailable — [Open new session in this folder]". |
-| `codex exec resume <id>` rejected (first send after resume fails) | Same shape; bridge surfaces stderr verbatim. The driver was seeded with the resume id but the spawn fails on the first send. |
+| `claude --resume <id>` rejected by Claude (id missing from local cache) | Bridge captures stderr; replies `error: code='claude_resume_rejected', message: "<stderr text>", sessionId: webSessionId`. Web shows inline "Session unavailable — [Open new session in this folder]". |
+| `codex exec resume <id>` rejected (first send after resume fails) | Same shape with `code='codex_resume_rejected'`. The driver was seeded with the resume id but the spawn fails on the first send. |
+| Spawn fails for any other reason (e.g. `claude` binary not found, fork error) | `error: code='resume_spawn_failed', message: "<spawn-error text>"`. Inline "[Try again]" CTA. |
 | `projectPath` no longer exists | Bridge stat-checks before spawn. Missing → `error: code='project_path_missing', message: "Project path no longer exists: <path>"`. Inline "[Open new session]" CTA. |
 | `projectPath` outside `BRIDGE_ALLOWED_DIRS` (allowlist tightened since session was created) | `error: code='project_path_disallowed', message: "Project path is not in BRIDGE_ALLOWED_DIRS"`. Same inline path. |
 | Path 2 resume: client supplies `(agent, sessionId)` not present in scanner cache or filesystem | `error: code='history_session_not_found', message: "No history session found for <agent>:<sessionId>"`. Web auto-refreshes history list. |
+| Bridge-known resume against a registry entry whose CLI session id was never captured (rare: child died during init) | `error: code='cli_session_id_unknown', message: "Bridge never captured the CLI session id for this entry"`. Inline "[Open new session]" CTA. |
 | Double-click Resume | Bridge dedupes: in-flight resume returns the same promise; second WS reply mirrors the first. |
 | Bridge restart mid-session | Registry persists; on startup all sessions load with `alive: false`. Existing reconnect-replay uses transcript fallback. User clicks Resume to continue. |
 | History entry's CLI session file deleted between scan and click | Bridge stat-checks JSONL existence at resume time. Missing → `resume_failed: "session file no longer exists"`. Tell user; auto-refresh history. |
