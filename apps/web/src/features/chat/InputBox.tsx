@@ -1,4 +1,5 @@
 import { useRef, useState, type KeyboardEvent } from 'react';
+import { Paperclip, History } from 'lucide-react';
 import { PromptHistoryDropdown } from '../prompt-history/PromptHistoryDropdown';
 import { ImageThumbnails } from '../image-attach/ImageThumbnails';
 import type { PendingImage, UseImagePaste } from '../image-attach/useImagePaste';
@@ -203,7 +204,7 @@ export function InputBox({
   };
 
   return (
-    <div className="input-box" style={{ position: 'relative' }}>
+    <div className="input-box relative p-3 bg-[var(--color-surface)] border-t border-[var(--color-border)]" style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))' }}>
       {historyOpen && (
         <PromptHistoryDropdown
           {...(currentProjectPath !== undefined ? { currentProjectPath } : {})}
@@ -215,20 +216,20 @@ export function InputBox({
         />
       )}
       <ImageThumbnails images={images} onRemove={removeImage} />
-      {error && <div className="image-attach-error">{error}</div>}
+      {error && <div className="image-attach-error text-xs text-[var(--color-danger)] mb-1">{error}</div>}
       {showResumePromptInline && (
-        <div className="resume-prompt">
-          <span>Sending will resume the session — </span>
+        <div className="resume-prompt flex items-center justify-center gap-2 mb-2 px-3 py-2 bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-mute)] text-sm">
+          <span>Sending will resume the session —</span>
           <button
             type="button"
-            className="resume-prompt-button"
+            className="resume-prompt-button bg-[var(--color-surface)] text-[var(--color-accent)] border border-[var(--color-border)] px-3 py-1 rounded hover:bg-[var(--color-surface-2)]"
             onClick={() => void onResumeAndSend()}
           >
             Resume + send
           </button>
         </div>
       )}
-      <div className="input-textarea-wrap" style={{ position: 'relative' }}>
+      <div className="input-textarea-wrap relative bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-xl p-3 flex flex-col gap-3 shadow-inner">
         <SlashAutocomplete
           ref={slashRef}
           sessionId={sessionId}
@@ -256,7 +257,6 @@ export function InputBox({
           }
           onChange={(e) => {
             setText(e.target.value);
-            // selectionStart updates synchronously after the change; capture it.
             setCursor(e.target.selectionStart ?? e.target.value.length);
           }}
           onKeyDown={onKey}
@@ -266,49 +266,64 @@ export function InputBox({
           onPaste={onPaste}
           rows={3}
           disabled={disabled}
+          className="bg-transparent border-0 outline-none ring-0 text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] resize-none min-h-[3rem] text-sm md:text-[15px] focus:ring-0 disabled:opacity-60"
         />
-      </div>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/webp,image/gif"
-        multiple
-        style={{ display: 'none' }}
-        onChange={onFileInputChange}
-      />
-      <div className="input-actions">
-        <button
-          type="button"
-          className="image-attach-button"
-          onClick={onAttachClick}
-          disabled={!imagesEnabled}
-          title={
-            agent === 'codex'
-              ? 'Codex sessions do not accept images'
-              : 'Attach image (paste / drop / click)'
-          }
-          aria-label="Attach image"
-        >
-          📎
-        </button>
-        <button
-          type="button"
-          onClick={() => setHistoryOpen((h) => !h)}
-          disabled={disabled}
-          aria-label="Toggle prompt history"
-        >
-          ⌘H
-        </button>
-        <button type="button" onClick={onStop} disabled={disabled}>
-          Stop
-        </button>
-        <button
-          type="button"
-          onClick={submit}
-          disabled={disabled || (text.trim().length === 0 && images.length === 0)}
-        >
-          Send
-        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          multiple
+          className="hidden"
+          onChange={onFileInputChange}
+        />
+        <div className="input-actions flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="image-attach-button p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-dim)] hover:text-[var(--color-text)] hover:bg-[color-mix(in_srgb,var(--color-surface)_70%,transparent)] rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick={onAttachClick}
+              disabled={!imagesEnabled}
+              title={agent === 'codex' ? 'Codex sessions do not accept images' : 'Attach image (paste / drop / click)'}
+              aria-label="Attach image"
+            >
+              <Paperclip size={18} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setHistoryOpen((h) => !h)}
+              disabled={disabled}
+              aria-label="Toggle prompt history"
+              className="flex items-center gap-1.5 px-3 py-2 min-h-[44px] bg-[var(--color-surface)] text-[var(--color-text-mute)] rounded-lg text-sm font-mono hover:bg-[var(--color-surface-2)] disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <History size={16} aria-hidden="true" />
+              <span>⌘H</span>
+            </button>
+          </div>
+          <div className="flex items-center gap-2 ml-auto">
+            <button
+              type="button"
+              onClick={onStop}
+              disabled={disabled}
+              className="flex items-center gap-2 px-3 py-2 min-h-[44px] bg-[var(--color-surface)] text-[var(--color-text)] rounded-lg text-sm font-medium hover:bg-[var(--color-surface-2)] disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <span className="w-2.5 h-2.5 bg-[var(--color-text)] rounded-sm shrink-0" aria-hidden="true" />
+              <span>Stop</span>
+            </button>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={disabled || (text.trim().length === 0 && images.length === 0)}
+              className={[
+                'flex items-center gap-1 px-5 py-2 min-h-[44px] rounded-lg text-sm font-medium transition',
+                disabled || (text.trim().length === 0 && images.length === 0)
+                  ? 'bg-[var(--color-surface)] text-[var(--color-text-dim)] cursor-not-allowed'
+                  : 'bg-[var(--color-accent)] text-white hover:opacity-90',
+              ].join(' ')}
+            >
+              Send
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
