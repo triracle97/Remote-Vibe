@@ -8,6 +8,7 @@ interface SessionListProps {
   activeId: string | null;
   onSelect(id: string): void;
   onNewSession(): void;
+  onAfterSelect?(): void;
 }
 
 function truncate(text: string, maxLen: number): string {
@@ -18,10 +19,12 @@ function SessionRow({
   session,
   activeId,
   onSelect,
+  onAfterSelect,
 }: {
   session: SessionView;
   activeId: string | null;
   onSelect: (id: string) => void;
+  onAfterSelect?: () => void;
 }): JSX.Element {
   const [renaming, setRenaming] = useState(false);
 
@@ -35,7 +38,13 @@ function SessionRow({
     <li
       className={`session-row${session.sessionId === activeId ? ' active' : ''}${!session.alive ? ' ended' : ''}`}
     >
-      <button type="button" onClick={() => onSelect(session.sessionId)}>
+      <button
+        type="button"
+        onClick={() => {
+          onSelect(session.sessionId);
+          onAfterSelect?.();
+        }}
+      >
         <div className="session-label">
           {label} <span className={`session-badge agent-${session.agent}`}>{badge}</span>
         </div>
@@ -82,6 +91,7 @@ export function SessionList({
   activeId,
   onSelect,
   onNewSession,
+  onAfterSelect,
 }: SessionListProps): JSX.Element {
   return (
     <aside className="session-list">
@@ -91,7 +101,13 @@ export function SessionList({
       <ul>
         {sessions.length === 0 && <li className="session-empty">No active sessions</li>}
         {sessions.map((s) => (
-          <SessionRow key={s.sessionId} session={s} activeId={activeId} onSelect={onSelect} />
+          <SessionRow
+            key={s.sessionId}
+            session={s}
+            activeId={activeId}
+            onSelect={onSelect}
+            onAfterSelect={onAfterSelect}
+          />
         ))}
       </ul>
     </aside>

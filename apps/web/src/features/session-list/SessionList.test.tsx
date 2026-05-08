@@ -92,6 +92,26 @@ describe('SessionList', () => {
     expect(onSelect).toHaveBeenCalledWith('s1');
   });
 
+  it('calls onAfterSelect after selecting a session', () => {
+    const onSelect = vi.fn();
+    const onAfterSelect = vi.fn();
+    const session = makeSession({ sessionId: 's1' });
+
+    const { container } = render(
+      <SessionList
+        sessions={[session]}
+        activeId={null}
+        onSelect={onSelect}
+        onNewSession={() => {}}
+        onAfterSelect={onAfterSelect}
+      />,
+    );
+    const btn = container.querySelector('.session-row button')!;
+    fireEvent.click(btn);
+    expect(onSelect).toHaveBeenCalledWith('s1');
+    expect(onAfterSelect).toHaveBeenCalledTimes(1);
+  });
+
   it('marks active row when activeId matches', () => {
     const session = makeSession({ sessionId: 's1' });
     const { container } = render(
