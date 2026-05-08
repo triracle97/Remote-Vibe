@@ -18,3 +18,27 @@ body { margin: 0; }
   padding: 0.2rem 0.6rem; cursor: pointer; border-radius: 3px;
 }
 .resume-prompt-button:hover { background: #333; }
+
+@media (max-width: 720px) {
+  body { overflow-x: hidden; }
+  #root {
+    min-height: 100dvh;
+    flex-direction: column;
+  }
+  .home-main {
+    flex: none;
+    padding: 1rem;
+  }
+  .error-banner {
+    overflow-wrap: anywhere;
+  }
+  .resume-prompt {
+    align-items: stretch;
+    flex-direction: column;
+    margin: 0.5rem;
+    text-align: center;
+  }
+  .resume-prompt-button {
+    min-height: 2.5rem;
+  }
+}

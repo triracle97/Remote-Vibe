@@ -33,3 +33,28 @@
   color: #aaa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .history-row-time { color: #666; font-size: 0.7rem; }
+
+@media (max-width: 720px) {
+  .history-panel {
+    width: 100%;
+    box-sizing: border-box;
+    border-top: 0;
+    border-bottom: 1px solid #2a2a2a;
+    padding: 0.45rem 0.5rem;
+  }
+  .history-toggle {
+    min-height: 2.25rem;
+    width: 100%;
+    text-align: left;
+  }
+  .history-list {
+    max-height: 28dvh;
+  }
+  .history-tab {
+    min-height: 2.25rem;
+  }
+  .history-row {
+    min-height: 2.75rem;
+    padding: 0.5rem;
+  }
+}

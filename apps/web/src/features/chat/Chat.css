@@ -18,3 +18,64 @@
 .chat-drawer-toggle { background: #2a2a2a; color: #ccc; border: 0; padding: 0.2rem 0.45rem; cursor: pointer; border-radius: 4px; }
 .chat { position: relative; }
 .chat-error-banner { background: #2a1010; color: #f88; padding: 0.4rem 1rem; font-size: 0.85rem; border-bottom: 1px solid #4a1a1a; }
+
+@media (max-width: 720px) {
+  .chat {
+    flex: none;
+    min-height: 100dvh;
+    height: auto;
+  }
+  .chat-header {
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.65rem 0.75rem;
+  }
+  .chat-header code {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chat-header-spacer {
+    flex: none;
+    padding-right: 0;
+    white-space: nowrap;
+  }
+  .chat-drawer-toggle {
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+  }
+  .chat-scroll {
+    min-height: 45dvh;
+    padding: 0.75rem;
+    font-size: 0.85rem;
+  }
+  .bubble {
+    padding: 0.55rem 0.65rem;
+  }
+  .bubble pre {
+    font-size: 0.75rem;
+  }
+  .input-box {
+    padding: 0.65rem;
+  }
+  .input-box textarea {
+    min-height: 6rem;
+    font-size: 1rem;
+  }
+  .input-actions {
+    flex-wrap: wrap;
+  }
+  .input-actions button {
+    min-height: 2.5rem;
+    padding: 0.45rem 0.8rem;
+  }
+  .input-actions button:last-child {
+    flex: 1;
+    min-width: 7rem;
+  }
+  .chat-banner,
+  .chat-error-banner {
+    padding: 0.5rem 0.75rem;
+  }
+}

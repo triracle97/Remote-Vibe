@@ -18,3 +18,37 @@
 .picker-agent { display: flex; gap: 1rem; margin-bottom: 0.5rem; }
 .picker-account { margin-bottom: 0.5rem; }
 .picker-account select { background: #111; color: #ddd; border: 1px solid #333; padding: 0.25rem; }
+
+@media (max-width: 720px) {
+  .picker-backdrop {
+    align-items: stretch;
+    justify-content: center;
+    padding: 0.5rem;
+    box-sizing: border-box;
+  }
+  .picker {
+    width: 100%;
+    max-height: calc(100dvh - 1rem);
+    overflow-y: auto;
+    padding: 1rem;
+    box-sizing: border-box;
+  }
+  .picker input,
+  .picker-account select {
+    min-height: 2.5rem;
+    font-size: 1rem;
+  }
+  .picker-actions {
+    flex-wrap: wrap;
+  }
+  .picker-actions button {
+    min-height: 2.5rem;
+    flex: 1;
+  }
+  .picker-recents {
+    max-height: 36dvh;
+  }
+  .picker-recents button {
+    min-height: 2.5rem;
+  }
+}
