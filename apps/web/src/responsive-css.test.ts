@@ -12,7 +12,6 @@ describe('mobile responsive CSS contract', () => {
   it('stacks the root layout and major panels at phone widths', () => {
     const css = [
       readCss('src/App.css'),
-      readCss('src/features/session-list/SessionList.css'),
       readCss('src/features/history/history.css'),
       readCss('src/features/chat/Chat.css'),
       readCss('src/features/file-explorer/FileExplorer.css'),
@@ -21,7 +20,7 @@ describe('mobile responsive CSS contract', () => {
 
     expect(css).toContain('@media (max-width: 720px)');
     expect(css).toMatch(/#root\s*{[^}]*flex-direction:\s*column/s);
-    expect(css).toMatch(/\.session-list\s*{[^}]*width:\s*100%/s);
+    // .session-list width:100% is now handled by Tailwind (w-full md:w-60)
     expect(css).toMatch(/\.history-panel\s*{[^}]*width:\s*100%/s);
     expect(css).toMatch(/\.chat\s*{[^}]*min-height:\s*100dvh/s);
     expect(css).toMatch(/\.file-explorer\s*{[^}]*width:\s*100%/s);

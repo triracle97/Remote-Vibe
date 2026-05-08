@@ -42,11 +42,11 @@ export function SessionRenameInline({
   };
 
   return (
-    <div className="session-rename-inline">
+    <div className="session-rename-inline flex gap-1.5 items-center p-1 flex-1">
       <input
         ref={inputRef}
         type="text"
-        className="session-rename-input"
+        className="session-rename-input flex-1 min-w-0 min-h-[40px] px-2 py-1.5 bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded text-sm focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
@@ -64,7 +64,7 @@ export function SessionRenameInline({
       />
       <button
         type="button"
-        className="session-rename-save"
+        className="session-rename-save min-w-[44px] min-h-[44px] flex items-center justify-center bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded px-2 py-1.5 hover:bg-[var(--color-surface)]"
         onClick={() => void submit()}
         disabled={saving}
         aria-label="Save name"
@@ -73,14 +73,14 @@ export function SessionRenameInline({
       </button>
       <button
         type="button"
-        className="session-rename-cancel"
+        className="session-rename-cancel min-w-[44px] min-h-[44px] flex items-center justify-center bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded px-2 py-1.5 hover:bg-[var(--color-surface)]"
         onClick={onClose}
         disabled={saving}
         aria-label="Cancel rename"
       >
         ✕
       </button>
-      {error !== null && <span className="session-rename-error">{error}</span>}
+      {error !== null && <span className="session-rename-error text-xs text-[var(--color-danger)]">{error}</span>}
     </div>
   );
 }
