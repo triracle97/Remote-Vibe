@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AgentKind, ServerLifecycleMsg, ServerMsg, ServerStreamMsg } from '../types/protocol';
+import type { AgentKind, HistoryEntry, ServerLifecycleMsg, ServerMsg, ServerStreamMsg } from '../types/protocol';
 
 export type SessionEvent = (ServerLifecycleMsg | ServerStreamMsg) & {
   /**
@@ -55,6 +55,11 @@ interface SessionsStore {
   applyServerMsg(m: ServerMsg): void;
   setActive(id: string): void;
   markTranscriptOnly(id: string): void;
+  /**
+   * Resume a session from a HistoryEntry. T9 placeholder — full implementation
+   * lands in T11 (Phase 5). Returns the new web-side session id once ready.
+   */
+  resumeFromHistory(entry: HistoryEntry): Promise<string>;
 }
 
 export const useSessionsStore = create<SessionsStore>((set, get) => ({
@@ -204,5 +209,10 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
   markTranscriptOnly(id) {
     set((s) => ({ transcriptOnly: { ...s.transcriptOnly, [id]: true } }));
+  },
+
+  // T9 placeholder; replaced in T11.
+  resumeFromHistory: async (_entry: HistoryEntry): Promise<string> => {
+    throw new Error('Not implemented yet');
   },
 }));
