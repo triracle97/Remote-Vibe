@@ -20,7 +20,11 @@ interface CandidateFile {
 }
 
 const SURFACE_CAP = 50;
-const HEAD_BYTES = 4096;
+// Head bytes for Claude session files. Lines can be 8 KB+ each (attachment,
+// assistant events with full message content), and the first `user` event
+// often sits at line ~6 of the file — so 4 KB was too small. 64 KB covers
+// realistic session shapes without reading large 10+ MB files in full.
+const CLAUDE_HEAD_BYTES = 65536;
 const FORWARD_SCAN_BYTES = 16384;
 const PROMPT_TRUNCATE = 80;
 const CACHE_TTL_MS = 60_000;
@@ -195,9 +199,15 @@ export class HistoryScanner {
     try {
       const fh = await fsp.open(filePath, 'r');
       try {
-        const slice = Buffer.alloc(HEAD_BYTES);
-        const { bytesRead } = await fh.read(slice, 0, HEAD_BYTES, 0);
-        buf = slice.slice(0, bytesRead);
+        // Newer Claude session files prepend metadata events (last-prompt,
+        // permission-mode, attachment, file-history-snapshot, ai-title) before
+        // the first `user` event. Individual lines can be 8 KB+ each. Read
+        // CLAUDE_HEAD_BYTES of the head — enough to find the first user
+        // message in typical files. Files with NO user line in this window
+        // still surface via the cwd-from-any-event fallback below.
+        const slice = Buffer.alloc(CLAUDE_HEAD_BYTES);
+        const { bytesRead } = await fh.read(slice, 0, CLAUDE_HEAD_BYTES, 0);
+        buf = slice.subarray(0, bytesRead);
       } finally {
         await fh.close();
       }
@@ -217,8 +227,15 @@ export class HistoryScanner {
       }
       if (typeof obj !== 'object' || obj === null) continue;
       const o = obj as Record<string, unknown>;
-      if (o.type === 'user' && typeof o.cwd === 'string') {
+      // Capture cwd from ANY event type that carries it. Newer Claude session
+      // files surface `cwd` on attachment / assistant / user events; the
+      // first occurrence wins (they all agree within a session).
+      if (cwd === null && typeof o.cwd === 'string' && o.cwd.length > 0) {
         cwd = o.cwd;
+      }
+      // First user message → firstPrompt. Continue scanning even after cwd is
+      // known so we get a real prompt string.
+      if (firstPrompt === '' && o.type === 'user') {
         const msg = o.message as { content?: unknown } | undefined;
         if (msg && typeof msg.content === 'string') {
           firstPrompt = msg.content.slice(0, PROMPT_TRUNCATE);
@@ -229,8 +246,8 @@ export class HistoryScanner {
             firstPrompt = ((first as { text: string }).text).slice(0, PROMPT_TRUNCATE);
           }
         }
-        break;
       }
+      if (cwd !== null && firstPrompt !== '') break;
     }
     if (cwd === null) return null;
     return { cwd, firstPrompt };
