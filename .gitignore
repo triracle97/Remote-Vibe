@@ -1,5 +1,6 @@
 # Reference checkout — not part of this repo
 ccpocket/
+.worktrees/
 
 # Node
 node_modules/
