@@ -53,8 +53,9 @@
     padding-bottom: 0.35rem;
   }
   .fe-preview {
-    max-height: 45dvh;
-    flex: none;
+    flex: 1;
+    max-height: none;
+    min-height: 0;
   }
   .file-preview-pre {
     font-size: 0.75rem;

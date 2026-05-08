@@ -29,8 +29,9 @@ describe('mobile responsive CSS contract', () => {
   });
 
   it('defines the mobile chat shell overlay contract', () => {
+    const appCss = readCss('src/App.css');
     const css = [
-      readCss('src/App.css'),
+      appCss,
       readCss('src/features/history/history.css'),
       readCss('src/features/chat/Chat.css'),
       readCss('src/features/file-explorer/FileExplorer.css'),
@@ -43,11 +44,12 @@ describe('mobile responsive CSS contract', () => {
     expect(css).toMatch(/\.chat\s*{[^}]*height:\s*100dvh/s);
     expect(css).toMatch(/\.input-box\s*{[^}]*padding-bottom:\s*calc\(0\.65rem \+ env\(safe-area-inset-bottom\)\)/s);
     expect(css).toMatch(/\.file-explorer\s*{[^}]*position:\s*fixed/s);
-    expect(css).toMatch(/#root\s*>\s*\.session-list\s*,\s*#root\s*>\s*\.history-panel\s*{[^}]*display:\s*none/s);
+    expect(appCss).not.toMatch(/#root\s*>\s*\.session-list\s*,\s*#root\s*>\s*\.history-panel\s*{[^}]*display:\s*none/s);
+    expect(css).toMatch(/#root:has\(\s*>\s*\.chat\s*\)\s*>\s*\.session-list\s*,\s*#root:has\(\s*>\s*\.chat\s*\)\s*>\s*\.history-panel\s*{[^}]*display:\s*none/s);
     expect(css).toMatch(/\.mobile-nav-content\s+\.session-list\s*,\s*\.mobile-nav-content\s+\.history-panel\s*{[^}]*display:\s*block/s);
     expect(css).toMatch(/\.mobile-nav-content\s+\.history-list\s*{[^}]*max-height:\s*none/s);
     expect(css).toMatch(/\.fe-tree\s*{[^}]*flex:\s*1[^}]*max-height:\s*none[^}]*min-height:\s*0/s);
-    expect(css).toMatch(/\.fe-preview\s*{[^}]*max-height:\s*45dvh[^}]*flex:\s*none/s);
+    expect(css).toMatch(/\.fe-preview\s*{[^}]*flex:\s*1[^}]*max-height:\s*none[^}]*min-height:\s*0/s);
   });
 
   it('orders mobile nav shell display rules so the mobile override wins', () => {

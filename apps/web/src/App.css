@@ -179,8 +179,8 @@ body { margin: 0; }
   .mobile-nav-shell {
     display: block;
   }
-  #root > .session-list,
-  #root > .history-panel {
+  #root:has(> .chat) > .session-list,
+  #root:has(> .chat) > .history-panel {
     display: none;
   }
   body:has(.mobile-nav-shell) {
