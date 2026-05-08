@@ -1,11 +1,12 @@
 import type { AgentEvent } from './types.js';
 
-// Pinned to codex-cli 0.128.0. If a future codex release changes event names
-// or shapes, update both this file and packages/bridge/test/fixtures/codex-stream.jsonl
-// in lockstep.
+// Supports both legacy codex-cli 0.128 JSONL and the current thread/item/turn
+// JSONL stream. If a future codex release changes event names or shapes,
+// update this parser and its fixture/tests in lockstep.
 interface RawCodexMsg {
   type: string;
   session_id?: string;
+  thread_id?: string;
   content?: string;
   call_id?: string;
   name?: string;
@@ -13,6 +14,13 @@ interface RawCodexMsg {
   output?: unknown;
   total_cost_usd?: number;
   duration_ms?: number;
+  item?: {
+    id?: string;
+    type?: string;
+    text?: unknown;
+    command?: unknown;
+    aggregated_output?: unknown;
+  };
 }
 
 export type CodexParseResult = AgentEvent | { kind: 'session_id'; id: string };
@@ -32,9 +40,36 @@ export function parseCodexLine(line: string): CodexParseResult | null {
         return { kind: 'session_id', id: raw.session_id };
       }
       return null;
+    case 'thread.started':
+      if (typeof raw.thread_id === 'string') {
+        return { kind: 'session_id', id: raw.thread_id };
+      }
+      return null;
     case 'agent_message':
       if (typeof raw.content === 'string') {
         return { kind: 'assistant_text', text: raw.content };
+      }
+      return null;
+    case 'item.completed':
+      if (raw.item?.type === 'agent_message' && typeof raw.item.text === 'string') {
+        return { kind: 'assistant_text', text: raw.item.text };
+      }
+      if (raw.item?.type === 'command_execution' && typeof raw.item.id === 'string') {
+        return { kind: 'tool_result', toolUseId: raw.item.id, output: raw.item.aggregated_output };
+      }
+      return null;
+    case 'item.started':
+      if (
+        raw.item?.type === 'command_execution' &&
+        typeof raw.item.id === 'string' &&
+        typeof raw.item.command === 'string'
+      ) {
+        return {
+          kind: 'tool_use',
+          toolUseId: raw.item.id,
+          toolName: 'shell',
+          input: { command: raw.item.command },
+        };
       }
       return null;
     case 'function_call':
@@ -52,6 +87,8 @@ export function parseCodexLine(line: string): CodexParseResult | null {
         return { kind: 'tool_result', toolUseId: raw.call_id, output: raw.output };
       }
       return null;
+    case 'turn.completed':
+      return { kind: 'result' };
     case 'task_completed': {
       const out: AgentEvent = { kind: 'result' };
       if (typeof raw.total_cost_usd === 'number') out.cost = raw.total_cost_usd;

@@ -41,6 +41,29 @@ describe('parseCodexLine', () => {
     expect(parseCodexLine(lines[4]!)).toEqual({ kind: 'result', cost: 0.001, durationMs: 250 });
   });
 
+  it('captures session_id from current thread.started events', () => {
+    expect(parseCodexLine('{"type":"thread.started","thread_id":"thread-1"}')).toEqual({
+      kind: 'session_id',
+      id: 'thread-1',
+    });
+  });
+
+  it('parses current item.completed agent_message events into assistant_text', () => {
+    expect(
+      parseCodexLine(
+        '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"MRT_OK"}}',
+      ),
+    ).toEqual({ kind: 'assistant_text', text: 'MRT_OK' });
+  });
+
+  it('parses current turn.completed events into result usage', () => {
+    expect(
+      parseCodexLine(
+        '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":3,"reasoning_output_tokens":1}}',
+      ),
+    ).toEqual({ kind: 'result' });
+  });
+
   it('returns null for unknown event type', () => {
     expect(parseCodexLine('{"type":"???"}')).toBeNull();
   });

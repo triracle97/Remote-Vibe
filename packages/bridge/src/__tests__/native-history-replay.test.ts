@@ -109,6 +109,74 @@ describe('loadReplayEvents — Claude', () => {
 });
 
 describe('loadReplayEvents — Codex', () => {
+  it('parses response_item message user/assistant content arrays', async () => {
+    const filePath = await writeJsonl('codex-response-message.jsonl', [
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'developer',
+          content: [{ type: 'input_text', text: 'system instructions' }],
+        },
+      },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Why is Codex empty?' }],
+        },
+      },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Because this shape was not replayed.' }],
+        },
+      },
+    ]);
+    const events = await loadReplayEvents('codex', filePath);
+    expect(events).toEqual([
+      { type: 'user', payload: { text: 'Why is Codex empty?' } },
+      { type: 'assistant', payload: { text: 'Because this shape was not replayed.' } },
+    ]);
+  });
+
+  it('does not duplicate adjacent response_item and event_msg text records', async () => {
+    const filePath = await writeJsonl('codex-duplicate-message.jsonl', [
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Repeat once' }],
+        },
+      },
+      {
+        type: 'event_msg',
+        payload: { type: 'user_message', message: 'Repeat once' },
+      },
+      {
+        type: 'event_msg',
+        payload: { type: 'agent_message', message: 'Only once' },
+      },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Only once' }],
+        },
+      },
+    ]);
+    const events = await loadReplayEvents('codex', filePath);
+    expect(events).toEqual([
+      { type: 'user', payload: { text: 'Repeat once' } },
+      { type: 'assistant', payload: { text: 'Only once' } },
+    ]);
+  });
+
   it('parses event_msg user/agent + response_item function_call/output', async () => {
     const filePath = await writeJsonl('codex.jsonl', [
       { type: 'session_meta', payload: { id: 'cdx-1', cwd: '/tmp' } },
