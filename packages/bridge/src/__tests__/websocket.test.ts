@@ -4,6 +4,8 @@ import { WebSocket } from 'ws';
 import { attachWebSocket } from '../websocket.js';
 import { SessionManager } from '../session.js';
 import { EventEmitter } from 'node:events';
+import type { HistoryScanner } from '../history-scanner.js';
+import type { HistoryEntry } from '../types.js';
 
 const TOKEN = 'a'.repeat(32);
 
@@ -12,10 +14,21 @@ class FakeProc extends EventEmitter {
   kill = vi.fn();
 }
 
+function makeFakeScanner(overrides: Partial<HistoryScanner> = {}): HistoryScanner {
+  return {
+    list: vi.fn(async () => ({ claude: [] as HistoryEntry[], codex: [] as HistoryEntry[] })),
+    findEntry: vi.fn(async () => undefined),
+    invalidateCache: vi.fn(),
+    ...overrides,
+  } as unknown as HistoryScanner;
+}
+
 async function startServer(opts: {
   accounts?: Map<string, import('../accounts.js').CodexAccount>;
   fsApi?: import('../fs-api.js').FsApi;
   imageStore?: import('../image-store.js').ImageStore;
+  sessionManager?: SessionManager;
+  historyScanner?: HistoryScanner;
 } = {}) {
   const procs: FakeProc[] = [];
   const fsApi =
@@ -31,20 +44,31 @@ async function startServer(opts: {
       writeAuditCopy: async () => {},
       cleanup: async () => {},
     } as unknown as import('../image-store.js').ImageStore);
-  const mgr = new SessionManager({
-    allowedDirs: ['/Users/test'],
-    bufferCap: 100,
-    driverFactory: () => {
-      const p = new FakeProc();
-      procs.push(p);
-      return p as unknown as import('../session.js').AgentDriver;
-    },
-    realpath: async (p) => p,
-    accounts: opts.accounts ?? new Map(),
-    imageStore,
-  });
+  const mgr =
+    opts.sessionManager ??
+    new SessionManager({
+      allowedDirs: ['/Users/test'],
+      bufferCap: 100,
+      driverFactory: () => {
+        const p = new FakeProc();
+        procs.push(p);
+        return p as unknown as import('../session.js').AgentDriver;
+      },
+      realpath: async (p) => p,
+      accounts: opts.accounts ?? new Map(),
+      imageStore,
+    });
+  const historyScanner = opts.historyScanner ?? makeFakeScanner();
   const server = createServer();
-  attachWebSocket({ server, token: TOKEN, sessionManager: mgr, accounts: opts.accounts ?? new Map(), fsApi, imageStore });
+  attachWebSocket({
+    server,
+    token: TOKEN,
+    sessionManager: mgr,
+    accounts: opts.accounts ?? new Map(),
+    fsApi,
+    imageStore,
+    historyScanner,
+  });
 
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   const addr = server.address();
@@ -54,6 +78,7 @@ async function startServer(opts: {
     port: addr.port,
     mgr,
     procs,
+    historyScanner,
     close: () =>
       new Promise<void>((r) => {
         server.close(() => r());
@@ -353,6 +378,7 @@ describe('websocket', () => {
       promptStore: fakePromptStore,
       fsApi: fakeFsApi,
       imageStore: fakeImageStore,
+      historyScanner: makeFakeScanner(),
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
     const addr = server.address();
@@ -510,5 +536,361 @@ describe('websocket', () => {
     expect(m.correlationId).toBe('ci');
     sock.close();
     await close();
+  });
+
+  // --- Phase 5 T6: list_history + resume_session handlers ----------------
+
+  it('list_history replies history_list with both arrays + correlationId', async () => {
+    const claudeEntries: HistoryEntry[] = [
+      {
+        agent: 'claude',
+        sessionId: 'c-1',
+        projectPath: '/Users/test/proj',
+        mtime: 1000,
+        firstPrompt: 'hi from claude',
+      },
+    ];
+    const codexEntries: HistoryEntry[] = [
+      {
+        agent: 'codex',
+        sessionId: 'cx-1',
+        projectPath: '/Users/test/proj',
+        mtime: 900,
+        firstPrompt: 'hi from codex',
+      },
+    ];
+    const scanner = makeFakeScanner({
+      list: vi.fn(async () => ({ claude: claudeEntries, codex: codexEntries })),
+    } as unknown as Partial<HistoryScanner>);
+    const { port, close } = await startServer({ historyScanner: scanner });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const got = new Promise<{ type: string; claude: HistoryEntry[]; codex: HistoryEntry[]; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'history_list') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'list_history', correlationId: 'cid-list-1' }));
+    const m = await got;
+    expect(m.type).toBe('history_list');
+    expect(m.correlationId).toBe('cid-list-1');
+    expect(m.claude).toEqual(claudeEntries);
+    expect(m.codex).toEqual(codexEntries);
+    sock.close();
+    await close();
+  });
+
+  it('list_history twice within cache window scans only once (scanner contract)', async () => {
+    // The HistoryScanner implements a 60s cache internally. The websocket
+    // handler is a thin pass-through — we verify it does NOT do any extra
+    // de-cache work by checking that a single scanner instance servicing two
+    // back-to-back list_history calls only has its `.list()` invoked twice
+    // (once per WS call, no extra calls). The scanner's own cache logic is
+    // covered by history-scanner.test.ts; here we only assert the WS handler
+    // calls scanner.list() exactly once per inbound message — i.e. it does
+    // not invalidate the cache or double-dispatch.
+    let callCount = 0;
+    const fake: HistoryEntry[] = [
+      { agent: 'claude', sessionId: 'c-1', projectPath: '/Users/test/p', mtime: 1, firstPrompt: '' },
+    ];
+    const scanner = makeFakeScanner({
+      list: vi.fn(async () => {
+        callCount += 1;
+        return { claude: fake, codex: [] };
+      }),
+    } as unknown as Partial<HistoryScanner>);
+    const { port, close } = await startServer({ historyScanner: scanner });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const replies: Array<{ type: string; correlationId?: string }> = [];
+    sock.on('message', (raw) => {
+      const m = JSON.parse(raw.toString());
+      if (m.type === 'history_list') replies.push(m);
+    });
+    sock.send(JSON.stringify({ type: 'list_history', correlationId: 'a' }));
+    sock.send(JSON.stringify({ type: 'list_history', correlationId: 'b' }));
+    // Wait for both replies.
+    await new Promise<void>((r) => {
+      const start = Date.now();
+      const tick = setInterval(() => {
+        if (replies.length >= 2 || Date.now() - start > 1000) {
+          clearInterval(tick);
+          r();
+        }
+      }, 10);
+    });
+    expect(replies).toHaveLength(2);
+    // Each WS message triggers exactly one scanner.list() call. The scanner's
+    // 60s cache (verified separately in history-scanner.test.ts) is what
+    // actually short-circuits the filesystem scan on the second call.
+    expect(callCount).toBe(2);
+    sock.close();
+    await close();
+  });
+
+  it('resume_session (Path 1: bridge-known) replies session_resumed with same webSessionId', async () => {
+    const { mkdtempSync, mkdirSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { SessionRegistry } = await import('../session-registry.js');
+
+    const tmp = mkdtempSync(join(tmpdir(), 'ws-resume-p1-'));
+    const proj = join(tmp, 'proj');
+    mkdirSync(proj, { recursive: true });
+    try {
+      const registryPath = join(tmp, 'sessions.json');
+      const registry = new SessionRegistry(registryPath);
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-1',
+        agent: 'claude',
+        projectPath: proj,
+        transcriptPath: join(tmp, 'web-1.jsonl'),
+        claudeSessionId: 'claude-uuid-1',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+      });
+
+      const mgr = new SessionManager({
+        allowedDirs: [tmp],
+        bufferCap: 100,
+        driverFactory: () => new FakeProc() as unknown as import('../session.js').AgentDriver,
+        realpath: async (p) => p,
+        registry,
+        claudeResumeSettleMs: 30, // stay alive past the early-exit window
+      });
+
+      const { port, close } = await startServer({ sessionManager: mgr });
+      const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+        cookie: `bridge_session=${TOKEN}`,
+        origin: `http://127.0.0.1:${port}`,
+      });
+      await new Promise<void>((r) => sock.on('open', () => r()));
+      await once(sock as unknown as EventEmitter, 'message');
+
+      const got = new Promise<{ type: string; webSessionId?: string; alive?: boolean; correlationId?: string }>((r) => {
+        sock.on('message', (raw) => {
+          const m = JSON.parse(raw.toString());
+          if (m.type === 'session_resumed') r(m);
+        });
+      });
+      sock.send(
+        JSON.stringify({
+          type: 'resume_session',
+          webSessionId: 'web-1',
+          correlationId: 'cid-p1',
+        }),
+      );
+      const m = await got;
+      expect(m.type).toBe('session_resumed');
+      expect(m.webSessionId).toBe('web-1');
+      expect(m.alive).toBe(true);
+      expect(m.correlationId).toBe('cid-p1');
+      sock.close();
+      await close();
+    } finally {
+      await new Promise((r) => setTimeout(r, 10));
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('resume_session (Path 2: native history) replies session_resumed with NEW webSessionId', async () => {
+    const { mkdtempSync, mkdirSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { SessionRegistry } = await import('../session-registry.js');
+
+    const tmp = mkdtempSync(join(tmpdir(), 'ws-resume-p2-'));
+    const proj = join(tmp, 'proj');
+    mkdirSync(proj, { recursive: true });
+    try {
+      const registryPath = join(tmp, 'sessions.json');
+      const registry = new SessionRegistry(registryPath);
+      await registry.load();
+
+      const entry: HistoryEntry = {
+        agent: 'codex',
+        sessionId: 'codex-uuid-known',
+        projectPath: proj,
+        mtime: 1000,
+        firstPrompt: 'hello codex',
+      };
+      const scanner = makeFakeScanner({
+        list: vi.fn(async () => ({ claude: [], codex: [entry] })),
+        findEntry: vi.fn(async () => entry),
+        invalidateCache: vi.fn(),
+      } as unknown as Partial<HistoryScanner>);
+
+      const accounts = new Map([
+        ['default', { name: 'default', codexHome: '/tmp/codex-home', isDefault: true }],
+      ]);
+      // Codex driver instantiation needs an account map; everything else
+      // mirrors a Path 1 mgr.
+      const mgr = new SessionManager({
+        allowedDirs: [tmp],
+        bufferCap: 100,
+        driverFactory: () => new FakeProc() as unknown as import('../session.js').AgentDriver,
+        realpath: async (p) => p,
+        registry,
+        accounts: accounts as unknown as Map<string, import('../accounts.js').CodexAccount>,
+        claudeResumeSettleMs: 30,
+      });
+
+      const { port, close } = await startServer({
+        sessionManager: mgr,
+        historyScanner: scanner,
+      });
+      const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+        cookie: `bridge_session=${TOKEN}`,
+        origin: `http://127.0.0.1:${port}`,
+      });
+      await new Promise<void>((r) => sock.on('open', () => r()));
+      await once(sock as unknown as EventEmitter, 'message');
+
+      const got = new Promise<{ type: string; webSessionId?: string; alive?: boolean; correlationId?: string }>((r) => {
+        sock.on('message', (raw) => {
+          const m = JSON.parse(raw.toString());
+          if (m.type === 'session_resumed') r(m);
+        });
+      });
+      sock.send(
+        JSON.stringify({
+          type: 'resume_session',
+          agent: 'codex',
+          sessionId: 'codex-uuid-known',
+          projectPath: proj,
+          correlationId: 'cid-p2',
+        }),
+      );
+      const m = await got;
+      expect(m.type).toBe('session_resumed');
+      expect(typeof m.webSessionId).toBe('string');
+      expect((m.webSessionId ?? '').length).toBeGreaterThan(0);
+      // A brand-new webSessionId — must differ from any pre-existing id.
+      expect(m.webSessionId).not.toBe('codex-uuid-known');
+      expect(m.alive).toBe(true);
+      expect(m.correlationId).toBe('cid-p2');
+      // Cache invalidation runs after a successful Path 2 resume.
+      expect(scanner.invalidateCache).toHaveBeenCalledTimes(1);
+      sock.close();
+      await close();
+    } finally {
+      await new Promise((r) => setTimeout(r, 10));
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('resume_session (Path 2) replies error history_session_not_found when scanner has no match', async () => {
+    const scanner = makeFakeScanner({
+      findEntry: vi.fn(async () => undefined),
+    } as unknown as Partial<HistoryScanner>);
+    const { port, close } = await startServer({ historyScanner: scanner });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await once(sock as unknown as EventEmitter, 'message');
+
+    const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'error') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'resume_session',
+        agent: 'claude',
+        sessionId: 'never-existed',
+        projectPath: '/Users/test/proj',
+        correlationId: 'cid-nf',
+      }),
+    );
+    const m = await got;
+    expect(m.type).toBe('error');
+    expect(m.code).toBe('history_session_not_found');
+    expect(m.correlationId).toBe('cid-nf');
+    sock.close();
+    await close();
+  });
+
+  it('resume_session (Path 2) replies error project_path_disallowed when ground-truth cwd is outside allowlist', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { SessionRegistry } = await import('../session-registry.js');
+
+    const tmp = mkdtempSync(join(tmpdir(), 'ws-resume-disallow-'));
+    try {
+      const registryPath = join(tmp, 'sessions.json');
+      const registry = new SessionRegistry(registryPath);
+      await registry.load();
+      // Allowlist is ONLY tmp; the entry's projectPath is outside tmp.
+      const mgr = new SessionManager({
+        allowedDirs: [tmp],
+        bufferCap: 100,
+        driverFactory: () => new FakeProc() as unknown as import('../session.js').AgentDriver,
+        realpath: async (p) => p,
+        registry,
+        claudeResumeSettleMs: 30,
+      });
+      const forbiddenEntry: HistoryEntry = {
+        agent: 'claude',
+        sessionId: 'forbidden-uuid',
+        projectPath: '/etc',
+        mtime: 1,
+        firstPrompt: '',
+      };
+      const scanner = makeFakeScanner({
+        findEntry: vi.fn(async () => forbiddenEntry),
+        invalidateCache: vi.fn(),
+      } as unknown as Partial<HistoryScanner>);
+
+      const { port, close } = await startServer({ sessionManager: mgr, historyScanner: scanner });
+      const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+        cookie: `bridge_session=${TOKEN}`,
+        origin: `http://127.0.0.1:${port}`,
+      });
+      await new Promise<void>((r) => sock.on('open', () => r()));
+      await once(sock as unknown as EventEmitter, 'message');
+
+      const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
+        sock.on('message', (raw) => {
+          const m = JSON.parse(raw.toString());
+          if (m.type === 'error') r(m);
+        });
+      });
+      sock.send(
+        JSON.stringify({
+          type: 'resume_session',
+          agent: 'claude',
+          sessionId: 'forbidden-uuid',
+          projectPath: '/Users/test/proj', // client lies; ground truth is /etc
+          correlationId: 'cid-disallow',
+        }),
+      );
+      const m = await got;
+      expect(m.type).toBe('error');
+      expect(m.code).toBe('project_path_disallowed');
+      expect(m.correlationId).toBe('cid-disallow');
+      sock.close();
+      await close();
+    } finally {
+      await new Promise((r) => setTimeout(r, 10));
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

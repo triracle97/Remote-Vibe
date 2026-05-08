@@ -11,6 +11,7 @@ import type { CodexAccount } from './accounts.js';
 import type { PromptStore } from './prompt-store.js';
 import type { FsApi } from './fs-api.js';
 import type { ImageStore } from './image-store.js';
+import type { HistoryScanner } from './history-scanner.js';
 import type {
   ClientMsg,
   ServerErrorMsg,
@@ -27,6 +28,7 @@ export interface AttachWsOpts {
   promptStore?: PromptStore;
   fsApi: FsApi;
   imageStore: ImageStore;
+  historyScanner: HistoryScanner;
 }
 
 export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
@@ -70,7 +72,7 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
     send({ type: 'system', event: 'init' });
 
     ws.on('message', (raw) => {
-      void handleMessage(ws, raw, opts.sessionManager, send, opts.accounts, opts.promptStore, opts.fsApi, opts.imageStore);
+      void handleMessage(ws, raw, opts.sessionManager, send, opts.accounts, opts.promptStore, opts.fsApi, opts.imageStore, opts.historyScanner);
     });
   });
 
@@ -86,6 +88,7 @@ async function handleMessage(
   promptStore: PromptStore | undefined,
   fsApi: FsApi,
   imageStore: ImageStore,
+  historyScanner: HistoryScanner,
 ): Promise<void> {
   let msg: ClientMsg;
   try {
@@ -261,6 +264,65 @@ async function handleMessage(
           }
         }
         return;
+      }
+      case 'list_history': {
+        try {
+          const result = await historyScanner.list();
+          send({
+            type: 'history_list',
+            claude: result.claude,
+            codex: result.codex,
+            correlationId: msg.correlationId,
+          });
+        } catch (err) {
+          send({
+            type: 'error',
+            code: 'resume_spawn_failed',
+            message: (err as Error).message,
+            correlationId: msg.correlationId,
+          });
+        }
+        break;
+      }
+      case 'resume_session': {
+        try {
+          let webSessionId: string;
+          if ('webSessionId' in msg) {
+            // Path 1: bridge-known
+            webSessionId = msg.webSessionId;
+            await mgr.resume(webSessionId);
+          } else {
+            // Path 2: native history first-resume
+            const entry = await historyScanner.findEntry(msg.agent, msg.sessionId);
+            if (!entry) {
+              send({
+                type: 'error',
+                code: 'history_session_not_found',
+                message: `No history session found for ${msg.agent}:${msg.sessionId}`,
+                correlationId: msg.correlationId,
+              });
+              return;
+            }
+            webSessionId = await mgr.resumeFromHistoryEntry(entry, msg.account ?? null);
+            historyScanner.invalidateCache();
+          }
+          send({
+            type: 'session_resumed',
+            webSessionId,
+            alive: true,
+            correlationId: msg.correlationId,
+          });
+        } catch (err) {
+          const code = (err as { code?: string }).code ?? 'resume_spawn_failed';
+          send({
+            type: 'error',
+            code: code as never,
+            message: (err as Error).message,
+            correlationId: msg.correlationId,
+            ...('webSessionId' in msg ? { sessionId: msg.webSessionId } : {}),
+          });
+        }
+        break;
       }
       default:
         sendError(send, 'unsupported_message', `unknown type ${(msg as { type: string }).type}`, (msg as { correlationId?: string }).correlationId);

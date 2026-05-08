@@ -1,7 +1,9 @@
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import { existsSync } from 'node:fs';
+import { realpath as fsRealpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { ClaudeProcess } from './claude-process.js';
 import { CodexProcess } from './codex-process.js';
 import { loadCodexAccounts } from './accounts.js';
@@ -14,6 +16,7 @@ import { TranscriptStore } from './transcript-store.js';
 import { PromptStore } from './prompt-store.js';
 import { FsApi } from './fs-api.js';
 import { ImageStore } from './image-store.js';
+import { HistoryScanner } from './history-scanner.js';
 
 async function main(): Promise<void> {
   const cfg = loadEnv(process.env);
@@ -79,6 +82,24 @@ async function main(): Promise<void> {
     dataDir: cfg.dataDir,
   });
   const server = createServer(handler);
+  // Pre-resolve allowed dirs once for the history scanner's allowlist gate.
+  // Uses the same prefix-match semantics as fs-api / SessionManager.
+  const resolvedAllowed = await Promise.all(
+    cfg.allowedDirs.map((d) => fsRealpath(d).catch(() => d)),
+  );
+  const historyScanner = new HistoryScanner({
+    homeDir: homedir(),
+    allowedDirs: cfg.allowedDirs,
+    allowlistGate: async (cwd: string) => {
+      let real: string;
+      try {
+        real = await fsRealpath(cwd);
+      } catch {
+        return false;
+      }
+      return resolvedAllowed.some((d) => real === d || real.startsWith(d + sep));
+    },
+  });
   attachWebSocket({
     server,
     token: cfg.token,
@@ -87,6 +108,7 @@ async function main(): Promise<void> {
     promptStore,
     fsApi,
     imageStore,
+    historyScanner,
   });
 
   await new Promise<void>((res, rej) => {
