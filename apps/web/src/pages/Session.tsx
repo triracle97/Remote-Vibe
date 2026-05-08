@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useSessionsStore } from '../store/sessions';
 import { useConnectionStore } from '../store/connection';
@@ -17,6 +17,15 @@ interface SessionProps {
 
 type MobileNavTab = 'sessions' | 'history';
 
+const focusableSelector = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
 export function Session({ client }: SessionProps): JSX.Element {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -31,6 +40,9 @@ export function Session({ client }: SessionProps): JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileNavTab, setMobileNavTab] = useState<MobileNavTab>('sessions');
+  const mobileNavDrawerRef = useRef<HTMLElement | null>(null);
+  const mobileNavCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const mobileNavReturnFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (id) setActive(id);
@@ -86,6 +98,54 @@ export function Session({ client }: SessionProps): JSX.Element {
     };
   }, [id, transcriptOnly, apply]);
 
+  const sessions = order.map((sid) => sessionsMap[sid]!).filter((s) => s !== undefined);
+  const closeMobileNav = (): void => {
+    const shouldRestoreFocus = mobileNavOpen;
+    setMobileNavOpen(false);
+    const returnTarget = mobileNavReturnFocusRef.current;
+    if (shouldRestoreFocus && returnTarget && document.contains(returnTarget)) {
+      returnTarget.focus();
+    }
+  };
+  const openMobileNav = (): void => {
+    mobileNavReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setMobileNavTab('sessions');
+    setMobileNavOpen(true);
+  };
+  const handleMobileNavKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeMobileNav();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+
+    const drawer = mobileNavDrawerRef.current;
+    if (!drawer) return;
+    const focusable = Array.from(drawer.querySelectorAll<HTMLElement>(focusableSelector));
+    if (focusable.length === 0) {
+      event.preventDefault();
+      drawer.focus();
+      return;
+    }
+
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    mobileNavCloseButtonRef.current?.focus();
+  }, [mobileNavOpen]);
+
   if (!session && !transcriptOnly) {
     return (
       <main className="home-main">
@@ -94,13 +154,6 @@ export function Session({ client }: SessionProps): JSX.Element {
       </main>
     );
   }
-
-  const sessions = order.map((sid) => sessionsMap[sid]!).filter((s) => s !== undefined);
-  const closeMobileNav = (): void => setMobileNavOpen(false);
-  const openMobileNav = (): void => {
-    setMobileNavTab('sessions');
-    setMobileNavOpen(true);
-  };
 
   return (
     <>
@@ -143,20 +196,32 @@ export function Session({ client }: SessionProps): JSX.Element {
       )}
       {mobileNavOpen && (
         <div className="mobile-nav-shell">
-          <button
-            type="button"
+          <div
             className="mobile-nav-backdrop"
-            aria-label="Close mobile navigation"
+            tabIndex={-1}
             onClick={closeMobileNav}
           />
-          <aside className="mobile-nav-drawer" role="dialog" aria-label="Mobile navigation">
+          <aside
+            ref={mobileNavDrawerRef}
+            className="mobile-nav-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Mobile navigation"
+            tabIndex={-1}
+            onKeyDown={handleMobileNavKeyDown}
+          >
             <div className="mobile-nav-header">
               <span>Navigation</span>
-              <button type="button" onClick={closeMobileNav} aria-label="Close mobile navigation">
+              <button
+                ref={mobileNavCloseButtonRef}
+                type="button"
+                onClick={closeMobileNav}
+                aria-label="Close mobile navigation"
+              >
                 ×
               </button>
             </div>
-            <div className="mobile-nav-tabs" role="tablist" aria-label="Mobile navigation sections">
+            <div className="mobile-nav-tabs" aria-label="Mobile navigation sections">
               <button
                 type="button"
                 className={mobileNavTab === 'sessions' ? 'active' : ''}

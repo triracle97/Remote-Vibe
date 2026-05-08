@@ -120,9 +120,14 @@ describe('Session mobile shell', () => {
   });
 
   it('opens the mobile drawer from the chat trigger', () => {
-    const { getByLabelText, getByRole } = renderSession();
+    const { container, getByLabelText, getByRole } = renderSession();
     fireEvent.click(getByLabelText(/open sessions and history/i));
-    expect(getByRole('dialog', { name: /mobile navigation/i })).toBeTruthy();
+    const drawer = getByRole('dialog', { name: /mobile navigation/i });
+    expect(drawer.getAttribute('aria-modal')).toBe('true');
+    expect(document.activeElement).toBe(
+      within(drawer).getByRole('button', { name: /close mobile navigation/i }),
+    );
+    expect(container.querySelector('.mobile-nav-backdrop')?.getAttribute('tabindex')).toBe('-1');
   });
 
   it('switches between sessions and history tabs', () => {
@@ -149,5 +154,31 @@ describe('Session mobile shell', () => {
     fireEvent.click(within(drawer).getByRole('button', { name: /history/i }));
     fireEvent.click(within(drawer).getByRole('button', { name: /resume row/i }));
     expect(queryByRole('dialog', { name: /mobile navigation/i })).toBeNull();
+  });
+
+  it('closes with Escape and restores focus to the chat trigger', () => {
+    const { getByLabelText, getByRole, queryByRole } = renderSession();
+    const trigger = getByLabelText(/open sessions and history/i);
+    trigger.focus();
+    fireEvent.click(trigger);
+    const drawer = getByRole('dialog', { name: /mobile navigation/i });
+    fireEvent.keyDown(drawer, { key: 'Escape' });
+    expect(queryByRole('dialog', { name: /mobile navigation/i })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps tab focus inside the open drawer', () => {
+    const { getByLabelText, getByRole } = renderSession();
+    fireEvent.click(getByLabelText(/open sessions and history/i));
+    const drawer = getByRole('dialog', { name: /mobile navigation/i });
+    const closeButton = within(drawer).getByRole('button', { name: /close mobile navigation/i });
+    const lastSessionButton = within(drawer).getByRole('button', { name: /session two/i });
+
+    closeButton.focus();
+    fireEvent.keyDown(drawer, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(lastSessionButton);
+
+    fireEvent.keyDown(drawer, { key: 'Tab' });
+    expect(document.activeElement).toBe(closeButton);
   });
 });
