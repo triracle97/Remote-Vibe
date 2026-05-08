@@ -65,7 +65,7 @@ apps/web/src/features/chat/
 | `apps/web/src/types/protocol.ts` | Mirror bridge type additions byte-identically. |
 | `apps/web/src/store/sessions.ts` | `error: session_dead` flips per-session `alive: false` (does NOT push to global errors). Add `resume(webSessionId)` and `resumeFromHistory(entry)` actions. |
 | `apps/web/src/store/connection.ts` | Filter `session_dead` out of global error banner. |
-| `apps/web/src/pages/Sessions.tsx` | Render `<HistoryPanel />` below live sessions list. |
+| `apps/web/src/pages/Home.tsx` | Render `<HistoryPanel />` below live sessions list. |
 | `apps/web/src/pages/Session.tsx` | Render `<ResumePrompt />` between message list and InputBox when `!alive`. Show transcript-unavailable variant when transcript yielded 0 events. |
 | `apps/web/src/features/chat/Chat.tsx` | Pass alive + resume callbacks down to `<ResumePrompt />`. |
 | `apps/web/src/features/chat/InputBox.tsx` | Auto-prompt-on-send: if `!alive` and user submits, swap inline ResumePrompt to "Resume + send" CTA; flush queued first message after resume succeeds. |
@@ -2440,20 +2440,20 @@ git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(web): HistoryPane
 
 ---
 
-## Task 10: `Sessions.tsx` integration — render `<HistoryPanel />`
+## Task 10: `Home.tsx` integration — render `<HistoryPanel />`
 
 **Files:**
-- Modify: `apps/web/src/pages/Sessions.tsx`
+- Modify: `apps/web/src/pages/Home.tsx`
 
 - [ ] **Step 1: Read existing file**
 
 ```bash
-cat /Volumes/WDSSD/Code/mac-remote-terminal/apps/web/src/pages/Sessions.tsx
+cat /Volumes/WDSSD/Code/mac-remote-terminal/apps/web/src/pages/Home.tsx
 ```
 
 Identify where the live-sessions list ends; that's where HistoryPanel slots in.
 
-- [ ] **Step 2: Edit `apps/web/src/pages/Sessions.tsx`**
+- [ ] **Step 2: Edit `apps/web/src/pages/Home.tsx`**
 
 Add import:
 
@@ -2479,7 +2479,7 @@ Expected: green.
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /Volumes/WDSSD/Code/mac-remote-terminal add apps/web/src/pages/Sessions.tsx
+git -C /Volumes/WDSSD/Code/mac-remote-terminal add apps/web/src/pages/Home.tsx
 git -C /Volumes/WDSSD/Code/mac-remote-terminal commit -m "feat(web): render HistoryPanel below live sessions list"
 ```
 
