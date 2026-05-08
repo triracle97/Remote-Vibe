@@ -29,6 +29,7 @@ function defaultProps(overrides: Partial<Parameters<typeof InputBox>[0]> = {}) {
     onResume: vi.fn().mockResolvedValue('new-id'),
     agent: 'claude' as const,
     imagePaste: harness.paste,
+    sessionId: 'sess-test',
     ...overrides,
   };
 }

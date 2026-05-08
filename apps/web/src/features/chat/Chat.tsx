@@ -120,6 +120,7 @@ export function Chat({
         currentProjectPath={session.projectPath}
         agent={session.agent}
         imagePaste={imagePaste}
+        sessionId={session.sessionId}
       />
     </div>
   );

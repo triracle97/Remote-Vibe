@@ -3,6 +3,8 @@ import { PromptHistoryDropdown } from '../prompt-history/PromptHistoryDropdown';
 import { ImageThumbnails } from '../image-attach/ImageThumbnails';
 import type { PendingImage, UseImagePaste } from '../image-attach/useImagePaste';
 import type { AgentKind } from '../../types/protocol';
+import { SlashAutocomplete, type SlashAutocompleteHandle } from './SlashAutocomplete';
+import { AtTagAutocomplete, type AtTagAutocompleteHandle } from './AtTagAutocomplete';
 
 interface InputBoxProps {
   onSend(text: string, images?: ReadonlyArray<{ mime: string; base64: string }>): void;
@@ -29,6 +31,8 @@ interface InputBoxProps {
   // Owned by Chat.tsx so drag-drop on the chat area and paste on the
   // textarea share the same image list.
   imagePaste: UseImagePaste;
+  /** Session id — drives slash-command + file-search lookups. */
+  sessionId: string;
 }
 
 export function InputBox({
@@ -40,6 +44,7 @@ export function InputBox({
   currentProjectPath,
   agent,
   imagePaste,
+  sessionId,
 }: InputBoxProps): JSX.Element {
   const [text, setText] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -49,11 +54,32 @@ export function InputBox({
   const [queuedMessage, setQueuedMessage] = useState('');
   const [queuedImages, setQueuedImages] = useState<readonly PendingImage[]>([]);
   const [showResumePromptInline, setShowResumePromptInline] = useState(false);
+  const [cursor, setCursor] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const slashRef = useRef<SlashAutocompleteHandle>(null);
+  const atRef = useRef<AtTagAutocompleteHandle>(null);
   // Image attach is allowed on dead Claude sessions too — the message + images
   // get queued and flush after resume succeeds.
   const imagesEnabled = agent === 'claude' && !disabled;
   const { images, error, addImageFromFile, removeImage, clear } = imagePaste;
+
+  const updateCursor = (): void => {
+    setCursor(taRef.current?.selectionStart ?? 0);
+  };
+
+  const onPick = (newText: string, newCursor: number): void => {
+    setText(newText);
+    setCursor(newCursor);
+    // Restore selection on the textarea after React commits the new value.
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (ta) {
+        ta.focus();
+        ta.setSelectionRange(newCursor, newCursor);
+      }
+    });
+  };
 
   const submit = (): void => {
     const t = text.trim();
@@ -76,6 +102,7 @@ export function InputBox({
       onSend(t);
     }
     setText('');
+    setCursor(0);
     clear();
   };
 
@@ -117,6 +144,25 @@ export function InputBox({
   };
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+    // Autocomplete keyboard hijack first: if either popup is open, route
+    // ↑↓+Enter+Tab+Esc to the popup instead of the normal handlers.
+    const slashOpen = slashRef.current?.isOpen() ?? false;
+    const atOpen = atRef.current?.isOpen() ?? false;
+    if (slashOpen || atOpen) {
+      if (e.key === 'Escape') {
+        // Don't close textarea. Easiest dismiss: insert a space at the
+        // cursor (breaks the trigger regex). But that mutates user text,
+        // which is rude. Alternative: nudge cursor right with no edit —
+        // doesn't work either. We instead just suppress until user types
+        // something that breaks the trigger. Esc is a no-op besides
+        // preventing the upstream history-close behavior.
+        return;
+      }
+      const handler = slashOpen ? slashRef.current : atRef.current;
+      if (handler && handler.handleKey(e)) {
+        return;
+      }
+    }
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       submit();
@@ -182,21 +228,46 @@ export function InputBox({
           </button>
         </div>
       )}
-      <textarea
-        value={text}
-        placeholder={
-          disabled
-            ? 'Session ended.'
-            : agent === 'codex'
-              ? 'Type a prompt. Cmd/Ctrl+Enter to send. ↑ on empty input opens history. (Codex: no image input.)'
-              : 'Type a prompt. Cmd/Ctrl+Enter to send. ↑ on empty input opens history. Paste/drop/📎 to attach images.'
-        }
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={onKey}
-        onPaste={onPaste}
-        rows={3}
-        disabled={disabled}
-      />
+      <div className="input-textarea-wrap" style={{ position: 'relative' }}>
+        <SlashAutocomplete
+          ref={slashRef}
+          sessionId={sessionId}
+          agent={agent}
+          text={text}
+          cursor={cursor}
+          onPick={onPick}
+        />
+        <AtTagAutocomplete
+          ref={atRef}
+          sessionId={sessionId}
+          text={text}
+          cursor={cursor}
+          onPick={onPick}
+        />
+        <textarea
+          ref={taRef}
+          value={text}
+          placeholder={
+            disabled
+              ? 'Session ended.'
+              : agent === 'codex'
+                ? 'Type a prompt. Cmd/Ctrl+Enter to send. ↑ on empty input opens history. (Codex: no image input.)'
+                : 'Type a prompt. Cmd/Ctrl+Enter to send. ↑ on empty input opens history. Paste/drop/📎 to attach images.'
+          }
+          onChange={(e) => {
+            setText(e.target.value);
+            // selectionStart updates synchronously after the change; capture it.
+            setCursor(e.target.selectionStart ?? e.target.value.length);
+          }}
+          onKeyDown={onKey}
+          onKeyUp={updateCursor}
+          onSelect={updateCursor}
+          onClick={updateCursor}
+          onPaste={onPaste}
+          rows={3}
+          disabled={disabled}
+        />
+      </div>
       <input
         ref={fileInputRef}
         type="file"
