@@ -42,7 +42,9 @@
     min-height: 2.5rem;
   }
   .fe-tree {
-    max-height: 42dvh;
+    flex: 1;
+    max-height: none;
+    min-height: 0;
     font-size: 0.9rem;
   }
   .fe-row {
@@ -51,7 +53,8 @@
     padding-bottom: 0.35rem;
   }
   .fe-preview {
-    max-height: 38dvh;
+    max-height: 45dvh;
+    flex: none;
   }
   .file-preview-pre {
     font-size: 0.75rem;
