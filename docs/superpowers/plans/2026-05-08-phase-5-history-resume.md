@@ -2794,32 +2794,45 @@ if (m.type === 'error' && m.correlationId && pendingResumes.has(m.correlationId)
 
 - [ ] **Step 6: Update `apps/web/src/App.tsx` (the actual setError dispatch site)**
 
-Locate the WS message handler around line 57-61 of `apps/web/src/App.tsx`. The current code is:
+Locate the WS message handler around line 57-64 of `apps/web/src/App.tsx`. The current code is:
 
 ```tsx
 if (m.type === 'error') {
+  if (m.code === 'session_dead' && m.sessionId) {
+    markTranscriptOnly(m.sessionId);
+  }
   setError(`${m.code}: ${m.message}`);
+} else {
+  setError(null);
 }
 ```
 
-Add a guard so `code === 'session_dead'` is NOT pushed to the global banner. The per-session sessions-store branch (added in Step 5) handles it instead.
+PRESERVE `markTranscriptOnly()` — that's Phase 2's transcript-only fallback hook and is still needed (Session.tsx uses it to streamTranscript from disk; ResumePrompt then renders if events were replayed). Only the `setError` raise is what we want to suppress for `session_dead`.
+
+Replace with:
 
 ```tsx
 if (m.type === 'error') {
-  // session_dead is per-session-only — it must NOT raise the global banner,
-  // but it MUST still flow through to the rest of the handler (the
-  // sessions-store apply(m) call later in App.tsx is what flips alive=false
-  // on the named sessionId so ResumePrompt renders). Skip ONLY setError;
-  // do NOT return early.
-  if (m.code !== 'session_dead') {
+  if (m.code === 'session_dead' && m.sessionId) {
+    markTranscriptOnly(m.sessionId);
+    // Per-session-only: do NOT raise the global error banner. The sessions
+    // store branch (added in Step 5) will flip alive=false on apply(m) below;
+    // Session.tsx then renders ResumePrompt or the transcript-unavailable
+    // notice depending on whether streamTranscript yielded events.
+  } else {
     setError(`${m.code}: ${m.message}`);
   }
+} else {
+  setError(null);
 }
 ```
 
-Critical: the guard must NOT use `return` here — App.tsx's WS message handler proceeds to call `apply(m)` (which routes the message into the sessions store, file-explorer store, etc.) after the error branch. Returning early would skip that, and the sessions store would never see the `session_dead` event → alive flag never flips → ResumePrompt never appears.
+Critical contract:
+1. The guard must NOT `return` early — `apply(m)` later in this handler is what routes `session_dead` into the sessions store so `alive` flips to `false`. Returning would block ResumePrompt from rendering.
+2. `markTranscriptOnly()` MUST still run on session_dead — Session.tsx uses that flag to invoke streamTranscript fallback. Without it, the bubble list stays empty and the transcript-unavailable notice fires when it shouldn't.
+3. The `else { setError(null) }` branch (which clears the global banner on any non-error message) is preserved unchanged.
 
-The contract: `session_dead` skips ONLY the global banner; all other handler logic (including the per-session apply) still runs. All other error codes (Phase 5's new ones included) still flow into the global banner.
+All other error codes (Phase 5's new ones included) still raise the global banner; session_dead uniquely silences it.
 
 - [ ] **Step 7: Run tests — expect PASS**
 
