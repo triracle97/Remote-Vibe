@@ -816,6 +816,7 @@ describe('SessionManager', () => {
     async function makeMgrP6(opts: {
       allowedDirs?: string[];
       registry?: SessionRegistry;
+      stat?: (p: string) => Promise<{ isDirectory(): boolean }>;
       notifier?: {
         noteInput: (id: string) => void;
         noteResult: (entry: unknown) => Promise<void> | void;
@@ -847,6 +848,7 @@ describe('SessionManager', () => {
         driverFactory: factory,
         realpath: async (p) => p,
         registry,
+        ...(opts.stat ? { stat: opts.stat } : {}),
         accounts: accounts as unknown as Map<string, import('../accounts.js').CodexAccount>,
         ...(opts.notifier
           ? { notifier: opts.notifier as unknown as import('../notifier.js').Notifier }
@@ -898,6 +900,58 @@ describe('SessionManager', () => {
       // Here we assert SessionManager wires the value through.
       expect(spawned[0]!.agent).toBe('codex');
       expect(spawned[0]!.additionalDirs).toEqual([b]);
+    });
+
+    it('resumeFromHistoryEntry persists default workspace dirs as additionalDirs', async () => {
+      const { mgr, registry, spawned } = await makeMgrP6({
+        allowedDirs: ['/Volumes/WDSSD/Code'],
+        stat: async () => ({ isDirectory: () => true }),
+      });
+      const webSessionId = await mgr.resumeFromHistoryEntry(
+        {
+          agent: 'codex',
+          sessionId: 'codex-native-1',
+          projectPath: '/Volumes/WDSSD/Code/posRN1',
+        },
+        'default',
+      );
+      expect(registry.get(webSessionId)?.additionalDirs).toEqual([
+        '/Volumes/WDSSD/Code/storybook-solid-js',
+        '/Volumes/WDSSD/Code/customer-management',
+      ]);
+      expect(spawned[0]!.additionalDirs).toEqual([
+        '/Volumes/WDSSD/Code/storybook-solid-js',
+        '/Volumes/WDSSD/Code/customer-management',
+      ]);
+    });
+
+    it('resume forwards stored additionalDirs into the resumed driver', async () => {
+      const registry = await makeRegistry();
+      await registry.add({
+        webSessionId: 'web-resume-1',
+        agent: 'codex',
+        projectPath: '/Volumes/WDSSD/Code/storybook-solid-js',
+        transcriptPath: '.bridge/transcripts/web-resume-1.jsonl',
+        claudeSessionId: null,
+        codexSessionId: 'codex-native-2',
+        createdAt: Date.now(),
+        account: 'default',
+        name: null,
+        additionalDirs: [
+          '/Volumes/WDSSD/Code/posRN1',
+          '/Volumes/WDSSD/Code/customer-management',
+        ],
+      });
+      const { mgr, spawned } = await makeMgrP6({
+        allowedDirs: ['/Volumes/WDSSD/Code'],
+        registry,
+        stat: async () => ({ isDirectory: () => true }),
+      });
+      await mgr.resume('web-resume-1');
+      expect(spawned[0]!.additionalDirs).toEqual([
+        '/Volumes/WDSSD/Code/posRN1',
+        '/Volumes/WDSSD/Code/customer-management',
+      ]);
     });
 
     it('first user input auto-sets session.name truncated to 60 chars', async () => {

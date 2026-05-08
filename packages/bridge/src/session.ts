@@ -17,6 +17,7 @@ import type {
   ServerStreamMsg,
 } from './types.js';
 import { loadReplayEvents, type ReplayEvent } from './native-history-replay.js';
+import { DEFAULT_WORKSPACE_DIRS } from './default-workspaces.js';
 
 export interface SessionInfo {
   sessionId: string;
@@ -532,6 +533,23 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  private async defaultAdditionalDirsFor(primaryRealPath: string): Promise<string[]> {
+    const seen = new Set<string>([primaryRealPath]);
+    const out: string[] = [];
+    for (const raw of DEFAULT_WORKSPACE_DIRS) {
+      let real: string;
+      try {
+        real = await this.realpath(raw);
+      } catch {
+        continue;
+      }
+      if (seen.has(real) || !this.isAllowedDir(real)) continue;
+      seen.add(real);
+      out.push(real);
+    }
+    return out;
+  }
+
   /**
    * Native-history first-resume entry point (Path 2). Called by the WS handler
    * with a HistoryEntry that the scanner already verified. Issues a brand-new
@@ -571,6 +589,7 @@ export class SessionManager extends EventEmitter {
         `Project path is not in BRIDGE_ALLOWED_DIRS: ${entry.projectPath}`,
       );
     }
+    const additionalDirs = await this.defaultAdditionalDirsFor(real);
     const webSessionId = this.mintWebSessionId();
     await this.registry.add({
       webSessionId,
@@ -582,7 +601,7 @@ export class SessionManager extends EventEmitter {
       createdAt: Date.now(),
       account: accountName,
       name: null,
-      additionalDirs: [],
+      additionalDirs,
     });
     // Pre-load replay events so attachSession can drain them synchronously
     // BETWEEN the synthesized session_created and driver listener wiring.
@@ -622,10 +641,12 @@ export class SessionManager extends EventEmitter {
       // Claude is not codex; resolveAccount returns undefined for claude.
       // Spread account only if defined to satisfy exactOptionalPropertyTypes.
       const account = entry.account ? this.resolveAccount('claude', entry.account) : undefined;
+      const additionalDirs = entry.additionalDirs ?? [];
       driver = this.driverFactory({
         agent: 'claude',
         projectPath: entry.projectPath,
         ...(account ? { account } : {}),
+        ...(additionalDirs.length > 0 ? { additionalDirs } : {}),
         resumeArgs: ['--resume', claudeSessionId],
       });
     } catch (err) {
@@ -729,10 +750,12 @@ export class SessionManager extends EventEmitter {
     const account = entry.account
       ? this.resolveAccount('codex', entry.account) ?? undefined
       : this.resolveAccount('codex', undefined);
+    const additionalDirs = entry.additionalDirs ?? [];
     const driver = this.driverFactory({
       agent: 'codex',
       projectPath: entry.projectPath,
       ...(account ? { account } : {}),
+      ...(additionalDirs.length > 0 ? { additionalDirs } : {}),
       codexResumeSeed: codexSessionId,
     });
     this.attachSession(entry.webSessionId, driver, entry);

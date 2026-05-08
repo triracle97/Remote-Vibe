@@ -3,6 +3,7 @@ import type { Profile } from '../../types/protocol';
 import { useProfileStore } from './profileStore';
 import { useAccountsStore } from '../../store/accounts';
 import { DirPicker } from './DirPicker';
+import { DEFAULT_WORKSPACE_DIRS } from '../project-picker/default-workspaces';
 
 interface ProfileEditorProps {
   open: boolean;
@@ -76,7 +77,12 @@ export function ProfileEditor({
 
   const startNew = (): void => {
     const defaultAccount = agent === 'codex' ? accounts[0]?.name ?? null : null;
-    setDraft({ key: 'new', name: '', dirs: [], account: defaultAccount });
+    setDraft({
+      key: 'new',
+      name: '',
+      dirs: DEFAULT_WORKSPACE_DIRS.slice(),
+      account: defaultAccount,
+    });
     setError(null);
   };
 

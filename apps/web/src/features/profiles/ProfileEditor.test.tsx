@@ -18,6 +18,12 @@ const mk = (over: Partial<Profile> = {}): Profile => ({
   ...over,
 });
 
+const DEFAULT_DIRS = [
+  '/Volumes/WDSSD/Code/storybook-solid-js',
+  '/Volumes/WDSSD/Code/posRN1',
+  '/Volumes/WDSSD/Code/customer-management',
+];
+
 describe('ProfileEditor', () => {
   beforeEach(() => {
     useProfileStore.setState({ profiles: [], loading: false });
@@ -89,6 +95,17 @@ describe('ProfileEditor', () => {
     fireEvent.click(newBtn);
     expect(container.querySelector('[data-testid="profile-row-new"]')).toBeTruthy();
     expect(container.querySelector('.profile-editor-edit')).toBeTruthy();
+  });
+
+  it('prefills default workspace dirs when creating a new profile', () => {
+    const { container, getAllByTestId } = render(<ProfileEditor open onClose={() => {}} />);
+    const newBtn = container.querySelector('.profile-editor-new') as HTMLButtonElement;
+    fireEvent.click(newBtn);
+    const rows = getAllByTestId('dir-picker-row');
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => row.textContent)).toEqual(
+      DEFAULT_DIRS.map((dir) => expect.stringContaining(dir)),
+    );
   });
 
   it('switching to Codex tab shows codex profiles only', () => {

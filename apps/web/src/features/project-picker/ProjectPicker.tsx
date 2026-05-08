@@ -5,6 +5,7 @@ import { DirPicker } from '../profiles/DirPicker';
 import { ProfilePicker } from '../profiles/ProfilePicker';
 import { ProfileEditor } from '../profiles/ProfileEditor';
 import type { AgentKind, Profile } from '../../types/protocol';
+import { DEFAULT_WORKSPACE_DIRS } from './default-workspaces';
 import './ProjectPicker.css';
 
 const RECENT_KEY = 'mrt.recentProjects';
@@ -29,6 +30,11 @@ function saveRecents(list: string[]): void {
   }
 }
 
+function matchesDefaultWorkspaceDirs(dirs: string[]): boolean {
+  return dirs.length === DEFAULT_WORKSPACE_DIRS.length &&
+    dirs.every((dir, index) => dir === DEFAULT_WORKSPACE_DIRS[index]);
+}
+
 export function rememberRecentProject(path: string): void {
   const current = loadRecents();
   const next = [path, ...current.filter((p) => p !== path)];
@@ -51,7 +57,7 @@ interface ProjectPickerProps {
 
 export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Element {
   const [agent, setAgent] = useState<AgentKind>('claude');
-  const [dirs, setDirs] = useState<string[]>([]);
+  const [dirs, setDirs] = useState<string[]>(() => DEFAULT_WORKSPACE_DIRS.slice());
   const [editorOpen, setEditorOpen] = useState(false);
   const accounts = useAccountsStore((s) => s.accounts);
   const selectedAccount = useAccountsStore((s) => s.selectedAccount);
@@ -72,7 +78,12 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
     [profiles, agent],
   );
   useEffect(() => {
-    if (!autoLoaded && dirs.length === 0 && defaultProfile && defaultProfile.dirs.length > 0) {
+    if (
+      !autoLoaded &&
+      (dirs.length === 0 || matchesDefaultWorkspaceDirs(dirs)) &&
+      defaultProfile &&
+      defaultProfile.dirs.length > 0
+    ) {
       setDirs(defaultProfile.dirs.slice());
       if (agent === 'codex' && defaultProfile.account) {
         setSelectedAccount(defaultProfile.account);
@@ -128,7 +139,7 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
               onChange={() => {
                 setAgent('claude');
                 setAutoLoaded(false);
-                setDirs([]);
+                setDirs(DEFAULT_WORKSPACE_DIRS.slice());
               }}
             />
             Claude
@@ -142,7 +153,7 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
               onChange={() => {
                 setAgent('codex');
                 setAutoLoaded(false);
-                setDirs([]);
+                setDirs(DEFAULT_WORKSPACE_DIRS.slice());
               }}
             />
             Codex
