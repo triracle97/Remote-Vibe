@@ -8,6 +8,9 @@ import { useAccountsStore } from './store/accounts';
 import { usePromptHistoryStore } from './store/prompt-history';
 import { useFileExplorerStore } from './store/file-explorer';
 import { useHistoryStore } from './features/history/historyStore';
+import { useProfileStore } from './features/profiles/profileStore';
+import { useSlashCommandStore } from './features/chat/slashCommandStore';
+import { useFileSearchStore } from './features/chat/fileSearchStore';
 import { Home } from './pages/Home';
 import { Session } from './pages/Session';
 
@@ -64,6 +67,24 @@ export function App(): JSX.Element {
         useHistoryStore.getState().applyServerMsg(m);
         return;
       }
+      if (
+        m.type === 'profile_list' ||
+        m.type === 'profile_saved' ||
+        m.type === 'profile_deleted' ||
+        m.type === 'profile_default_set'
+      ) {
+        useProfileStore.getState().applyServerMsg(m);
+        return;
+      }
+      if (m.type === 'slash_commands_list') {
+        useSlashCommandStore.getState().applyServerMsg(m);
+        return;
+      }
+      if (m.type === 'file_search_results') {
+        useFileSearchStore.getState().applyServerMsg(m);
+        return;
+      }
+      // session_renamed routing handled by sessions store apply(m) below in T13.
       if (m.type === 'error') {
         if (m.code === 'session_dead' && m.sessionId) {
           markTranscriptOnly(m.sessionId);
@@ -78,6 +99,13 @@ export function App(): JSX.Element {
       }
       if (m.type === 'user') {
         client.send({ type: 'list_prompts', limit: 200 });
+      }
+      // Route errors with correlationIds to the profile store so pending
+      // save/delete/setDefault promises can reject. The sessions store also
+      // inspects errors below for resume rejection — both stores filter by
+      // their own pending correlationIds.
+      if (m.type === 'error') {
+        useProfileStore.getState().applyServerMsg(m);
       }
       apply(m);
     });
