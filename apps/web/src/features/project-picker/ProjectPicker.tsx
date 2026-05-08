@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Plus, ArrowUp, ArrowDown, Trash2 } from 'lucide-react';
 import { useAccountsStore } from '../../store/accounts';
 import { useProfileStore } from '../profiles/profileStore';
 import { DirPicker } from '../profiles/DirPicker';
 import { ProfilePicker } from '../profiles/ProfilePicker';
 import { ProfileEditor } from '../profiles/ProfileEditor';
+import { Modal } from '../../shell/Modal';
 import type { AgentKind, Profile } from '../../types/protocol';
 import { DEFAULT_WORKSPACE_DIRS } from './default-workspaces';
-import './ProjectPicker.css';
 
 const RECENT_KEY = 'mrt.recentProjects';
 const RECENT_MAX = 10;
@@ -126,10 +127,10 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
   };
 
   return (
-    <div className="picker-backdrop">
-      <div className="picker">
-        <h2>Pick a project</h2>
-        <div className="picker-agent">
+    <Modal open={true} onClose={onCancel} ariaLabel="Select Project" maxWidthClass="max-w-lg">
+      <div className="picker p-6">
+        <h2 className="text-[var(--color-text)] text-xl font-semibold text-center mb-6">Pick a project</h2>
+        <div className="picker-agent flex gap-4 mb-3">
           <label>
             <input
               type="radio"
@@ -142,7 +143,7 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
                 setDirs(DEFAULT_WORKSPACE_DIRS.slice());
               }}
             />
-            Claude
+            {' '}Claude
           </label>
           <label>
             <input
@@ -156,14 +157,15 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
                 setDirs(DEFAULT_WORKSPACE_DIRS.slice());
               }}
             />
-            Codex
+            {' '}Codex
           </label>
         </div>
         {agent === 'codex' && accounts.length > 0 && (
-          <div className="picker-account">
+          <div className="picker-account mb-3">
             <label>
               Account:&nbsp;
               <select
+                className="bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
                 value={selectedAccount ?? ''}
                 onChange={(e) => setSelectedAccount(e.target.value)}
               >
@@ -177,7 +179,7 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
             </label>
           </div>
         )}
-        <div className="picker-profile">
+        <div className="picker-profile mb-3">
           <ProfilePicker
             agent={agent}
             onSelect={applyProfile}
@@ -191,22 +193,34 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
           }}
         >
           <DirPicker dirs={dirs} onChange={setDirs} />
-          <div className="picker-actions">
-            <button type="button" onClick={onCancel}>
+          <div className="picker-actions flex p-4 gap-3 bg-[color-mix(in_srgb,var(--color-bg)_50%,var(--color-surface))] border-t border-[var(--color-border)] -mx-6 -mb-6 mt-4">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="flex-1 py-2.5 min-h-[44px] bg-[var(--color-surface-2)] text-[var(--color-text)] rounded-xl font-medium hover:bg-[var(--color-surface)] transition-colors"
+            >
               Cancel
             </button>
-            <button type="submit" disabled={dirs.length === 0}>
+            <button
+              type="submit"
+              disabled={dirs.length === 0}
+              className="flex-1 py-2.5 min-h-[44px] bg-[var(--color-accent)] text-white rounded-xl font-medium hover:opacity-90 transition-colors shadow-lg shadow-[color-mix(in_srgb,var(--color-accent)_30%,transparent)] disabled:opacity-50"
+            >
               Open
             </button>
           </div>
         </form>
         {recents.length > 0 && (
           <>
-            <h3>Recent</h3>
-            <ul className="picker-recents">
+            <h3 className="text-[var(--color-text)] font-medium mt-4 mb-2">Recent</h3>
+            <ul className="picker-recents list-none p-0 max-h-[200px] overflow-y-auto">
               {recents.map((p) => (
-                <li key={p}>
-                  <button type="button" onClick={() => useRecent(p)}>
+                <li key={p} className="flex items-center justify-between py-2 border-b border-[var(--color-border)] last:border-b-0">
+                  <button
+                    type="button"
+                    onClick={() => useRecent(p)}
+                    className="flex-1 text-left text-sm text-[var(--color-text-dim)] hover:text-[var(--color-text)] bg-none border-0 p-0 cursor-pointer"
+                  >
                     {p}
                   </button>
                 </li>
@@ -220,6 +234,9 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
         onClose={() => setEditorOpen(false)}
         initialAgent={agent}
       />
-    </div>
+    </Modal>
   );
 }
+
+// Re-export lucide icons used internally so they are tree-shaken properly.
+export { Plus, ArrowUp, ArrowDown, Trash2 };

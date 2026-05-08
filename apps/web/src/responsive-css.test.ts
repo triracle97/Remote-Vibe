@@ -14,7 +14,7 @@ describe('mobile responsive CSS contract', () => {
       readCss('src/App.css'),
       readCss('src/features/chat/Chat.css'),
       readCss('src/features/file-explorer/FileExplorer.css'),
-      readCss('src/features/project-picker/ProjectPicker.css'),
+      // ProjectPicker.css deleted — picker now uses Modal primitive with Tailwind
     ].join('\n');
 
     expect(css).toContain('@media (max-width: 720px)');
@@ -23,7 +23,7 @@ describe('mobile responsive CSS contract', () => {
     // .history-panel width:100% is now handled by Tailwind (max-md:w-full)
     expect(css).toMatch(/\.chat\s*{[^}]*min-height:\s*100dvh/s);
     expect(css).toMatch(/\.file-explorer\s*{[^}]*width:\s*100%/s);
-    expect(css).toMatch(/\.picker\s*{[^}]*max-height:\s*calc\(100dvh - 1rem\)/s);
+    // .picker max-height is now handled by Modal primitive (overflow-hidden + mobile-safe sizing)
   });
 
   it('defines the mobile chat shell overlay contract', () => {
