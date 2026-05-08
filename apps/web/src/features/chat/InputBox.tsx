@@ -1,13 +1,29 @@
 import { useRef, useState, type KeyboardEvent } from 'react';
 import { PromptHistoryDropdown } from '../prompt-history/PromptHistoryDropdown';
 import { ImageThumbnails } from '../image-attach/ImageThumbnails';
-import type { UseImagePaste } from '../image-attach/useImagePaste';
+import type { PendingImage, UseImagePaste } from '../image-attach/useImagePaste';
 import type { AgentKind } from '../../types/protocol';
 
 interface InputBoxProps {
   onSend(text: string, images?: ReadonlyArray<{ mime: string; base64: string }>): void;
   onStop(): void;
+  /**
+   * Orthogonal "input is unavailable" flag (e.g. global error / streaming).
+   * Distinct from `alive`: a dead session does NOT disable InputBox here,
+   * because the auto-prompt-on-send flow needs the textarea + Send button
+   * to remain interactive so we can intercept submit and offer the
+   * "Resume + send" CTA.
+   */
   disabled: boolean;
+  /**
+   * Whether the underlying session is alive. When false, submitting does
+   * NOT call `onSend` immediately — instead InputBox surfaces an inline
+   * "Resume + send" CTA. Clicking that CTA calls `onResume()` and then
+   * flushes the captured message via `onSend`.
+   */
+  alive: boolean;
+  /** Resume the session (Chat.tsx wires this to the sessions store). */
+  onResume(): Promise<unknown>;
   currentProjectPath?: string;
   agent: AgentKind;
   // Owned by Chat.tsx so drag-drop on the chat area and paste on the
@@ -19,19 +35,38 @@ export function InputBox({
   onSend,
   onStop,
   disabled,
+  alive,
+  onResume,
   currentProjectPath,
   agent,
   imagePaste,
 }: InputBoxProps): JSX.Element {
   const [text, setText] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Captured at submit-time when the session is dead. Preserves the message
+  // even if the user erases or retypes the textarea while the resume is
+  // in-flight (or before they click "Resume + send").
+  const [queuedMessage, setQueuedMessage] = useState('');
+  const [queuedImages, setQueuedImages] = useState<readonly PendingImage[]>([]);
+  const [showResumePromptInline, setShowResumePromptInline] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Image attach is allowed on dead Claude sessions too — the message + images
+  // get queued and flush after resume succeeds.
   const imagesEnabled = agent === 'claude' && !disabled;
   const { images, error, addImageFromFile, removeImage, clear } = imagePaste;
 
   const submit = (): void => {
     const t = text.trim();
     if (t.length === 0 && images.length === 0) return;
+    if (!alive) {
+      // Intercept: capture the message-as-of-submit-time + currently-attached
+      // images and surface the inline "Resume + send" CTA. Anything the user
+      // types AFTER this point stays in the textarea (does NOT auto-send).
+      setQueuedMessage(text);
+      setQueuedImages(images.slice());
+      setShowResumePromptInline(true);
+      return;
+    }
     if (images.length > 0) {
       onSend(
         t,
@@ -42,6 +77,43 @@ export function InputBox({
     }
     setText('');
     clear();
+  };
+
+  const onResumeAndSend = async (): Promise<void> => {
+    // Snapshot the captured payload, then drop the inline CTA before any
+    // awaits so a slow resume doesn't strand a stale CTA on screen.
+    const captured = queuedMessage;
+    const capturedImages = queuedImages;
+    setShowResumePromptInline(false);
+    setQueuedMessage('');
+    setQueuedImages([]);
+    // Strip the captured prefix from the live textarea ONLY if it's still
+    // there. If the user has erased + retyped during the wait, leave their
+    // current text alone — anything they've typed since is the NEXT message.
+    if (text.startsWith(captured)) {
+      setText(text.slice(captured.length));
+    }
+    // Also drop the captured images from the live attach list, ONLY if those
+    // exact ids still exist. User-added images during the wait survive.
+    const capturedIds = new Set(capturedImages.map((i) => i.id));
+    if (capturedIds.size > 0) {
+      for (const id of capturedIds) {
+        if (images.some((i) => i.id === id)) removeImage(id);
+      }
+    }
+    await onResume();
+    const t = captured.trim();
+    if (capturedImages.length > 0) {
+      onSend(
+        t,
+        capturedImages.map((img) => ({ mime: img.mime, base64: img.base64 })),
+      );
+    } else {
+      onSend(t);
+    }
+    // Do NOT touch setText/clear here — anything currently in the textarea
+    // is the user's NEXT message, queued during resume; they will send it
+    // manually with the next click.
   };
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -98,6 +170,18 @@ export function InputBox({
       )}
       <ImageThumbnails images={images} onRemove={removeImage} />
       {error && <div className="image-attach-error">{error}</div>}
+      {showResumePromptInline && (
+        <div className="resume-prompt">
+          <span>Sending will resume the session — </span>
+          <button
+            type="button"
+            className="resume-prompt-button"
+            onClick={() => void onResumeAndSend()}
+          >
+            Resume + send
+          </button>
+        </div>
+      )}
       <textarea
         value={text}
         placeholder={

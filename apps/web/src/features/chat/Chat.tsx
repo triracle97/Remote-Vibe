@@ -110,7 +110,13 @@ export function Chat({
       <InputBox
         onSend={onSend}
         onStop={onStop}
-        disabled={(!session.alive) || Boolean(inputDisabled)}
+        // T13: Do NOT disable on dead sessions — InputBox stays interactive so
+        // submit can be intercepted and surface the inline "Resume + send" CTA.
+        // Only orthogonal disablers (e.g. global error banner via inputDisabled)
+        // gate the textarea here.
+        disabled={Boolean(inputDisabled)}
+        alive={session.alive}
+        onResume={async () => useSessionsStore.getState().resume(session.sessionId)}
         currentProjectPath={session.projectPath}
         agent={session.agent}
         imagePaste={imagePaste}
