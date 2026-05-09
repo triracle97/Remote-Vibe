@@ -9,13 +9,15 @@ interface MessageBubbleProps {
 
 const systemBubble = 'bubble system flex justify-center my-2 text-[var(--color-text-dim)] italic text-xs font-mono';
 const userBubble =
-  'bubble user max-w-[85%] ml-auto px-4 py-2.5 my-1 rounded-2xl bg-[var(--color-bubble-user)] text-white text-[15px] leading-relaxed whitespace-pre-wrap break-words';
+  'bubble user max-w-[85%] ml-auto px-3.5 py-2 my-1 rounded-2xl bg-[var(--color-bubble-user)] text-white text-[15px] leading-relaxed break-words';
 const assistantBubble =
-  'bubble assistant max-w-[85%] mr-auto px-4 py-2.5 my-1 rounded-2xl bg-[var(--color-bubble-ai)] text-[var(--color-text)] text-[15px] leading-relaxed whitespace-pre-wrap break-words';
-const deltaBubble = 'bubble-delta px-1 bg-[var(--color-bubble-ai)]';
-
+  'bubble assistant max-w-[85%] mr-auto px-3.5 py-2 my-1 rounded-2xl bg-[var(--color-bubble-ai)] text-[var(--color-text)] text-[15px] leading-relaxed break-words';
 export function MessageBubble({ event }: MessageBubbleProps): JSX.Element | null {
   if (event.superseded) return null;
+  // stream_delta events are not rendered inline. Chat collapses any in-flight
+  // stream_delta run into a single ThinkingPill at the end of the transcript,
+  // and the consolidated `assistant` event takes over once it arrives.
+  if (event.type === 'stream_delta') return null;
   if (event.type === 'system' && event.event === 'session_created') {
     return <div className={systemBubble}><span>session started</span></div>;
   }
@@ -26,10 +28,6 @@ export function MessageBubble({ event }: MessageBubbleProps): JSX.Element | null
         <span>session ended (exit {event.exitCode ?? '?'}{reason ? `, ${reason}` : ''})</span>
       </div>
     );
-  }
-  if (event.type === 'stream_delta') {
-    const delta = (event.payload as { delta?: string }).delta ?? '';
-    return <span className={deltaBubble}>{delta}</span>;
   }
   if (event.type === 'assistant') {
     const payload = event.payload as { text?: string; toolUse?: { toolName: string; input: unknown } };

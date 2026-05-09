@@ -16,17 +16,20 @@
     inset: 0;
     width: 100%;
   }
-  /* Pin the root to the actual visual viewport. --vvh is updated by
-     main.tsx via the visualViewport API; falls back to dvh/100% on
-     engines that don't support it. When the keyboard opens, --vvh
-     shrinks and #root shrinks with it — so there is no off-screen
-     area below the chat input that the user could ever scroll into. */
+  /* Pin the root to the on-screen area (excluding the keyboard). Use the
+     MIN of dvh and the JS-tracked --vvh so whichever is more responsive
+     wins each frame: on modern iOS Safari with `interactive-widget=
+     resizes-content` (set in index.html), 100dvh shrinks continuously
+     during keyboard animation; on older engines visualViewport.height
+     (--vvh) shrinks instead. Taking the smaller of the two means the
+     chat input rides the keyboard edge without the ~1s visualViewport
+     event lag. */
   #root {
     position: fixed;
     top: 0;
     left: 0;
     width: 100%;
-    height: var(--vvh, 100dvh);
+    height: min(100dvh, var(--vvh, 100dvh));
   }
 }
 
@@ -37,6 +40,28 @@
 @media (max-width: 767px) {
   input, textarea, select {
     font-size: 16px;
+  }
+}
+
+/* iOS Safari focus-scroll suppression. When an input/textarea is focused,
+   Safari scrolls the layout viewport to bring the element into view —
+   even with body position:fixed and #root pinned to vvh — causing the
+   page to "jump" and exposing area below the chat input. Trick: a
+   focused element with opacity 0 is treated as invisible, so Safari
+   skips its scroll-into-view step. The animation flicks opacity from 0
+   to 1 in 0.01s (visually imperceptible) every time focus is gained,
+   which kills the jump without affecting visible rendering.
+   `@supports (-webkit-touch-callout: none)` is true only on iOS Safari
+   so this never runs on desktop / other browsers. */
+@supports (-webkit-touch-callout: none) {
+  @keyframes prevent-ios-focus-scroll {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  input:focus,
+  textarea:focus,
+  [contenteditable]:focus {
+    animation: prevent-ios-focus-scroll 0.01s;
   }
 }
 

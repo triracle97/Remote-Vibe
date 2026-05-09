@@ -64,7 +64,7 @@ describe('MessageBubble', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders stream_delta unchanged (no markdown) when not superseded', () => {
+  it('returns null for stream_delta (Chat collapses runs into a ThinkingPill)', () => {
     const { container } = render(
       <MessageBubble
         event={ev({
@@ -75,9 +75,7 @@ describe('MessageBubble', () => {
         })}
       />,
     );
-    // stream_delta shows raw text in <span class="bubble-delta">; no MarkdownRenderer.
-    expect(container.querySelector('[data-test="md-renderer"]')).toBeNull();
-    expect(container.querySelector('span.bubble-delta')?.textContent).toBe('**not markdown**');
+    expect(container.firstChild).toBeNull();
   });
 
   it('renders tool_use bubble unchanged (no markdown)', () => {

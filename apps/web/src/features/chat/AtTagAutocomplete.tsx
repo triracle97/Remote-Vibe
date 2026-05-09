@@ -100,7 +100,7 @@ export const AtTagAutocomplete = forwardRef<AtTagAutocompleteHandle, AtTagAutoco
     if (!open) return null;
 
     return (
-      <div className="autocomplete-popup at-tag-autocomplete absolute bottom-full left-0 right-0 mb-2 max-h-[40vh] overflow-y-auto z-30 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-2xl" role="listbox" aria-label="File suggestions">
+      <div className="autocomplete-popup at-tag-autocomplete absolute bottom-full left-0 right-0 mb-2 max-h-[32vh] overflow-y-auto z-30 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-2xl" role="listbox" aria-label="File suggestions">
         {visible.map((h, i) => (
           <button
             key={h.fullPath}

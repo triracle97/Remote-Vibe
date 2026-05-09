@@ -1,5 +1,6 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { getHighlighter, CURATED_LANGUAGES } from './shiki-loader';
+import { useState, type ReactNode } from 'react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { MermaidBlock } from './MermaidBlock';
 
 interface CodeBlockProps {
@@ -7,10 +8,41 @@ interface CodeBlockProps {
   children?: ReactNode;
 }
 
+const LANG_ALIASES: Record<string, string> = {
+  ts: 'typescript',
+  tsx: 'tsx',
+  js: 'javascript',
+  jsx: 'jsx',
+  node: 'javascript',
+  shell: 'bash',
+  shellscript: 'bash',
+  console: 'bash',
+  zsh: 'bash',
+  sh: 'bash',
+  py: 'python',
+  python3: 'python',
+  rs: 'rust',
+  golang: 'go',
+  yml: 'yaml',
+  md: 'markdown',
+  docker: 'docker',
+  dockerfile: 'docker',
+  htm: 'html',
+  patch: 'diff',
+  cpp: 'cpp',
+  cxx: 'cpp',
+  'c++': 'cpp',
+  cs: 'csharp',
+  kt: 'kotlin',
+  rb: 'ruby',
+};
+
 function extractLang(className?: string): string | null {
   if (!className) return null;
   const m = /\blanguage-([a-zA-Z0-9_+-]+)\b/.exec(className);
-  return m ? m[1]! : null;
+  if (!m) return null;
+  const raw = m[1]!.toLowerCase();
+  return LANG_ALIASES[raw] ?? raw;
 }
 
 function nodeToString(children: ReactNode): string {
@@ -38,12 +70,10 @@ function CodeFenceWrapper({
   lang,
   source,
   body,
-  devCaption,
 }: {
   lang: string | null;
   source: string;
   body: ReactNode;
-  devCaption?: string;
 }): JSX.Element {
   const [copied, setCopied] = useState<'idle' | 'ok' | 'fail'>('idle');
   const canCopy =
@@ -79,12 +109,24 @@ function CodeFenceWrapper({
         </button>
       )}
       {body}
-      {devCaption !== undefined && (
-        <div className="md-code-dev-caption">{devCaption}</div>
-      )}
     </div>
   );
 }
+
+const PRISM_STYLE: React.CSSProperties = {
+  margin: 0,
+  padding: '0.5em 0.7em',
+  background: 'transparent',
+  fontFamily: 'var(--font-mono)',
+  fontSize: '12px',
+  lineHeight: 1.45,
+};
+
+const PRISM_CODE_STYLE: React.CSSProperties = {
+  fontFamily: 'inherit',
+  fontSize: 'inherit',
+  background: 'transparent',
+};
 
 export function CodeBlock({ className, children }: CodeBlockProps): JSX.Element {
   const source = nodeToString(children);
@@ -99,65 +141,34 @@ export function CodeBlock({ className, children }: CodeBlockProps): JSX.Element 
     return <MermaidBlock source={source.trim()} />;
   }
 
-  const supported = lang !== null && (CURATED_LANGUAGES as readonly string[]).includes(lang);
-
-  if (supported) {
-    return <ShikiBlock lang={lang!} source={source} />;
-  }
-
-  // Non-curated language OR fenced code without a language — plain block wrapper.
-  // Per spec §6: dev mode shows a small caption naming the unhighlighted lang.
-  const devCaption =
-    import.meta.env.DEV && lang !== null ? `language \`${lang}\` not highlighted` : undefined;
-
-  return (
-    <CodeFenceWrapper
-      lang={lang}
-      source={source}
-      body={
-        <pre>
-          <code>{children}</code>
-        </pre>
-      }
-      {...(devCaption !== undefined ? { devCaption } : {})}
-    />
-  );
-}
-
-function ShikiBlock({ lang, source }: { lang: string; source: string }): JSX.Element {
-  const [html, setHtml] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getHighlighter().then((h) => {
-      if (cancelled) return;
-      try {
-        setHtml(h.codeToHtml(source, { lang, theme: 'github-dark' }));
-      } catch {
-        setHtml(null); // fall through to fallback below
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [lang, source]);
-
-  if (html !== null) {
+  if (lang !== null) {
     return (
       <CodeFenceWrapper
         lang={lang}
         source={source}
-        body={<div dangerouslySetInnerHTML={{ __html: html }} />}
+        body={
+          <SyntaxHighlighter
+            language={lang}
+            style={vscDarkPlus}
+            PreTag="pre"
+            customStyle={PRISM_STYLE}
+            codeTagProps={{ style: PRISM_CODE_STYLE }}
+          >
+            {source.replace(/\n$/, '')}
+          </SyntaxHighlighter>
+        }
       />
     );
   }
+
+  // Fenced code without a language — plain block.
   return (
     <CodeFenceWrapper
-      lang={lang}
+      lang={null}
       source={source}
       body={
         <pre>
-          <code>{source}</code>
+          <code>{children}</code>
         </pre>
       }
     />
