@@ -4,7 +4,6 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { useTerminalSession } from './useTerminalSession';
 import { TerminalHelperBar } from './TerminalHelperBar';
-import { useTerminalsStore } from '../../store/terminals';
 
 interface Props {
   termId: string;
@@ -13,8 +12,6 @@ interface Props {
 export function TerminalView({ termId }: Props): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
-  const removeFromStore = useTerminalsStore((s) => s.remove);
 
   const session = useTerminalSession({
     termId,
@@ -41,7 +38,6 @@ export function TerminalView({ termId }: Props): JSX.Element {
     term.open(container);
     fit.fit();
     xtermRef.current = term;
-    fitRef.current = fit;
 
     const onTermData = term.onData((d) => session.sendInput(d));
 
@@ -65,9 +61,11 @@ export function TerminalView({ termId }: Props): JSX.Element {
       window.clearTimeout(resizeTimer);
       onTermData.dispose();
       term.dispose();
-      removeFromStore(termId);
     };
-    // session is intentionally captured once; sendInput/resize identities can change but we want one-time setup.
+    // Effect deps: only termId. session.sendInput/resize are useCallback-stable
+    // per termId (see useTerminalSession). useTerminalSession's cleanup is
+    // declared first, so its `term_kill` send + listener teardown run before
+    // term.dispose() — no race where xterm.write fires after disposal.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [termId]);
 
