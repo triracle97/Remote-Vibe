@@ -448,7 +448,7 @@ export interface ServerSessionRenamedMsg {
   correlationId: string;
 }
 
-// ---------- Terminal mode (Phase 7) ----------
+// Phase 7 — terminal mode
 
 export interface ClientTermStartMsg {
   type: 'term_start';
@@ -457,17 +457,20 @@ export interface ClientTermStartMsg {
   rows: number;
   correlationId: string;
 }
+
 export interface ClientTermInputMsg {
   type: 'term_input';
   termId: string;
   data: string;
 }
+
 export interface ClientTermResizeMsg {
   type: 'term_resize';
   termId: string;
   cols: number;
   rows: number;
 }
+
 export interface ClientTermKillMsg {
   type: 'term_kill';
   termId: string;
@@ -481,11 +484,13 @@ export interface ServerTermStartedMsg {
   createdAt: number;
   correlationId: string;
 }
+
 export interface ServerTermOutputMsg {
   type: 'term_output';
   termId: string;
   data: string;
 }
+
 export interface ServerTermExitMsg {
   type: 'term_exit';
   termId: string;
