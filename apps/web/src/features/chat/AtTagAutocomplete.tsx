@@ -125,7 +125,7 @@ export const AtTagAutocomplete = forwardRef<AtTagAutocompleteHandle, AtTagAutoco
             )}
             <span className="autocomplete-row-primary flex flex-col gap-0.5 min-w-0 flex-1 text-[var(--color-accent)] font-mono">
               <span className="autocomplete-row-head flex items-center gap-2 min-w-0">
-                <span className="autocomplete-row-title flex-1 min-w-0 truncate text-[#dbe8ff]">{filenameFor(h.fullPath)}</span>
+                <span className="autocomplete-row-title flex-1 min-w-0 truncate text-[var(--color-text)] font-semibold">{filenameFor(h.fullPath)}</span>
                 <span className="autocomplete-row-insert text-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] border border-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] rounded-full px-1.5 py-[1px] text-[10px] max-w-[45%] truncate">{h.insertText}</span>
               </span>
               <span className="autocomplete-row-path text-[var(--color-text-dim)] text-[11px] truncate font-mono">{h.fullPath}</span>
