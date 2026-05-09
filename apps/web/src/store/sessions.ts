@@ -259,13 +259,20 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       set((s) => {
         const existing = s.sessions[m.webSessionId];
         const orderHasIt = s.order.includes(m.webSessionId);
-        if (!existing && orderHasIt) return s;
+        // Always clear transcriptOnly on resume — otherwise `inputDisabled`
+        // stays latched true and the chat input remains disabled even though
+        // the session is now live.
+        const transcriptOnly = s.transcriptOnly[m.webSessionId]
+          ? { ...s.transcriptOnly, [m.webSessionId]: false }
+          : s.transcriptOnly;
+        if (!existing && orderHasIt) return { transcriptOnly };
         if (!existing && !orderHasIt) {
-          return { order: [...s.order, m.webSessionId] };
+          return { order: [...s.order, m.webSessionId], transcriptOnly };
         }
         return {
           sessions: { ...s.sessions, [m.webSessionId]: { ...existing!, alive: true } },
           order: orderHasIt ? s.order : [...s.order, m.webSessionId],
+          transcriptOnly,
         };
       });
       const pending = pendingResumes.get(m.correlationId);

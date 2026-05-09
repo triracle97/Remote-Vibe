@@ -138,6 +138,9 @@ export function Chat({
             event={e}
           />
         ))}
+        {session.events.some((e) => e.type === 'stream_delta' && !e.superseded) && (
+          <ThinkingPill />
+        )}
       </div>
 
       {dragOver && imagesEnabled && (
@@ -178,6 +181,17 @@ export function Chat({
         imagePaste={imagePaste}
         sessionId={session.sessionId}
       />
+    </div>
+  );
+}
+
+function ThinkingPill(): JSX.Element {
+  return (
+    <div className="bubble-thinking" role="status" aria-live="polite">
+      <span className="dot" />
+      <span className="dot" />
+      <span className="dot" />
+      <span>Thinking…</span>
     </div>
   );
 }
