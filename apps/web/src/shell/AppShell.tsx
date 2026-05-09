@@ -12,6 +12,7 @@ import { useProfileStore } from '../features/profiles/profileStore';
 import { useProjectsStore } from '../features/projects/projectsStore';
 import { useSlashCommandStore } from '../features/chat/slashCommandStore';
 import { useFileSearchStore } from '../features/chat/fileSearchStore';
+import { useTerminalsStore } from '../store/terminals';
 import { ThemeProvider } from './ThemeProvider';
 import { NavRail } from './NavRail';
 import { ViewTransition } from './ViewTransition';
@@ -107,6 +108,7 @@ export function AppShell(): JSX.Element {
         useProfileStore.getState().applyServerMsg(m);
       }
       apply(m);
+      useTerminalsStore.getState().applyServerMsg(m);
     });
 
     client.connect();

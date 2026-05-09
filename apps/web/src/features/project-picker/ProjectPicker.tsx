@@ -9,6 +9,7 @@ import { Modal } from '../../shell/Modal';
 import type { AgentKind, Profile } from '../../types/protocol';
 import { DEFAULT_WORKSPACE_DIRS } from './default-workspaces';
 import { useDefaultWorkspacesStore } from './defaultWorkspacesStore';
+import { useConnectionStore } from '../../store/connection';
 
 const RECENT_KEY = 'mrt.recentProjects';
 const RECENT_MAX = 10;
@@ -44,7 +45,7 @@ export function rememberRecentProject(path: string): void {
 }
 
 export interface ProjectPickerSelection {
-  agent: AgentKind;
+  agent: AgentKind | 'terminal';
   /** Working dirs in order; first = primary cwd. Always non-empty when emitted. */
   dirs: string[];
   /** Back-compat alias for dirs[0]. */
@@ -58,12 +59,13 @@ interface ProjectPickerProps {
 }
 
 export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Element {
-  const [agent, setAgent] = useState<AgentKind>('claude');
+  const [agent, setAgent] = useState<AgentKind | 'terminal'>('claude');
   const [dirs, setDirs] = useState<string[]>([]);
   const [editorOpen, setEditorOpen] = useState(false);
   const accounts = useAccountsStore((s) => s.accounts);
   const selectedAccount = useAccountsStore((s) => s.selectedAccount);
   const setSelectedAccount = useAccountsStore((s) => s.setSelectedAccount);
+  const terminalCapable = useConnectionStore((s) => s.capabilities?.terminal ?? false);
   const profiles = useProfileStore((s) => s.profiles);
   const fetchProfiles = useProfileStore((s) => s.fetch);
   const defaultWorkspaces = useDefaultWorkspacesStore((s) => s.paths);
@@ -76,8 +78,9 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
   }, [fetchProfiles]);
 
   // Auto-load default profile for the chosen agent on first render after profiles arrive.
+  // Terminal has no profile concept — only Claude/Codex have profiles.
   const defaultProfile = useMemo(
-    () => profiles.find((p) => p.agent === agent && p.default),
+    () => (agent !== 'terminal' ? profiles.find((p) => p.agent === agent && p.default) : undefined),
     [profiles, agent],
   );
   useEffect(() => {
@@ -138,6 +141,7 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
     });
   };
 
+
   return (
     <Modal open={true} onClose={onCancel} ariaLabel="Select Project" maxWidthClass="max-w-lg">
       <div className="picker p-6">
@@ -171,8 +175,24 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
             />
             {' '}Codex
           </label>
+          {terminalCapable && (
+            <label>
+              <input
+                type="radio"
+                name="agent"
+                value="terminal"
+                checked={agent === 'terminal'}
+                onChange={() => {
+                  setAgent('terminal');
+                  setAutoLoaded(false);
+                  setDirs([]);
+                }}
+              />
+              {' '}Terminal
+            </label>
+          )}
         </div>
-        {agent === 'codex' && accounts.length > 0 && (
+        {agent !== 'terminal' && agent === 'codex' && accounts.length > 0 && (
           <div className="picker-account mb-3">
             <label>
               Account:&nbsp;
@@ -191,13 +211,15 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
             </label>
           </div>
         )}
-        <div className="picker-profile mb-3">
-          <ProfilePicker
-            agent={agent}
-            onSelect={applyProfile}
-            onManage={() => setEditorOpen(true)}
-          />
-        </div>
+        {agent !== 'terminal' && (
+          <div className="picker-profile mb-3">
+            <ProfilePicker
+              agent={agent}
+              onSelect={applyProfile}
+              onManage={() => setEditorOpen(true)}
+            />
+          </div>
+        )}
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -264,7 +286,7 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
       <ProfileEditor
         open={editorOpen}
         onClose={() => setEditorOpen(false)}
-        initialAgent={agent}
+        {...(agent !== 'terminal' ? { initialAgent: agent } : {})}
       />
     </Modal>
   );

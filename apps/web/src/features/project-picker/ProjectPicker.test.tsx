@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, fireEvent, cleanup } from '@testing-library/react';
+import { render, fireEvent, cleanup, screen } from '@testing-library/react';
 import { ProjectPicker } from './ProjectPicker';
 import { useProfileStore } from '../profiles/profileStore';
 import { useAccountsStore } from '../../store/accounts';
+import { useConnectionStore } from '../../store/connection';
 
 vi.mock('../../services/bridge-client-singleton', () => ({
   getBridgeClient: () => ({ send: vi.fn() }),
@@ -19,6 +20,7 @@ describe('ProjectPicker', () => {
     window.localStorage.clear();
     useProfileStore.setState({ profiles: [], loading: false });
     useAccountsStore.setState({ accounts: [], selectedAccount: null });
+    useConnectionStore.setState({ capabilities: { terminal: false } });
   });
 
   afterEach(() => {
@@ -68,5 +70,17 @@ describe('ProjectPicker', () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]?.textContent).toContain('/Users/me/saved-primary');
     expect(rows[1]?.textContent).toContain('/Users/me/saved-extra');
+  });
+
+  it('shows Terminal radio when capabilities.terminal is true', () => {
+    useConnectionStore.setState({ capabilities: { terminal: true } });
+    render(<ProjectPicker onPick={() => {}} onCancel={() => {}} />);
+    expect(screen.getByLabelText(/terminal/i)).toBeTruthy();
+  });
+
+  it('hides Terminal radio when capabilities.terminal is false', () => {
+    useConnectionStore.setState({ capabilities: { terminal: false } });
+    render(<ProjectPicker onPick={() => {}} onCancel={() => {}} />);
+    expect(screen.queryByLabelText(/terminal/i)).toBeNull();
   });
 });

@@ -19,6 +19,7 @@ export function useNewSession(client: BridgeClient): {
   const [pickerOpen, setPickerOpen] = useState(false);
   const awaitingCorrelationRef = useRef<string | null>(null);
 
+  // Existing AI-session match path (unchanged).
   useEffect(() => {
     const target = awaitingCorrelationRef.current;
     if (!target) return;
@@ -37,20 +38,43 @@ export function useNewSession(client: BridgeClient): {
     }
   }, [sessionsMap, navigate]);
 
+  // Subscribe to term_started replies for navigation.
+  useEffect(() => {
+    if (typeof client.on !== 'function') return;
+    const off = client.on('message', (m) => {
+      const target = awaitingCorrelationRef.current;
+      if (!target) return;
+      if (m.type === 'term_started' && m.correlationId === target) {
+        awaitingCorrelationRef.current = null;
+        navigate(`/terminal/${m.termId}`);
+      }
+    });
+    return off;
+  }, [client, navigate]);
+
   const pickerNode = pickerOpen ? (
     <ProjectPicker
       onCancel={() => setPickerOpen(false)}
       onPick={(selection: ProjectPickerSelection) => {
         const correlationId = newCorrelationId();
         awaitingCorrelationRef.current = correlationId;
-        client.send({
-          type: 'start',
-          agent: selection.agent,
-          dirs: selection.dirs,
-          projectPath: selection.projectPath,
-          ...(selection.account ? { account: selection.account } : {}),
-          correlationId,
-        });
+        if (selection.agent === 'terminal') {
+          // Single dir only for terminal; ignore extras if any.
+          const cwd = selection.dirs[0]!;
+          // Default starting size; FitAddon resizes on first paint.
+          const cols = 80;
+          const rows = 24;
+          client.send({ type: 'term_start', cwd, cols, rows, correlationId });
+        } else {
+          client.send({
+            type: 'start',
+            agent: selection.agent,
+            dirs: selection.dirs,
+            projectPath: selection.projectPath,
+            ...(selection.account ? { account: selection.account } : {}),
+            correlationId,
+          });
+        }
         setPickerOpen(false);
       }}
     />
