@@ -6,18 +6,18 @@ import './index.css';
 import 'katex/dist/katex.min.css';
 import './features/markdown/markdown.css';
 
-// iOS Safari pans the window when an input is focused near the bottom of
-// the viewport, even with body overflow:hidden + position:fixed. Snap the
-// window back to (0, 0) any time it tries to drift. Cheap and bulletproof.
+// Track the visual viewport so the app shell can size itself exactly to
+// the on-screen area (excluding the keyboard) on iOS Safari. dvh alone
+// is not reliable across iOS versions; visualViewport.height is.
 if (typeof window !== 'undefined') {
-  const snap = (): void => {
-    if (window.scrollX !== 0 || window.scrollY !== 0) {
-      window.scrollTo(0, 0);
-    }
+  const setVVH = (): void => {
+    const h = window.visualViewport?.height ?? window.innerHeight;
+    document.documentElement.style.setProperty('--vvh', `${h}px`);
   };
-  window.addEventListener('scroll', snap, { passive: true });
-  window.addEventListener('focusin', snap);
-  window.visualViewport?.addEventListener('scroll', snap);
+  setVVH();
+  window.addEventListener('resize', setVVH);
+  window.visualViewport?.addEventListener('resize', setVVH);
+  window.visualViewport?.addEventListener('scroll', setVVH);
 }
 
 createRoot(document.getElementById('root')!).render(

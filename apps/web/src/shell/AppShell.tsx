@@ -130,7 +130,7 @@ export function AppShell(): JSX.Element {
 
   return (
     <ThemeProvider>
-      <div className="flex flex-col md:flex-row h-[100dvh] bg-[var(--color-bg)] text-[var(--color-text)]">
+      <div className="flex flex-col md:flex-row h-full bg-[var(--color-bg)] text-[var(--color-text)]">
         <div className={onSessionPage ? 'hidden md:flex' : 'order-last md:order-first flex'}>
           <NavRail />
         </div>

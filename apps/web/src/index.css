@@ -12,14 +12,21 @@
     background: var(--color-bg);
     color: var(--color-text);
     -webkit-font-smoothing: antialiased;
-    /* Lock body to viewport so iOS Safari can't expand it. */
     position: fixed;
     inset: 0;
     width: 100%;
   }
+  /* Pin the root to the actual visual viewport. --vvh is updated by
+     main.tsx via the visualViewport API; falls back to dvh/100% on
+     engines that don't support it. When the keyboard opens, --vvh
+     shrinks and #root shrinks with it — so there is no off-screen
+     area below the chat input that the user could ever scroll into. */
   #root {
     position: fixed;
-    inset: 0;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: var(--vvh, 100dvh);
   }
 }
 
