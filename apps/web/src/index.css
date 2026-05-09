@@ -2,16 +2,21 @@
 
 @layer base {
   html, body, #root { height: 100%; }
-  html, body { overflow: hidden; overscroll-behavior: none; }
+  html, body {
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
   body {
     margin: 0;
     font-family: var(--font-sans);
     background: var(--color-bg);
     color: var(--color-text);
     -webkit-font-smoothing: antialiased;
+    /* Lock body to viewport so iOS Safari can't expand it. */
+    position: fixed;
+    inset: 0;
+    width: 100%;
   }
-  /* Pin the root so iOS Safari's keyboard-focused scroll cannot lift the
-     viewport past the chat input. Combined with overflow:hidden on body. */
   #root {
     position: fixed;
     inset: 0;
@@ -72,10 +77,9 @@
   .scrollbar-hide::-webkit-scrollbar { display: none; }
 }
 
-/* Contain rubber-band scrolling inside scrollable regions so it never
-   leaks to the body (which is overflow:hidden anyway, but iOS treats
-   nested scrollers as escapable without this). */
+/* Contain rubber-band inside scrollers so it doesn't leak to document. */
 [class*="overflow-y-auto"],
 [class*="overflow-auto"] {
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
