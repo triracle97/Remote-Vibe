@@ -50,6 +50,10 @@ export function AppShell(): JSX.Element {
       setError(e.message);
     });
     const offMessage = client.on('message', (m) => {
+      if (m.type === 'system' && m.event === 'init') {
+        useConnectionStore.getState().setCapabilities(m.capabilities ?? { terminal: false });
+        // Don't return — fall through to existing handling.
+      }
       if (m.type === 'account_list') {
         applyAccountList(m.accounts);
         return;

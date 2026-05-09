@@ -81,7 +81,11 @@ export type ClientMsg =
   | ClientSetDefaultProfileMsg
   | ClientListSlashCommandsMsg
   | ClientSearchFilesMsg
-  | ClientRenameSessionMsg;
+  | ClientRenameSessionMsg
+  | ClientTermStartMsg
+  | ClientTermInputMsg
+  | ClientTermResizeMsg
+  | ClientTermKillMsg;
 
 export type AgentEvent =
   | { kind: 'assistant_text'; text: string }
@@ -93,6 +97,8 @@ export type AgentEvent =
 export interface ServerInitMsg {
   type: 'system';
   event: 'init';
+  /** Optional capability flags. Absence ≡ all caps false. */
+  capabilities?: { terminal: boolean };
 }
 
 export interface ServerLifecycleMsg {
@@ -220,7 +226,10 @@ export type ServerErrorCode =
   | 'profile_not_found'
   | 'session_name_invalid'
   | 'file_search_failed'
-  | 'slash_commands_failed';
+  | 'slash_commands_failed'
+  | 'terminal_not_found'
+  | 'terminal_spawn_failed'
+  | 'pty_not_available';
 
 export interface ServerErrorMsg {
   type: 'error';
@@ -249,7 +258,10 @@ export type ServerMsg =
   | ServerProfileDefaultSetMsg
   | ServerSlashCommandsListMsg
   | ServerFileSearchResultsMsg
-  | ServerSessionRenamedMsg;
+  | ServerSessionRenamedMsg
+  | ServerTermStartedMsg
+  | ServerTermOutputMsg
+  | ServerTermExitMsg;
 
 // Phase 5 — history viewer + session resume
 
@@ -434,4 +446,54 @@ export interface ServerSessionRenamedMsg {
   sessionId: string;
   name: string;
   correlationId: string;
+}
+
+// Phase 7 — terminal mode
+
+export interface ClientTermStartMsg {
+  type: 'term_start';
+  cwd: string;
+  cols: number;
+  rows: number;
+  correlationId: string;
+}
+
+export interface ClientTermInputMsg {
+  type: 'term_input';
+  termId: string;
+  data: string;
+}
+
+export interface ClientTermResizeMsg {
+  type: 'term_resize';
+  termId: string;
+  cols: number;
+  rows: number;
+}
+
+export interface ClientTermKillMsg {
+  type: 'term_kill';
+  termId: string;
+  correlationId: string;
+}
+
+export interface ServerTermStartedMsg {
+  type: 'term_started';
+  termId: string;
+  cwd: string;
+  createdAt: number;
+  correlationId: string;
+}
+
+export interface ServerTermOutputMsg {
+  type: 'term_output';
+  termId: string;
+  data: string;
+}
+
+export interface ServerTermExitMsg {
+  type: 'term_exit';
+  termId: string;
+  exitCode: number | null;
+  signal: string | null;
 }
