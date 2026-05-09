@@ -23,6 +23,7 @@ import { ProfileStore } from './profile-store.js';
 import { SlashCommandsScanner } from './slash-commands.js';
 import { FileSearch } from './file-search.js';
 import { Notifier } from './notifier.js';
+import { TerminalManager } from './terminal-manager.js';
 
 async function main(): Promise<void> {
   // Load .env from cwd if present. Existing process env (e.g. shell exports)
@@ -147,6 +148,12 @@ async function main(): Promise<void> {
       return resolvedAllowed.some((d) => real === d || real.startsWith(d + sep));
     },
   });
+  // Phase 7 — terminal mode. Task 6 will add the capability probe + pty-not-available
+  // graceful degradation. For now, create the manager unconditionally so the type
+  // system is satisfied; it will be replaced in Task 6 with a try/require guard.
+  const terminalManager = new TerminalManager({
+    allowedDirs: cfg.allowedDirs,
+  });
   attachWebSocket({
     server,
     token: cfg.token,
@@ -159,6 +166,7 @@ async function main(): Promise<void> {
     profileStore,
     slashCommands,
     fileSearch,
+    terminalManager,
   });
 
   await new Promise<void>((res, rej) => {

@@ -3,12 +3,18 @@ import { createServer, type Server } from 'node:http';
 import { WebSocket } from 'ws';
 import { attachWebSocket } from '../websocket.js';
 import { SessionManager } from '../session.js';
+import { TerminalManager } from '../terminal-manager.js';
 import { EventEmitter } from 'node:events';
 import type { HistoryScanner } from '../history-scanner.js';
 import type { HistoryEntry, Profile, SearchHit, SlashCommand } from '../types.js';
 import type { ProfileStore } from '../profile-store.js';
 import type { SlashCommandsScanner } from '../slash-commands.js';
 import type { FileSearch } from '../file-search.js';
+
+const stubTermMgr = new TerminalManager({
+  allowedDirs: [],
+  procFactory: () => ({} as never),
+});
 
 const TOKEN = 'a'.repeat(32);
 
@@ -149,6 +155,7 @@ async function startServer(opts: {
     profileStore,
     slashCommands,
     fileSearch,
+    terminalManager: stubTermMgr,
   });
 
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
@@ -466,6 +473,7 @@ describe('websocket', () => {
       profileStore: makeFakeProfileStore(),
       slashCommands: makeFakeSlashCommands(),
       fileSearch: makeFakeFileSearch(),
+      terminalManager: stubTermMgr,
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
     const addr = server.address();

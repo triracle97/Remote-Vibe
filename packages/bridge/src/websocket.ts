@@ -1,5 +1,6 @@
 import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { randomUUID } from 'node:crypto';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
   extractTokenFromRequest,
@@ -15,6 +16,7 @@ import type { HistoryScanner } from './history-scanner.js';
 import type { ProfileStore } from './profile-store.js';
 import type { SlashCommandsScanner } from './slash-commands.js';
 import type { FileSearch } from './file-search.js';
+import type { TerminalManager } from './terminal-manager.js';
 import type {
   ClientMsg,
   ServerErrorMsg,
@@ -35,6 +37,7 @@ export interface AttachWsOpts {
   profileStore: ProfileStore;
   slashCommands: SlashCommandsScanner;
   fileSearch: FileSearch;
+  terminalManager: TerminalManager;
 }
 
 export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
@@ -63,7 +66,41 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
     });
   });
 
+  // wsId → ws (so terminalManager output/exit can find the right socket)
+  const wsByConn = new Map<string, WebSocket>();
+  // termId → wsId, populated on term_started, removed on term_exit / killByWs.
+  const termOwner = new Map<string, string>();
+
+  opts.terminalManager.on('output', (termId: string, data: string) => {
+    const wsId = termOwner.get(termId);
+    if (!wsId) return;
+    const ws = wsByConn.get(wsId);
+    if (!ws || ws.readyState !== ws.OPEN) return;
+    ws.send(JSON.stringify({ type: 'term_output', termId, data } satisfies import('./types.js').ServerTermOutputMsg));
+    opts.terminalManager.reportBufferedAmount(termId, ws.bufferedAmount);
+  });
+
+  opts.terminalManager.on('exit', (termId: string, exitCode: number | null, signal: string | null) => {
+    const wsId = termOwner.get(termId);
+    termOwner.delete(termId);
+    if (!wsId) return;
+    const ws = wsByConn.get(wsId);
+    if (!ws || ws.readyState !== ws.OPEN) return;
+    ws.send(JSON.stringify({ type: 'term_exit', termId, exitCode, signal } satisfies import('./types.js').ServerTermExitMsg));
+  });
+
+  // IMPORTANT: the manager event was renamed from 'error' to 'policy_violation'
+  // during Task 4 review (Node's EventEmitter crashes on unhandled 'error').
+  opts.terminalManager.on('policy_violation', (e: { wsId: string; code: 'terminal_not_found'; termId: string }) => {
+    const ws = wsByConn.get(e.wsId);
+    if (!ws || ws.readyState !== ws.OPEN) return;
+    ws.send(JSON.stringify({ type: 'error', code: e.code, message: `terminal ${e.termId} not found` } satisfies import('./types.js').ServerErrorMsg));
+  });
+
   wss.on('connection', (ws) => {
+    const wsId = randomUUID();
+    wsByConn.set(wsId, ws);
+
     const send = (m: ServerMsg) => {
       try {
         ws.send(JSON.stringify(m));
@@ -73,15 +110,27 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
     };
     const broadcast = (m: ServerMsg) => send(m);
     opts.sessionManager.on('broadcast', broadcast);
-    ws.on('close', () => opts.sessionManager.off('broadcast', broadcast));
+    ws.on('close', () => {
+      opts.sessionManager.off('broadcast', broadcast);
+      // Kill any PTYs spawned by this ws.
+      opts.terminalManager.killByWs(wsId);
+      // Drop entries from termOwner whose value is this wsId.
+      for (const [termId, owner] of termOwner) {
+        if (owner === wsId) termOwner.delete(termId);
+      }
+      wsByConn.delete(wsId);
+    });
 
     send({ type: 'system', event: 'init' });
 
     ws.on('message', (raw) => {
       void handleMessage(
         ws,
+        wsId,
         raw,
         opts.sessionManager,
+        opts.terminalManager,
+        termOwner,
         send,
         opts.accounts,
         opts.promptStore,
@@ -100,8 +149,11 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
 
 async function handleMessage(
   _ws: WebSocket,
+  wsId: string,
   raw: import('ws').RawData,
   sessionManager: SessionManager,
+  terminalManager: TerminalManager,
+  termOwner: Map<string, string>,
   send: (m: ServerMsg) => void,
   accounts: Map<string, CodexAccount>,
   promptStore: PromptStore | undefined,
@@ -500,6 +552,38 @@ async function handleMessage(
           });
         }
         break;
+      }
+      case 'term_start': {
+        try {
+          const session = await terminalManager.spawn(wsId, msg.cwd, msg.cols, msg.rows);
+          termOwner.set(session.termId, wsId);
+          send({
+            type: 'term_started',
+            termId: session.termId,
+            cwd: session.cwd,
+            createdAt: session.createdAt,
+            correlationId: msg.correlationId,
+          });
+        } catch (err) {
+          const code = (err as { code?: string }).code === 'path_outside_allowlist'
+            ? 'path_outside_allowlist'
+            : 'terminal_spawn_failed';
+          sendError(send, code as never, (err as Error).message, msg.correlationId);
+        }
+        return;
+      }
+      case 'term_input': {
+        terminalManager.sendInput(wsId, msg.termId, msg.data);
+        return;
+      }
+      case 'term_resize': {
+        terminalManager.resize(wsId, msg.termId, msg.cols, msg.rows);
+        return;
+      }
+      case 'term_kill': {
+        terminalManager.kill(wsId, msg.termId);
+        // Reply is the eventual term_exit broadcast; ack here is implicit.
+        return;
       }
       default:
         sendError(send, 'unsupported_message', `unknown type ${(msg as { type: string }).type}`, (msg as { correlationId?: string }).correlationId);
