@@ -32,6 +32,14 @@ async function withServer<T>(
   termMgr: TerminalManager,
   fn: (url: string) => Promise<T>,
 ): Promise<T> {
+  return withServerCaps(termMgr, { terminal: true }, fn);
+}
+
+async function withServerCaps<T>(
+  termMgr: TerminalManager,
+  capabilities: { terminal: boolean },
+  fn: (url: string) => Promise<T>,
+): Promise<T> {
   const server = createServer((_req, res) => res.end());
   attachWebSocket({
     server,
@@ -45,6 +53,7 @@ async function withServer<T>(
     slashCommands: { listForSession: async () => [] } as never,
     fileSearch: { search: async () => ({ hits: [], truncated: false }) } as never,
     terminalManager: termMgr,
+    capabilities,
   });
   await new Promise<void>((res) => server.listen(0, '127.0.0.1', res));
   const port = (server.address() as AddressInfo).port;
@@ -119,6 +128,22 @@ function waitFor(msgs: ServerMsg[], predicate: (m: ServerMsg) => boolean, timeou
       setTimeout(check, 10);
     };
     check();
+  });
+}
+
+/** Receive one message matching predicate, up to timeoutMs. */
+function recv(ws: WebSocket, predicate: (m: ServerMsg) => boolean, timeoutMs = 3000): Promise<ServerMsg> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('recv: timed out')), timeoutMs);
+    ws.on('message', (raw) => {
+      try {
+        const m = JSON.parse(raw.toString()) as ServerMsg;
+        if (predicate(m)) {
+          clearTimeout(t);
+          resolve(m);
+        }
+      } catch { /* ignore */ }
+    });
   });
 }
 
@@ -200,6 +225,20 @@ describe('websocket terminal routing', () => {
       // No error event expected (silent drop for unknown termId).
       await new Promise((r) => setTimeout(r, 30));
       ws2.close();
+    });
+  });
+
+  it('rejects term_start with pty_not_available when capability is false', async () => {
+    const mgr = makeMgr();
+    await withServerCaps(mgr, { terminal: false }, async (url) => {
+      const { ws, ready } = connect(url);
+      await ready;
+      ws.send(JSON.stringify({
+        type: 'term_start', cwd: '/Users/me/code', cols: 80, rows: 24, correlationId: 'c1',
+      }));
+      const err = await recv(ws, (m) => m.type === 'error' && (m as { code?: string }).code === 'pty_not_available');
+      expect(err).toMatchObject({ code: 'pty_not_available' });
+      ws.close();
     });
   });
 });

@@ -156,6 +156,7 @@ async function startServer(opts: {
     slashCommands,
     fileSearch,
     terminalManager: stubTermMgr,
+    capabilities: { terminal: true },
   });
 
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
@@ -214,7 +215,7 @@ describe('websocket', () => {
     const opened = new Promise<void>((r) => sock.on('open', () => r()));
     await opened;
     const msg = await once<Buffer>(sock as unknown as EventEmitter, 'message');
-    expect(JSON.parse(msg.toString())).toEqual({ type: 'system', event: 'init' });
+    expect(JSON.parse(msg.toString())).toMatchObject({ type: 'system', event: 'init' });
     sock.close();
     await close();
   });
@@ -474,6 +475,7 @@ describe('websocket', () => {
       slashCommands: makeFakeSlashCommands(),
       fileSearch: makeFakeFileSearch(),
       terminalManager: stubTermMgr,
+      capabilities: { terminal: true },
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
     const addr = server.address();

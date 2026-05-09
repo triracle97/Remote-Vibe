@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve, sep } from 'node:path';
 import { existsSync } from 'node:fs';
 import { realpath as fsRealpath } from 'node:fs/promises';
@@ -33,6 +34,19 @@ async function main(): Promise<void> {
   if (applied > 0) console.log(`[bridge] loaded ${applied} value(s) from .env`);
 
   const cfg = loadEnv(process.env);
+
+  const requireCJS = createRequire(import.meta.url);
+  let terminalCapable = false;
+  try {
+    requireCJS('node-pty');
+    terminalCapable = true;
+  } catch (err) {
+    console.warn(
+      '[bridge] node-pty failed to load — terminal mode disabled:',
+      (err as Error).message,
+    );
+  }
+
   const accounts = loadCodexAccounts({ dataDir: cfg.dataDir, env: process.env });
   console.log(`[bridge] loaded ${accounts.size} codex account(s): ${[...accounts.keys()].join(', ')}`);
 
@@ -148,9 +162,6 @@ async function main(): Promise<void> {
       return resolvedAllowed.some((d) => real === d || real.startsWith(d + sep));
     },
   });
-  // Phase 7 — terminal mode. Task 6 will add the capability probe + pty-not-available
-  // graceful degradation. For now, create the manager unconditionally so the type
-  // system is satisfied; it will be replaced in Task 6 with a try/require guard.
   const terminalManager = new TerminalManager({
     allowedDirs: cfg.allowedDirs,
   });
@@ -167,6 +178,7 @@ async function main(): Promise<void> {
     slashCommands,
     fileSearch,
     terminalManager,
+    capabilities: { terminal: terminalCapable },
   });
 
   await new Promise<void>((res, rej) => {
@@ -176,14 +188,15 @@ async function main(): Promise<void> {
 
   console.log(`[bridge] open: http://${bindHost}:${cfg.port}/?token=<TOKEN>`);
 
-  const shutdown = (): void => {
+  const shutdown = async (): Promise<void> => {
     console.log('[bridge] shutting down');
     sessionManager.shutdown();
+    await terminalManager.shutdown();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 6000).unref();
   };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGINT', () => void shutdown());
 }
 
 main().catch((err) => {

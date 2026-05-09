@@ -39,6 +39,7 @@ export interface AttachWsOpts {
   slashCommands: SlashCommandsScanner;
   fileSearch: FileSearch;
   terminalManager: TerminalManager;
+  capabilities: { terminal: boolean };
 }
 
 export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
@@ -123,7 +124,7 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
       opts.terminalManager.killByWs(wsId);
     });
 
-    send({ type: 'system', event: 'init' });
+    send({ type: 'system', event: 'init', capabilities: opts.capabilities });
 
     ws.on('message', (raw) => {
       void handleMessage(
@@ -142,6 +143,7 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
         opts.profileStore,
         opts.slashCommands,
         opts.fileSearch,
+        opts.capabilities,
       );
     });
   });
@@ -169,6 +171,7 @@ async function handleMessage(
   profileStore: ProfileStore,
   slashCommands: SlashCommandsScanner,
   fileSearch: FileSearch,
+  capabilities: { terminal: boolean },
 ): Promise<void> {
   const mgr = sessionManager;
   let msg: ClientMsg;
@@ -560,6 +563,10 @@ async function handleMessage(
         break;
       }
       case 'term_start': {
+        if (!capabilities.terminal) {
+          sendError(send, 'pty_not_available', 'node-pty is not installed in this bridge build', msg.correlationId);
+          return;
+        }
         if (!isValidPtyDim(msg.cols) || !isValidPtyDim(msg.rows)) {
           sendError(send, 'unsupported_message', 'cols/rows must be positive integers ≤ 65535', msg.correlationId);
           return;
