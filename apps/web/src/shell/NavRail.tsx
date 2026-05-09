@@ -28,13 +28,14 @@ export function NavRail(): JSX.Element {
           className={({ isActive }) =>
             [
               'flex flex-col items-center gap-1 transition-colors min-h-[56px] md:min-h-[60px] justify-center md:py-1',
+              'flex-1 min-w-0 md:flex-none',
               isActive ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-dim)] hover:text-[var(--color-text)]',
             ].join(' ')
           }
           aria-label={label}
         >
           <Icon size={22} aria-hidden="true" />
-          <span className="text-[10px] font-medium">{label}</span>
+          <span className="text-[10px] font-medium leading-none truncate max-w-full">{label}</span>
         </NavLink>
       ))}
     </nav>
