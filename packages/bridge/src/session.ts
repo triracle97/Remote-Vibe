@@ -9,6 +9,8 @@ import type { PromptStore } from './prompt-store.js';
 import type { ImageStore } from './image-store.js';
 import type { Notifier } from './notifier.js';
 import type { SessionRegistry, RegistryEntry } from './session-registry.js';
+import { PathOutsideAllowlistError, makePathValidator } from './path-allowlist.js';
+export { PathOutsideAllowlistError } from './path-allowlist.js';
 import type {
   AgentEvent,
   AgentKind,
@@ -75,13 +77,6 @@ export interface SessionManagerOpts {
   notifier?: Notifier;
 }
 
-export class PathOutsideAllowlistError extends Error {
-  code = 'path_outside_allowlist' as const;
-  constructor(public projectPath: string) {
-    super(`projectPath ${projectPath} is not inside any allowed directory`);
-  }
-}
-
 export class SessionDeadError extends Error {
   code = 'session_dead' as const;
   constructor(public sessionId: string) {
@@ -118,6 +113,7 @@ export class SessionManager extends EventEmitter {
   private readonly stat: (p: string) => Promise<{ isDirectory(): boolean }>;
   private readonly claudeResumeSettleMs: number;
   private readonly notifier: Notifier | null;
+  private readonly validatePathFn: (projectPath: string) => Promise<string>;
   private readonly resumeInFlight = new Map<string, Promise<void>>();
   /**
    * Phase 7 — replay-on-resume. Populated by `resumeFromHistoryEntry` BEFORE
@@ -143,6 +139,10 @@ export class SessionManager extends EventEmitter {
     this.stat = opts.stat ?? ((p) => fsStat(p));
     this.claudeResumeSettleMs = opts.claudeResumeSettleMs ?? 1500;
     this.notifier = opts.notifier ?? null;
+    this.validatePathFn = makePathValidator({
+      allowedDirs: this.allowedDirs,
+      realpath: this.realpath,
+    });
     if (opts.driverFactory) {
       const userFactory = opts.driverFactory;
       this.driverFactory = (args) => {
@@ -164,15 +164,7 @@ export class SessionManager extends EventEmitter {
   }
 
   private async validatePath(projectPath: string): Promise<string> {
-    let real: string;
-    try {
-      real = await this.realpath(projectPath);
-    } catch {
-      throw new PathOutsideAllowlistError(projectPath);
-    }
-    const inside = this.allowedDirs.some((d) => real === d || real.startsWith(d + '/'));
-    if (!inside) throw new PathOutsideAllowlistError(projectPath);
-    return real;
+    return this.validatePathFn(projectPath);
   }
 
   private isAllowedDir(realPath: string): boolean {
