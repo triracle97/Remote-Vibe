@@ -30,7 +30,7 @@ export function makePathValidator(
     } catch {
       throw new PathOutsideAllowlistError(projectPath);
     }
-    const inside = allowed.some((d) => real === d || real.startsWith(d + '/'));
+    const inside = allowed.some((d) => real === d || real.startsWith(d === '/' ? '/' : d + '/'));
     if (!inside) throw new PathOutsideAllowlistError(projectPath);
     return real;
   };
