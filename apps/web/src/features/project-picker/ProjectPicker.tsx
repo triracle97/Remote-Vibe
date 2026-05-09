@@ -8,6 +8,7 @@ import { ProfileEditor } from '../profiles/ProfileEditor';
 import { Modal } from '../../shell/Modal';
 import type { AgentKind, Profile } from '../../types/protocol';
 import { DEFAULT_WORKSPACE_DIRS } from './default-workspaces';
+import { useDefaultWorkspacesStore } from './defaultWorkspacesStore';
 
 const RECENT_KEY = 'mrt.recentProjects';
 const RECENT_MAX = 10;
@@ -58,13 +59,14 @@ interface ProjectPickerProps {
 
 export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Element {
   const [agent, setAgent] = useState<AgentKind>('claude');
-  const [dirs, setDirs] = useState<string[]>(() => DEFAULT_WORKSPACE_DIRS.slice());
+  const [dirs, setDirs] = useState<string[]>([]);
   const [editorOpen, setEditorOpen] = useState(false);
   const accounts = useAccountsStore((s) => s.accounts);
   const selectedAccount = useAccountsStore((s) => s.selectedAccount);
   const setSelectedAccount = useAccountsStore((s) => s.setSelectedAccount);
   const profiles = useProfileStore((s) => s.profiles);
   const fetchProfiles = useProfileStore((s) => s.fetch);
+  const defaultWorkspaces = useDefaultWorkspacesStore((s) => s.paths);
   const [recents, setRecents] = useState<string[]>([]);
   const [autoLoaded, setAutoLoaded] = useState(false);
 
@@ -92,6 +94,16 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
       setAutoLoaded(true);
     }
   }, [autoLoaded, dirs.length, defaultProfile, agent, setSelectedAccount]);
+
+  const suggestions = useMemo(
+    () => defaultWorkspaces.filter((p) => !dirs.includes(p)),
+    [defaultWorkspaces, dirs],
+  );
+
+  const addSuggestion = (path: string): void => {
+    if (dirs.includes(path)) return;
+    setDirs([...dirs, path]);
+  };
 
   const applyProfile = (p: Profile): void => {
     setDirs(p.dirs.slice());
@@ -140,7 +152,7 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
               onChange={() => {
                 setAgent('claude');
                 setAutoLoaded(false);
-                setDirs(DEFAULT_WORKSPACE_DIRS.slice());
+                setDirs([]);
               }}
             />
             {' '}Claude
@@ -154,7 +166,7 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
               onChange={() => {
                 setAgent('codex');
                 setAutoLoaded(false);
-                setDirs(DEFAULT_WORKSPACE_DIRS.slice());
+                setDirs([]);
               }}
             />
             {' '}Codex
@@ -193,6 +205,26 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
           }}
         >
           <DirPicker dirs={dirs} onChange={setDirs} />
+          {suggestions.length > 0 && (
+            <div className="picker-suggestions mt-3">
+              <h3 className="text-[var(--color-text-dim)] text-xs font-bold tracking-wider uppercase mb-2">Suggestions</h3>
+              <ul className="list-none p-0 m-0 bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg overflow-hidden">
+                {suggestions.map((p) => (
+                  <li key={p} className="border-b border-[var(--color-border)] last:border-b-0">
+                    <button
+                      type="button"
+                      onClick={() => addSuggestion(p)}
+                      className="w-full text-left px-3 py-2 min-h-[44px] flex items-center gap-2 text-sm font-mono text-[var(--color-text)] hover:bg-[var(--color-surface)] transition-colors"
+                      aria-label={`Add ${p}`}
+                    >
+                      <Plus size={14} aria-hidden="true" className="shrink-0 text-[var(--color-accent)]" />
+                      <span className="flex-1 break-all">{p}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="picker-actions flex p-4 gap-3 bg-[color-mix(in_srgb,var(--color-bg)_50%,var(--color-surface))] border-t border-[var(--color-border)] -mx-6 -mb-6 mt-4">
             <button
               type="button"

@@ -25,22 +25,23 @@ describe('ProjectPicker', () => {
     cleanup();
   });
 
-  it('prefills the default workspace dirs for a new session', () => {
+  it('shows default workspaces as tappable suggestions, empty dir list initially', () => {
     const onPick = vi.fn();
-    const { getAllByTestId, getByText } = render(
+    const { queryAllByTestId, getByLabelText, getByText } = render(
       <ProjectPicker onPick={onPick} onCancel={() => {}} />,
     );
 
-    const rows = getAllByTestId('dir-picker-row');
-    expect(rows).toHaveLength(3);
-    expect(rows.map((row) => row.textContent)).toEqual(
-      DEFAULT_DIRS.map((dir) => expect.stringContaining(dir)),
-    );
+    // Dir list starts empty — defaults are now suggestions, not pre-selected.
+    expect(queryAllByTestId('dir-picker-row')).toHaveLength(0);
+
+    // Tap the first suggestion to add it.
+    fireEvent.click(getByLabelText(`Add ${DEFAULT_DIRS[0]}`));
+    expect(queryAllByTestId('dir-picker-row')).toHaveLength(1);
 
     fireEvent.click(getByText('Open'));
     expect(onPick).toHaveBeenCalledWith({
       agent: 'claude',
-      dirs: DEFAULT_DIRS,
+      dirs: [DEFAULT_DIRS[0]],
       projectPath: DEFAULT_DIRS[0],
     });
   });

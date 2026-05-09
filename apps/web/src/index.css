@@ -2,12 +2,19 @@
 
 @layer base {
   html, body, #root { height: 100%; }
+  html, body { overflow: hidden; overscroll-behavior: none; }
   body {
     margin: 0;
     font-family: var(--font-sans);
     background: var(--color-bg);
     color: var(--color-text);
     -webkit-font-smoothing: antialiased;
+  }
+  /* Prevent iOS Safari auto-zoom on input focus (kicks in below 16px). */
+  @media (max-width: 767px) {
+    input, textarea, select {
+      font-size: 16px;
+    }
   }
 }
 
@@ -53,4 +60,12 @@
 @layer utilities {
   .scrollbar-hide { scrollbar-width: none; }
   .scrollbar-hide::-webkit-scrollbar { display: none; }
+}
+
+/* Contain rubber-band scrolling inside scrollable regions so it never
+   leaks to the body (which is overflow:hidden anyway, but iOS treats
+   nested scrollers as escapable without this). */
+[class*="overflow-y-auto"],
+[class*="overflow-auto"] {
+  overscroll-behavior: contain;
 }
