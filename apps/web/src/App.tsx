@@ -5,6 +5,7 @@ import { Session } from './pages/Session';
 import { Sessions } from './pages/Sessions';
 import { Projects } from './pages/Projects';
 import { Settings } from './pages/Settings';
+import { Terminal } from './pages/Terminal';
 
 export function App(): JSX.Element {
   return (
@@ -15,6 +16,7 @@ export function App(): JSX.Element {
         <Route path="/projects" element={<Projects />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/session/:id" element={<Session />} />
+        <Route path="/terminal/:id" element={<Terminal />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
