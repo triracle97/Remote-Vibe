@@ -13,9 +13,9 @@ export function NavRail(): JSX.Element {
     <nav
       aria-label="Primary"
       className="
-        flex items-center justify-around
+        flex items-center justify-around w-full
         bg-[var(--color-surface)] border-t border-[var(--color-border)]
-        py-2 px-4 shrink-0 pb-[max(env(safe-area-inset-bottom),0.5rem)]
+        py-2 px-2 shrink-0 pb-[max(env(safe-area-inset-bottom),0.5rem)]
         md:flex-col md:justify-start md:items-stretch md:py-3 md:px-0
         md:border-t-0 md:border-r md:gap-1 md:w-16 md:h-screen
       "
