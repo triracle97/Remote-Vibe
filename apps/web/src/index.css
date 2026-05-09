@@ -10,11 +10,21 @@
     color: var(--color-text);
     -webkit-font-smoothing: antialiased;
   }
-  /* Prevent iOS Safari auto-zoom on input focus (kicks in below 16px). */
-  @media (max-width: 767px) {
-    input, textarea, select {
-      font-size: 16px;
-    }
+  /* Pin the root so iOS Safari's keyboard-focused scroll cannot lift the
+     viewport past the chat input. Combined with overflow:hidden on body. */
+  #root {
+    position: fixed;
+    inset: 0;
+  }
+}
+
+/* These rules sit OUTSIDE @layer so utility classes like `text-sm` cannot
+   override them. iOS Safari auto-zooms when an input/textarea has
+   font-size < 16px, so force the focused-element font size at the
+   smallest viewport. */
+@media (max-width: 767px) {
+  input, textarea, select {
+    font-size: 16px;
   }
 }
 
