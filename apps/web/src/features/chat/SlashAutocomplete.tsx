@@ -118,7 +118,7 @@ export const SlashAutocomplete = forwardRef<SlashAutocompleteHandle, SlashAutoco
     if (!open) return null;
 
     return (
-      <div className="autocomplete-popup slash-autocomplete absolute bottom-full left-0 right-0 mb-2 max-h-[40vh] overflow-y-auto z-30 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-2xl max-md:fixed max-md:left-0 max-md:right-0 max-md:bottom-0 max-md:max-h-[50vh] max-md:rounded-t-2xl max-md:rounded-b-none max-md:mb-0" role="listbox" aria-label="Slash commands">
+      <div className="autocomplete-popup slash-autocomplete absolute bottom-full left-0 right-0 mb-2 max-h-[40vh] overflow-y-auto z-30 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-2xl" role="listbox" aria-label="Slash commands">
         {filtered.map((c, i) => (
           <button
             key={c.name}

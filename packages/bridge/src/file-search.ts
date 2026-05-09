@@ -4,7 +4,7 @@ import ignoreLib from 'ignore';
 import type { SearchHit } from './types.js';
 
 const SURFACE_CAP = 50;
-const FILE_CAP_DEFAULT = 5000;
+const FILE_CAP_DEFAULT = 50_000;
 const CACHE_TTL_MS = 30_000;
 const PROMPT_TRUNCATE = 80;
 
@@ -20,6 +20,7 @@ interface WalkedFile {
   dirIndex: number;
   rootDir: string;
   mtime: number;
+  isDir: boolean;
 }
 
 interface FileSearchOpts {
@@ -120,6 +121,18 @@ async function walkDir(
       if (DENY_DIRS.has(e.name)) continue;
       // .gitignore: dirs need trailing slash for matching
       if (ig.ignores(rel + '/')) continue;
+      try {
+        const stat = await fsp.stat(fullPath);
+        out.push({
+          fullPath,
+          dirIndex,
+          rootDir,
+          mtime: stat.mtimeMs,
+          isDir: true,
+        });
+      } catch {
+        // skip
+      }
       const sub = await walkDir(rootDir, fullPath, dirIndex, ig, remaining - out.length);
       out.push(...sub.files);
       if (sub.hitCap) return { files: out, hitCap: true };
@@ -132,6 +145,7 @@ async function walkDir(
           dirIndex,
           rootDir,
           mtime: stat.mtimeMs,
+          isDir: false,
         });
       } catch {
         // skip
@@ -169,13 +183,14 @@ function rankAndFormat(walked: WalkedFile[], query: string): SearchHit[] {
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, SURFACE_CAP).map(({ file: f }) => {
     const rel = relative(f.rootDir, f.fullPath);
-    const insertText =
-      f.dirIndex === 0 ? `@${rel}` : `@${basename(f.rootDir)}/${rel}`;
+    const base = f.dirIndex === 0 ? rel : `${basename(f.rootDir)}/${rel}`;
+    const insertText = f.isDir ? `@${base}/` : `@${base}`;
     return {
       insertText,
       fullPath: f.fullPath,
       dirIndex: f.dirIndex,
       mtime: f.mtime,
+      isDir: f.isDir,
     };
   });
 }

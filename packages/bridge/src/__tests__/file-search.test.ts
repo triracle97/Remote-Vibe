@@ -83,9 +83,10 @@ describe('FileSearch', () => {
     expect(result.hits.find((h) => h.fullPath.endsWith('/visible.ts'))).toBeDefined();
   });
 
-  it('5000-cap truncated flag', async () => {
-    for (let i = 0; i < 5050; i++) writeFileSync(join(primary, `f-${i}.ts`), '');
-    const s = new FileSearch({ getDirsForSession: getDirs });
+  it('file-cap truncated flag', async () => {
+    // Use a custom small cap to keep the test fast; verifies the truncation wiring.
+    for (let i = 0; i < 50; i++) writeFileSync(join(primary, `f-${i}.ts`), '');
+    const s = new FileSearch({ getDirsForSession: getDirs, fileCap: 20 });
     const result = await s.search('s1', '');
     expect(result.truncated).toBe(true);
   });

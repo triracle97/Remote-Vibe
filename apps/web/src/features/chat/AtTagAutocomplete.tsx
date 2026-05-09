@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
+import { FileText, Folder } from 'lucide-react';
 import { useFileSearchStore } from './fileSearchStore';
 
 interface AtTagAutocompleteProps {
@@ -99,7 +100,7 @@ export const AtTagAutocomplete = forwardRef<AtTagAutocompleteHandle, AtTagAutoco
     if (!open) return null;
 
     return (
-      <div className="autocomplete-popup at-tag-autocomplete absolute bottom-full left-0 right-0 mb-2 max-h-[40vh] overflow-y-auto z-30 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-2xl max-md:fixed max-md:left-0 max-md:right-0 max-md:bottom-[calc(8rem+env(safe-area-inset-bottom))] max-md:max-h-[min(42vh,18rem)] max-md:rounded-t-2xl max-md:rounded-b-none max-md:mb-0 max-md:pb-[env(safe-area-inset-bottom)]" role="listbox" aria-label="File suggestions">
+      <div className="autocomplete-popup at-tag-autocomplete absolute bottom-full left-0 right-0 mb-2 max-h-[40vh] overflow-y-auto z-30 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-2xl" role="listbox" aria-label="File suggestions">
         {visible.map((h, i) => (
           <button
             key={h.fullPath}
@@ -117,6 +118,11 @@ export const AtTagAutocomplete = forwardRef<AtTagAutocompleteHandle, AtTagAutoco
             }}
             title={h.fullPath}
           >
+            {h.isDir ? (
+              <Folder size={14} aria-hidden="true" className="shrink-0 text-[var(--color-warn)]" />
+            ) : (
+              <FileText size={14} aria-hidden="true" className="shrink-0 text-[var(--color-text-dim)]" />
+            )}
             <span className="autocomplete-row-primary flex flex-col gap-0.5 min-w-0 flex-1 text-[var(--color-accent)] font-mono">
               <span className="autocomplete-row-head flex items-center gap-2 min-w-0">
                 <span className="autocomplete-row-title flex-1 min-w-0 truncate text-[#dbe8ff]">{filenameFor(h.fullPath)}</span>
@@ -124,7 +130,6 @@ export const AtTagAutocomplete = forwardRef<AtTagAutocompleteHandle, AtTagAutoco
               </span>
               <span className="autocomplete-row-path text-[var(--color-text-dim)] text-[11px] truncate font-mono">{h.fullPath}</span>
             </span>
-            <span className="autocomplete-row-time text-[var(--color-text-dim)] text-[10px] ml-auto max-md:self-start max-md:pt-0.5">{relTime(h.mtime)}</span>
           </button>
         ))}
         {truncated && (
@@ -136,16 +141,3 @@ export const AtTagAutocomplete = forwardRef<AtTagAutocompleteHandle, AtTagAutoco
     );
   },
 );
-
-function relTime(mtime: number): string {
-  const ms = Date.now() - mtime;
-  const sec = Math.max(0, Math.floor(ms / 1000));
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const h = Math.floor(min / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}d ago`;
-  return new Date(mtime).toLocaleDateString();
-}

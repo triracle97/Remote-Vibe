@@ -341,6 +341,8 @@ export interface SearchHit {
   /** 0 = primary, 1..N = index into session.additionalDirs. */
   dirIndex: number;
   mtime: number;
+  /** True when this hit is a directory; absent or false for files. */
+  isDir?: boolean;
 }
 
 export interface ClientListProfilesMsg {
