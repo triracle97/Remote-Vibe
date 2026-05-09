@@ -56,7 +56,10 @@ export class TerminalProcess extends EventEmitter {
       rows,
       name: 'xterm-256color',
     });
-    this.pty.onData((s) => this.emit('output', s));
+    this.pty.onData((s) => {
+      if (this.killed) return;
+      this.emit('output', s);
+    });
     this.pty.onExit(({ exitCode, signal }) => {
       const sigName = typeof signal === 'number' ? (SIGNAL_NAMES[signal] ?? null) : null;
       this.emit('exit', exitCode, sigName);

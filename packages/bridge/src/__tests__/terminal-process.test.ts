@@ -89,15 +89,38 @@ describe('TerminalProcess', () => {
     expect(exits).toEqual([[0, 'SIGHUP']]);
   });
 
-  it('kill() sends SIGHUP, then SIGKILL after the grace timer', () => {
-    vi.useFakeTimers();
+  it('emits exit with null signal for unmapped signal numbers', () => {
+    const fake = makeFakePty();
+    const proc = new TerminalProcess('/p', 80, 24, { spawn: () => fake });
+    const exits: Array<[number | null, string | null]> = [];
+    proc.on('exit', (code, sig) => exits.push([code, sig]));
+    fake._exit({ exitCode: 137, signal: 11 });   // 11 = SIGSEGV, not in SIGNAL_NAMES
+    expect(exits).toEqual([[137, null]]);
+  });
+
+  it('suppresses output events after kill()', () => {
     const fake = makeFakePty();
     const proc = new TerminalProcess('/p', 80, 24, { spawn: () => fake, killGraceMs: 100 });
+    const out: string[] = [];
+    proc.on('output', (s: string) => out.push(s));
+    fake._data('before');
     proc.kill();
-    expect(fake.killed).toEqual(['SIGHUP']);
-    vi.advanceTimersByTime(100);
-    expect(fake.killed).toEqual(['SIGHUP', 'SIGKILL']);
-    vi.useRealTimers();
+    fake._data('after');
+    expect(out).toEqual(['before']);
+  });
+
+  it('kill() sends SIGHUP, then SIGKILL after the grace timer', () => {
+    vi.useFakeTimers();
+    try {
+      const fake = makeFakePty();
+      const proc = new TerminalProcess('/p', 80, 24, { spawn: () => fake, killGraceMs: 100 });
+      proc.kill();
+      expect(fake.killed).toEqual(['SIGHUP']);
+      vi.advanceTimersByTime(100);
+      expect(fake.killed).toEqual(['SIGHUP', 'SIGKILL']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('kill() is idempotent', () => {
