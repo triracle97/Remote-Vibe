@@ -26,6 +26,16 @@ describe('makePathValidator', () => {
     await expect(validate('/missing')).rejects.toBeInstanceOf(PathOutsideAllowlistError);
   });
 
+  it('matches any path when "/" is the allowed dir', async () => {
+    const validate = makePathValidator({
+      allowedDirs: ['/'],
+      realpath: async (p) => p,
+    });
+    await expect(validate('/')).resolves.toBe('/');
+    await expect(validate('/etc')).resolves.toBe('/etc');
+    await expect(validate('/Users/me/deep/path')).resolves.toBe('/Users/me/deep/path');
+  });
+
   it('treats /a/b as inside /a but rejects /ab (no false-prefix)', async () => {
     const validate = makePathValidator({
       allowedDirs: ['/a'],

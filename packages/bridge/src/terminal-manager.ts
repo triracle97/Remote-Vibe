@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { makePathValidator, PathOutsideAllowlistError } from './path-allowlist.js';
+import { makePathValidator } from './path-allowlist.js';
 import { TerminalProcess } from './terminal-process.js';
 
 export class TerminalSpawnFailedError extends Error {
@@ -46,13 +46,7 @@ export class TerminalManager extends EventEmitter {
   }
 
   async spawn(wsId: string, cwd: string, cols: number, rows: number): Promise<TerminalSession> {
-    let real: string;
-    try {
-      real = await this.validatePath(cwd);
-    } catch (err) {
-      if (err instanceof PathOutsideAllowlistError) throw err;
-      throw err;
-    }
+    const real = await this.validatePath(cwd);
     let proc: TerminalProcess;
     try {
       proc = this.procFactory(real, cols, rows);
@@ -85,7 +79,9 @@ export class TerminalManager extends EventEmitter {
     const entry = this.entries.get(termId);
     if (!entry) return;                       // unknown / already exited → silent
     if (entry.wsId !== wsId) {                // foreign ws → typed error
-      this.emit('error', { wsId, code: 'terminal_not_found', termId });
+      // Custom event name (not 'error') so an unattached listener does not
+      // trigger Node's special crash-on-unhandled-error behavior.
+      this.emit('policy_violation', { wsId, code: 'terminal_not_found', termId });
       return;
     }
     entry.proc.write(data);
@@ -95,7 +91,7 @@ export class TerminalManager extends EventEmitter {
     const entry = this.entries.get(termId);
     if (!entry) return;
     if (entry.wsId !== wsId) {
-      this.emit('error', { wsId, code: 'terminal_not_found', termId });
+      this.emit('policy_violation', { wsId, code: 'terminal_not_found', termId });
       return;
     }
     entry.proc.resize(cols, rows);
@@ -105,7 +101,7 @@ export class TerminalManager extends EventEmitter {
     const entry = this.entries.get(termId);
     if (!entry) return;
     if (entry.wsId !== wsId) {
-      this.emit('error', { wsId, code: 'terminal_not_found', termId });
+      this.emit('policy_violation', { wsId, code: 'terminal_not_found', termId });
       return;
     }
     entry.proc.kill();

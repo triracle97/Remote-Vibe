@@ -94,33 +94,53 @@ describe('TerminalManager', () => {
     expect(procs[0]!.writes).toEqual(['ls\n']);
   });
 
-  it('sendInput from a different ws emits an error', async () => {
+  it('sendInput from a different ws emits policy_violation', async () => {
     const { mgr } = makeMgr();
     const errs: unknown[] = [];
-    mgr.on('error', (e) => errs.push(e));
+    mgr.on('policy_violation', (e) => errs.push(e));
     const s = await mgr.spawn('ws-1', '/Users/me/code', 80, 24);
     mgr.sendInput('ws-2', s.termId, 'oops');
     expect(errs).toEqual([{ wsId: 'ws-2', code: 'terminal_not_found', termId: s.termId }]);
   });
 
-  it('sendInput for an unknown termId is silently dropped (post-exit)', async () => {
+  it('sendInput for an unknown termId is silently dropped, no policy_violation', async () => {
     const { mgr } = makeMgr();
     const errs: unknown[] = [];
-    mgr.on('error', (e) => errs.push(e));
+    mgr.on('policy_violation', (e) => errs.push(e));
     mgr.sendInput('ws-1', 'never-existed', 'oops');
     expect(errs).toEqual([]);
   });
 
-  it('resize routes when wsId matches; ignored on mismatch with error', async () => {
+  it('resize routes when wsId matches; emits policy_violation on mismatch', async () => {
     const { mgr, procs } = makeMgr();
     const errs: unknown[] = [];
-    mgr.on('error', (e) => errs.push(e));
+    mgr.on('policy_violation', (e) => errs.push(e));
     const s = await mgr.spawn('ws-1', '/Users/me/code', 80, 24);
     mgr.resize('ws-1', s.termId, 100, 30);
     expect(procs[0]!.resized).toEqual([[100, 30]]);
     mgr.resize('ws-2', s.termId, 50, 25);
     expect(procs[0]!.resized).toEqual([[100, 30]]);
     expect(errs).toEqual([{ wsId: 'ws-2', code: 'terminal_not_found', termId: s.termId }]);
+  });
+
+  it('kill routes when wsId matches; emits policy_violation on mismatch', async () => {
+    const { mgr, procs } = makeMgr();
+    const errs: unknown[] = [];
+    mgr.on('policy_violation', (e) => errs.push(e));
+    const s = await mgr.spawn('ws-1', '/Users/me/code', 80, 24);
+    mgr.kill('ws-2', s.termId);
+    expect(procs[0]!.killCalls).toBe(0);
+    expect(errs).toEqual([{ wsId: 'ws-2', code: 'terminal_not_found', termId: s.termId }]);
+    mgr.kill('ws-1', s.termId);
+    expect(procs[0]!.killCalls).toBe(1);
+  });
+
+  it('kill is silent for an unknown termId', async () => {
+    const { mgr } = makeMgr();
+    const errs: unknown[] = [];
+    mgr.on('policy_violation', (e) => errs.push(e));
+    mgr.kill('ws-1', 'never-existed');
+    expect(errs).toEqual([]);
   });
 
   it('killByWs kills only that ws\'s PTYs', async () => {
