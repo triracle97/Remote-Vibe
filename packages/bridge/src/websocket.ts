@@ -17,6 +17,7 @@ import type { ProfileStore } from './profile-store.js';
 import type { SlashCommandsScanner } from './slash-commands.js';
 import type { FileSearch } from './file-search.js';
 import type { TerminalManager } from './terminal-manager.js';
+import { PathOutsideAllowlistError } from './path-allowlist.js';
 import type {
   ClientMsg,
   ServerErrorMsg,
@@ -112,13 +113,14 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
     opts.sessionManager.on('broadcast', broadcast);
     ws.on('close', () => {
       opts.sessionManager.off('broadcast', broadcast);
-      // Kill any PTYs spawned by this ws.
-      opts.terminalManager.killByWs(wsId);
-      // Drop entries from termOwner whose value is this wsId.
+      // Drop maps FIRST so any synchronous exit handler fired by killByWs
+      // finds neither termOwner nor wsByConn populated for this connection.
       for (const [termId, owner] of termOwner) {
         if (owner === wsId) termOwner.delete(termId);
       }
       wsByConn.delete(wsId);
+      // Kill any PTYs spawned by this ws (may synchronously fire exit events).
+      opts.terminalManager.killByWs(wsId);
     });
 
     send({ type: 'system', event: 'init' });
@@ -145,6 +147,10 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
   });
 
   return wss;
+}
+
+function isValidPtyDim(n: unknown): n is number {
+  return typeof n === 'number' && Number.isInteger(n) && n > 0 && n <= 65535;
 }
 
 async function handleMessage(
@@ -554,6 +560,10 @@ async function handleMessage(
         break;
       }
       case 'term_start': {
+        if (!isValidPtyDim(msg.cols) || !isValidPtyDim(msg.rows)) {
+          sendError(send, 'unsupported_message', 'cols/rows must be positive integers ≤ 65535', msg.correlationId);
+          return;
+        }
         try {
           const session = await terminalManager.spawn(wsId, msg.cwd, msg.cols, msg.rows);
           termOwner.set(session.termId, wsId);
@@ -565,10 +575,11 @@ async function handleMessage(
             correlationId: msg.correlationId,
           });
         } catch (err) {
-          const code = (err as { code?: string }).code === 'path_outside_allowlist'
+          const code = err instanceof PathOutsideAllowlistError
             ? 'path_outside_allowlist'
             : 'terminal_spawn_failed';
-          sendError(send, code as never, (err as Error).message, msg.correlationId);
+          const message = err instanceof Error ? err.message : String(err);
+          sendError(send, code, message, msg.correlationId);
         }
         return;
       }
@@ -577,6 +588,10 @@ async function handleMessage(
         return;
       }
       case 'term_resize': {
+        if (!isValidPtyDim(msg.cols) || !isValidPtyDim(msg.rows)) {
+          // Silently drop malformed resize — best-effort, no correlationId.
+          return;
+        }
         terminalManager.resize(wsId, msg.termId, msg.cols, msg.rows);
         return;
       }
