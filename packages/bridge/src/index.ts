@@ -190,13 +190,18 @@ async function main(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     console.log('[bridge] shutting down');
+    // Hard-kill deadline covers the entire shutdown sequence (PTY drain +
+    // HTTP drain), not just the post-await tail.
+    setTimeout(() => process.exit(1), 6000).unref();
     sessionManager.shutdown();
     await terminalManager.shutdown();
     server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 6000).unref();
   };
-  process.on('SIGTERM', () => void shutdown());
-  process.on('SIGINT', () => void shutdown());
+  const onSignal = (): void => {
+    shutdown().catch((err) => console.error('[bridge] shutdown error:', err));
+  };
+  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', onSignal);
 }
 
 main().catch((err) => {
