@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { getBridgeClient } from '../../services/bridge-client-singleton';
 import type { ServerMsg } from '../../types/protocol';
 import { killTerminal, sendTerminalInput, resizeTerminal } from './terminal-client';
@@ -33,8 +33,7 @@ export function useTerminalSession(opts: UseTerminalSessionOpts): TerminalSessio
     };
   }, [termId]);
 
-  return {
-    sendInput: (data: string) => sendTerminalInput(termId, data),
-    resize: (cols: number, rows: number) => resizeTerminal(termId, cols, rows),
-  };
+  const sendInput = useCallback((data: string) => sendTerminalInput(termId, data), [termId]);
+  const resize = useCallback((cols: number, rows: number) => resizeTerminal(termId, cols, rows), [termId]);
+  return { sendInput, resize };
 }
