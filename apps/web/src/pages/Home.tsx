@@ -2,6 +2,7 @@ import { useNavigate, useOutletContext, Link } from 'react-router-dom';
 import { Plus, ChevronRight } from 'lucide-react';
 import { useSessionsStore } from '../store/sessions';
 import { useConnectionStore } from '../store/connection';
+import { useTerminalsStore } from '../store/terminals';
 import type { AppShellOutletContext } from '../shell/AppShell';
 import { useNewSession } from '../features/project-picker/useNewSession';
 import { HistoryPanel } from '../features/history/HistoryPanel';
@@ -19,6 +20,13 @@ export function Home(): JSX.Element {
     .map((id) => sessionsMap[id]!)
     .filter((s): s is NonNullable<typeof s> => s !== undefined);
   const aliveSessions = sessions.filter((s) => s.alive).slice(0, 3);
+
+  const terminalsMap = useTerminalsStore((s) => s.terminals);
+  const terminalsOrder = useTerminalsStore((s) => s.order);
+
+  const aliveTerminals = terminalsOrder
+    .map((id) => terminalsMap[id]!)
+    .filter((t): t is NonNullable<typeof t> => Boolean(t?.alive));
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto p-4 max-w-screen-md w-full mx-auto">
@@ -55,7 +63,7 @@ export function Home(): JSX.Element {
             <ChevronRight size={14} aria-hidden="true" />
           </Link>
         </div>
-        {aliveSessions.length === 0 ? (
+        {aliveSessions.length === 0 && aliveTerminals.length === 0 ? (
           <div className="bg-[color-mix(in_srgb,var(--color-surface-2)_50%,transparent)] border border-[var(--color-border)] rounded-xl py-4 px-6 text-[var(--color-text-dim)] text-center font-medium">
             No active sessions
           </div>
@@ -75,6 +83,27 @@ export function Home(): JSX.Element {
                       <span className="text-[var(--color-text-dim)] text-xs font-mono truncate">{s.projectPath}</span>
                     </div>
                     <div className="w-2.5 h-2.5 bg-[var(--color-success)] rounded-full shadow-[0_0_8px_color-mix(in_srgb,var(--color-success)_60%,transparent)] shrink-0" aria-label="alive" />
+                  </button>
+                </li>
+              );
+            })}
+            {aliveTerminals.map((t) => {
+              const label = t.cwd.split('/').filter(Boolean).pop() ?? t.cwd;
+              return (
+                <li key={t.termId}>
+                  <button
+                    type="button"
+                    className="w-full text-left p-4 min-h-[56px] flex items-center justify-between hover:bg-[var(--color-surface-2)] transition-colors"
+                    onClick={() => navigate(`/terminal/${t.termId}`)}
+                  >
+                    <div className="flex flex-col gap-0.5 min-w-0">
+                      <span className="text-[var(--color-text)] font-bold truncate">
+                        <span className="text-[var(--color-text-dim)] text-xs mr-1">[term]</span>
+                        {label}
+                      </span>
+                      <span className="text-[var(--color-text-dim)] text-xs font-mono truncate">{t.cwd}</span>
+                    </div>
+                    <div className="w-2.5 h-2.5 bg-[var(--color-success)] rounded-full shrink-0" aria-label="alive" />
                   </button>
                 </li>
               );
