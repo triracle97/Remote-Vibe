@@ -1,6 +1,8 @@
-# mac-remote-terminal
+# Remote Vibe
 
-Run Claude Code / Codex CLI on your Mac, control it from any device on your Tailscale network through a web UI. Built as a private bridge between a coding agent CLI and a phone-or-laptop browser, so you can drive long-running coding sessions away from your desk.
+Drive Claude Code and Codex on your Mac from any phone or laptop over Tailscale. Vibe-code from anywhere.
+
+A private bridge between a coding-agent CLI and a phone-or-laptop browser, so you can run long sessions away from your desk.
 
 A small Node bridge spawns the agent process, streams transcripts over WebSocket, and serves a React app that mirrors the terminal experience. Supports prompt history, multi-directory profiles, image paste, mermaid + KaTeX rendering, slash-command autocomplete, `@`-file autocomplete, and an optional Telegram notifier for long turns.
 
@@ -41,8 +43,8 @@ There is no rate limiting, no audit log beyond stdout, and no multi-user separat
 
 ```bash
 # 1. Clone and install
-git clone <repo-url> mac-remote-terminal
-cd mac-remote-terminal
+git clone git@github.com:triracle97/Remote-Vibe.git remote-vibe
+cd remote-vibe
 npm install
 
 # 2. Configure
