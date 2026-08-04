@@ -34,12 +34,20 @@ export function Chat({
 }: ChatProps): JSX.Element {
   const navigate = useNavigate();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pinnedToBottomRef = useRef(true);
   const imagePaste = useImagePaste();
   const imagesEnabled = session.agent === 'claude' && session.alive && !inputDisabled;
   const [dragOver, setDragOver] = useState(false);
   const [renamingHeader, setRenamingHeader] = useState(false);
 
+  const onChatScroll = (): void => {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinnedToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  };
+
   useEffect(() => {
+    if (!pinnedToBottomRef.current) return;
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [session.events]);
 
@@ -47,6 +55,8 @@ export function Chat({
     imagePaste.clear();
     setDragOver(false);
     setRenamingHeader(false);
+    pinnedToBottomRef.current = true;
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [session.sessionId]);
 
   const onDragOver = (e: DragEvent<HTMLDivElement>): void => {
@@ -131,7 +141,11 @@ export function Chat({
         </div>
       )}
 
-      <div className="chat-scroll flex-1 min-h-0 overflow-y-auto px-3 py-3 font-mono text-sm leading-relaxed" ref={scrollRef}>
+      <div
+        className="chat-scroll flex-1 min-h-0 overflow-y-auto px-3 py-3 font-mono text-sm leading-relaxed"
+        ref={scrollRef}
+        onScroll={onChatScroll}
+      >
         {session.events.map((e, i) => (
           <MessageBubble
             key={`${i}-${e.type}-${e.type === 'system' ? e.event : (e as { seq: number }).seq}`}
