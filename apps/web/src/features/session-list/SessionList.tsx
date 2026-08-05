@@ -15,7 +15,15 @@ function truncate(text: string, maxLen: number): string {
   return text.length <= maxLen ? text : `${text.slice(0, maxLen)}…`;
 }
 
-function SessionRow({
+/**
+ * One session card.
+ *
+ * Exported so Home can render the same row rather than keeping a second,
+ * plainer copy — that divergence is why the dashboard showed no agent badge and
+ * no rename control, and why it labelled sessions by folder while this list
+ * labelled them by name.
+ */
+export function SessionRow({
   session,
   activeId,
   onSelect,
@@ -28,7 +36,12 @@ function SessionRow({
 }): JSX.Element {
   const [renaming, setRenaming] = useState(false);
   const isActive = session.sessionId === activeId;
-  const label = session.projectPath.split('/').filter(Boolean).pop() ?? session.projectPath;
+  const dir = session.projectPath.split('/').filter(Boolean).pop() ?? session.projectPath;
+  // The name leads. Several sessions in one repo share a directory and are
+  // otherwise indistinguishable in this list, which is the common case here —
+  // and the name is what the board shows, so leading with the folder made the
+  // two views look like they were listing different things.
+  const label = session.name && session.name.length > 0 ? truncate(session.name, 40) : dir;
   const badgeText =
     session.agent === 'codex'
       ? `codex${session.account ? `:${session.account}` : ''}`
@@ -59,11 +72,15 @@ function SessionRow({
         className="w-full text-left p-3 min-h-[56px] flex flex-col gap-1"
       >
         <div className="flex items-center gap-2 min-w-0">
-          <span className="font-semibold text-[var(--color-text)] truncate">{label}</span>
+          <span className="session-title font-semibold text-[var(--color-text)] truncate" title={label}>
+            {label}
+          </span>
           <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-mono ${badgeClasses}`}>
             {badgeText}
           </span>
         </div>
+        {/* The path stays visible under the name — with the folder no longer in
+            the headline, it is the only thing saying which repo this is. */}
         <div className="text-xs text-[var(--color-text-dim)] font-mono truncate">
           {session.projectPath}
         </div>
@@ -80,13 +97,14 @@ function SessionRow({
           />
         ) : (
           <>
+            {/* The name moved up to the headline, so this row is now just the
+                rename affordance plus the id — which is what you need when two
+                sessions genuinely do share a name. */}
             <span
-              className="session-name flex-1 text-xs text-[var(--color-text-dim)] truncate"
-              title={session.name ?? session.sessionId}
+              className="session-name flex-1 text-xs text-[var(--color-text-dim)] font-mono truncate"
+              title={session.sessionId}
             >
-              {session.name
-                ? truncate(session.name, 30)
-                : session.sessionId.slice(0, 8)}
+              {session.name ? session.sessionId.slice(0, 8) : 'unnamed'}
             </span>
             <button
               type="button"

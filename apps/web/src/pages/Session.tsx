@@ -11,6 +11,7 @@ import { FileExplorer } from '../features/file-explorer/FileExplorer';
 import { SessionList } from '../features/session-list/SessionList';
 import { HistoryPanel } from '../features/history/HistoryPanel';
 import { BottomSheet } from '../shell/BottomSheet';
+import { NAV_TABS } from '../shell/NavRail';
 
 type MobileNavTab = 'sessions' | 'history';
 
@@ -48,6 +49,15 @@ export function Session(): JSX.Element {
     resetExplorer();
     setDrawerOpen(false);
   }, [id, resetExplorer]);
+
+  // The drawer lives here but the shortcut is registered globally, so the
+  // shell announces the intent and whichever session page is mounted acts on
+  // it. Cheaper than threading a setter up through the router context.
+  useEffect(() => {
+    const toggle = (): void => setDrawerOpen((o) => !o);
+    window.addEventListener('mrt:toggle-file-drawer', toggle);
+    return () => window.removeEventListener('mrt:toggle-file-drawer', toggle);
+  }, []);
 
   const connStatus = useConnectionStore((s) => s.status);
   const lastError = useConnectionStore((s) => s.lastError);
@@ -179,6 +189,31 @@ export function Session(): JSX.Element {
             History
           </button>
         </div>
+        {/*
+          The nav rail is hidden on a phone inside a session — a bottom bar
+          under the composer would fight the keyboard. This row is how every
+          other route stays reachable from here. Driven off NAV_TABS so it
+          cannot drift out of sync with the rail.
+        */}
+        <nav
+          aria-label="Go to"
+          className="flex items-stretch gap-1 px-2 py-2 border-b border-[var(--color-border)] overflow-x-auto"
+        >
+          {NAV_TABS.map(({ to, label, icon: Icon }) => (
+            <button
+              key={to}
+              type="button"
+              onClick={() => {
+                closeMobileNav();
+                navigate(to);
+              }}
+              className="flex-1 min-w-[4.5rem] min-h-[52px] flex flex-col items-center justify-center gap-1 rounded-lg text-[var(--color-text-dim)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-2)] transition-colors"
+            >
+              <Icon size={18} aria-hidden="true" />
+              <span className="text-[10px] font-medium leading-none">{label}</span>
+            </button>
+          ))}
+        </nav>
         <div className="p-2">
           {mobileNavTab === 'sessions' ? (
             <SessionList

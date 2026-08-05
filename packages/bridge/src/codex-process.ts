@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type ChildProcessByStdio, type SpawnOptions } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import { parseCodexLine } from './codex-parser.js';
+import { isEffortLevel, isValidModelId, type EffortLevel } from './models.js';
 import type { AgentEvent } from './types.js';
 
 const STDERR_TAIL_BYTES = 4096;
@@ -29,11 +30,109 @@ export interface CodexProcessOpts {
    * spawn. SessionManager surfaces a one-time warning at construction.
    */
   additionalDirs?: string[];
+  /** Model id, passed as `--model`. Omitted leaves the CLI/config default. */
+  model?: string;
+  /**
+   * Reasoning effort, passed as `-c model_reasoning_effort=<level>`. Codex has
+   * no dedicated flag; the config override is the documented route.
+   */
+  effort?: EffortLevel;
+  /**
+   * When set, `codex` is launched through `headroom wrap codex` so its API
+   * traffic routes via the shared proxy. The proxy is started once by the
+   * bridge (see `headroom.ts`), hence `--no-proxy`.
+   */
+  headroom?: { bin: string; port: number };
+}
+
+/**
+ * Reject anything that is not a plain path/identifier.
+ *
+ * Codex is spawned via argv, not a shell, so this is not injection defence the
+ * way the Claude driver's equivalent is — nothing here reaches a shell. It is a
+ * sanity gate on a value that comes from the environment (`BRIDGE_HEADROOM_BIN`)
+ * and keeps the two drivers' accepted shapes identical.
+ */
+function assertHeadroomBinSafe(bin: string): void {
+  if (!/^[A-Za-z0-9_./-]+$/.test(bin)) {
+    throw new Error(`unsafe headroom bin: ${bin}`);
+  }
+}
+
+/**
+ * Build the argv for one Codex turn.
+ *
+ * Two shapes:
+ *   plain     `codex <codexArgs>`
+ *   headroom  `<bin> wrap codex --port N --no-proxy ... -- <codexArgs>`
+ *
+ * The `--` separator is mandatory, same as the Claude driver: headroom's own
+ * `-p/--port` and `-v/--verbose` are real Click options and would be consumed
+ * before Codex ever saw them.
+ *
+ * `--no-mcp --no-serena --no-rtk` are load-bearing, and more so here than for
+ * Claude — `headroom wrap codex` registers its MCP server in the *active Codex
+ * config file*. Concurrent sessions would race on that file, and the bridge has
+ * no business rewriting the user's Codex profile behind their back.
+ */
+export function buildCodexSpawn(opts: {
+  codexArgs: string[];
+  headroom?: { bin: string; port: number } | undefined;
+}): { cmd: string; args: string[] } {
+  const { codexArgs, headroom } = opts;
+  if (!headroom) return { cmd: 'codex', args: codexArgs };
+  assertHeadroomBinSafe(headroom.bin);
+  return {
+    cmd: headroom.bin,
+    args: [
+      'wrap',
+      'codex',
+      '--port',
+      String(headroom.port),
+      '--no-proxy',
+      '--no-mcp',
+      '--no-serena',
+      '--no-rtk',
+      '--',
+      ...codexArgs,
+    ],
+  };
+}
+
+/**
+ * Signal a turn's whole process group, falling back to the direct child.
+ *
+ * Turns are spawned `detached`, so the child leads its own group and
+ * `kill(-pid)` reaches grandchildren. That is what makes headroom safe here:
+ * under the wrapper `codex` is a grandchild, and Python's default SIGTERM
+ * handling exits without forwarding, which would leave the agent orphaned and
+ * still burning tokens.
+ */
+function signalTree(
+  proc: ChildProcessByStdio<Writable, Readable, Readable>,
+  sig: NodeJS.Signals,
+): void {
+  const pid = proc.pid;
+  if (pid !== undefined) {
+    try {
+      process.kill(-pid, sig);
+      return;
+    } catch {
+      // ESRCH (group already gone) or EPERM — fall through to the child.
+    }
+  }
+  try {
+    proc.kill(sig);
+  } catch {
+    /* already dead */
+  }
 }
 
 export class CodexProcess extends EventEmitter {
   private readonly projectPath: string;
   private readonly codexHome: string;
+  private model: string | null;
+  private effort: EffortLevel | null;
   private readonly spawnFn: SpawnFn;
   /**
    * The Codex CLI session uuid for this driver. Mutates from null → uuid on
@@ -67,11 +166,15 @@ export class CodexProcess extends EventEmitter {
   private stdoutBuf = '';
   private stderrBuf = Buffer.alloc(0);
   private killed = false;
+  private readonly headroom: { bin: string; port: number } | undefined;
 
   constructor(opts: CodexProcessOpts) {
     super();
     this.projectPath = opts.projectPath;
     this.codexHome = opts.codexHome;
+    this.model = opts.model ?? null;
+    this.effort = opts.effort ?? null;
+    this.headroom = opts.headroom;
     this.spawnFn = opts.spawn ?? (nodeSpawn as unknown as SpawnFn);
     if (opts.codexResumeSeed) {
       this.codexSessionId = opts.codexResumeSeed;
@@ -90,7 +193,31 @@ export class CodexProcess extends EventEmitter {
     }
   }
 
-  sendUserText(text: string, _images?: ReadonlyArray<{ mime: string; base64: string }>): void {
+  /**
+   * Switch model and/or effort for subsequent turns.
+   *
+   * Codex spawns a fresh `codex exec` per turn, so there is no live process to
+   * signal — recording the new values is enough and the next turn picks them
+   * up. This mirrors how nimbalyst handles it (`SessionManager.updateSessionModel`),
+   * which is the only option on a per-turn driver. The Claude driver can do
+   * better and switches in place; see `ClaudeProcess.applyModelChange`.
+   */
+  applyModelChange(next: { model?: string; effort?: EffortLevel }): void {
+    if (next.model !== undefined) {
+      if (!isValidModelId(next.model)) throw new Error(`unsafe model id: ${next.model}`);
+      this.model = next.model;
+    }
+    if (next.effort !== undefined) {
+      if (!isEffortLevel(next.effort)) throw new Error(`unknown effort level: ${next.effort}`);
+      this.effort = next.effort;
+    }
+  }
+
+  sendUserText(
+    text: string,
+    _images?: ReadonlyArray<{ mime: string; base64: string }>,
+    imagePaths?: readonly string[],
+  ): void {
     // Concurrent-turn guard. If a previous turn is still in flight when the
     // next sendUserText arrives, terminate it cleanly first. Without this,
     // `currentTurnProc` would be silently overwritten and the prior child's
@@ -101,26 +228,34 @@ export class CodexProcess extends EventEmitter {
       // Supersede activeChild NOW so stale child's deferred stdout/stderr data
       // and exit events are filtered out by the per-listener guards below.
       this.activeChild = null;
-      try {
-        stale.kill('SIGTERM');
-      } catch {
-        /* already dead */
-      }
+      signalTree(stale, 'SIGTERM');
     }
     if (this.killed) return;
+    // Read at turn time, not construction time, so a mid-session switch takes
+    // effect on the very next turn. Codex spawns per turn, so that is free —
+    // there is no live process to signal, unlike the Claude driver.
+    // `codex exec -i <FILE>` attaches images to the prompt of that invocation.
+    // Because this driver spawns once per turn, every turn is an "initial
+    // prompt" as far as the CLI is concerned, so images work on any turn and
+    // not just the first.
+    const imageArgs = (imagePaths ?? []).flatMap((p) => ['-i', p]);
     const baseArgs = [
       '--json',
       '--dangerously-bypass-approvals-and-sandbox',
       '--skip-git-repo-check',
+      ...imageArgs,
+      ...(this.model !== null ? ['--model', this.model] : []),
+      ...(this.effort !== null ? ['-c', `model_reasoning_effort=${this.effort}`] : []),
       '-C',
       this.projectPath,
     ];
-    const args =
+    const codexArgs =
       this.codexSessionId === null
         ? ['exec', ...baseArgs, text]
         : ['exec', ...baseArgs, 'resume', this.codexSessionId, text];
+    const { cmd, args } = buildCodexSpawn({ codexArgs, headroom: this.headroom });
 
-    const child = this.spawnFn('codex', args, {
+    const child = this.spawnFn(cmd, args, {
       cwd: this.projectPath,
       env: { ...process.env, CODEX_HOME: this.codexHome },
       // stdin MUST be ignored. Codex's `exec` reads piped stdin as
@@ -129,6 +264,12 @@ export class CodexProcess extends EventEmitter {
       // stdin as 'pipe' without writing/closing it makes the child hang
       // forever — observed against codex-cli 0.128.0 in development.
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Own process group so a stop can signal the whole tree. Under headroom
+      // `codex` is a grandchild of the Python wrapper, which exits on SIGTERM
+      // without forwarding — killing only the direct child would orphan the
+      // agent mid-turn. Never unref'd: the bridge must not exit with live
+      // children.
+      detached: true,
     });
     this.currentTurnProc = child;
     // activeChild is set to the new child so its stdout/stderr/exit/error
@@ -271,6 +412,29 @@ export class CodexProcess extends EventEmitter {
     return this.stderrBuf.toString('utf8');
   }
 
+  /**
+   * Stop the turn in flight, leaving the session usable.
+   *
+   * This driver spawns one `codex exec` per turn, so killing that child *is*
+   * the interrupt — the session's identity lives in `codexSessionId`, and the
+   * next turn resumes from it. Deliberately does not emit `exit`: that is what
+   * `kill()` means, and it would end the session.
+   */
+  interrupt(): void {
+    if (this.killed) return;
+    const proc = this.currentTurnProc;
+    if (!proc) return;
+    // Clear both refs before signalling so the child's own exit handler sees no
+    // current turn and stays quiet — this method owns the terminating event.
+    this.currentTurnProc = null;
+    this.activeChild = null;
+    signalTree(proc, 'SIGTERM');
+    setTimeout(() => signalTree(proc, 'SIGKILL'), KILL_GRACE_MS).unref();
+    // Close the turn in the UI. Without this the transcript keeps a tool call
+    // spinning forever, because no `result` is coming.
+    this.emit('event', { kind: 'result', error: 'interrupted' } satisfies AgentEvent);
+  }
+
   kill(): void {
     if (this.killed) return;
     this.killed = true;
@@ -278,13 +442,9 @@ export class CodexProcess extends EventEmitter {
     this.currentTurnProc = null; // ensure handleExit's natural-exit path no-ops
     this.activeChild = null; // suppress any deferred data/exit from killed child
     if (proc) {
-      proc.kill('SIGTERM');
+      signalTree(proc, 'SIGTERM');
       setTimeout(() => {
-        try {
-          proc.kill('SIGKILL');
-        } catch {
-          /* already dead */
-        }
+        signalTree(proc, 'SIGKILL');
       }, KILL_GRACE_MS).unref();
     }
     // Always emit a terminal 'exit' so SessionManager fires session_ended,

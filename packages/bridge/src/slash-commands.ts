@@ -31,6 +31,12 @@ const CODEX_BUILTINS: SlashCommand[] = [
 
 interface ScannerOpts {
   homeDir: string;
+  /**
+   * Overrides `<homeDir>/.claude` when sessions run against a non-default
+   * CLAUDE_CONFIG_DIR, so the autocomplete lists the commands the agent can
+   * actually run. Project-local `.claude/commands` is unaffected.
+   */
+  claudeConfigDir?: string;
 }
 
 export class SlashCommandsScanner {
@@ -55,7 +61,10 @@ export class SlashCommandsScanner {
     }
 
     // Claude only: scan user + project dirs
-    const userCmds = await this.scanDir(join(this.opts.homeDir, '.claude', 'commands'), 'user');
+    const userCmds = await this.scanDir(
+      join(this.opts.claudeConfigDir ?? join(this.opts.homeDir, '.claude'), 'commands'),
+      'user',
+    );
     const projectCmds = await this.scanDir(
       join(session.primaryCwd, '.claude', 'commands'),
       'project',

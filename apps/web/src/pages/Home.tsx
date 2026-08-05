@@ -6,6 +6,7 @@ import { useTerminalsStore } from '../store/terminals';
 import type { AppShellOutletContext } from '../shell/AppShell';
 import { useNewSession } from '../features/project-picker/useNewSession';
 import { HistoryPanel } from '../features/history/HistoryPanel';
+import { SessionRow } from '../features/session-list/SessionList';
 
 export function Home(): JSX.Element {
   const { client } = useOutletContext<AppShellOutletContext>();
@@ -68,42 +69,40 @@ export function Home(): JSX.Element {
             No active sessions
           </div>
         ) : (
-          <ul className="list-none p-0 m-0 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl divide-y divide-[var(--color-border)] overflow-hidden">
-            {aliveSessions.map((s) => {
-              const label = s.projectPath.split('/').filter(Boolean).pop() ?? s.projectPath;
-              return (
-                <li key={s.sessionId}>
-                  <button
-                    type="button"
-                    className="w-full text-left p-4 min-h-[56px] flex items-center justify-between hover:bg-[var(--color-surface-2)] transition-colors"
-                    onClick={() => navigate(`/session/${s.sessionId}`)}
-                  >
-                    <div className="flex flex-col gap-0.5 min-w-0">
-                      <span className="text-[var(--color-text)] font-bold truncate">{label}</span>
-                      <span className="text-[var(--color-text-dim)] text-xs font-mono truncate">{s.projectPath}</span>
-                    </div>
-                    <div className="w-2.5 h-2.5 bg-[var(--color-success)] rounded-full shadow-[0_0_8px_color-mix(in_srgb,var(--color-success)_60%,transparent)] shrink-0" aria-label="alive" />
-                  </button>
-                </li>
-              );
-            })}
+          <ul className="list-none p-0 m-0 flex flex-col gap-1.5">
+            {aliveSessions.map((s) => (
+              <SessionRow
+                key={s.sessionId}
+                session={s}
+                activeId={null}
+                onSelect={(sid) => navigate(`/session/${sid}`)}
+              />
+            ))}
             {aliveTerminals.map((t) => {
               const label = t.cwd.split('/').filter(Boolean).pop() ?? t.cwd;
               return (
-                <li key={t.termId}>
+                <li
+                  key={t.termId}
+                  className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden"
+                >
                   <button
                     type="button"
-                    className="w-full text-left p-4 min-h-[56px] flex items-center justify-between hover:bg-[var(--color-surface-2)] transition-colors"
+                    className="w-full text-left px-3 py-2 min-h-[56px] flex items-center justify-between gap-2 hover:bg-[var(--color-surface-2)] transition-colors"
                     onClick={() => navigate(`/terminal/${t.termId}`)}
                   >
                     <div className="flex flex-col gap-0.5 min-w-0">
-                      <span className="text-[var(--color-text)] font-bold truncate">
-                        <span className="text-[var(--color-text-dim)] text-xs mr-1">[term]</span>
-                        {label}
-                      </span>
-                      <span className="text-[var(--color-text-dim)] text-xs font-mono truncate">{t.cwd}</span>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-semibold text-[var(--color-text)] truncate">{label}</span>
+                        <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded font-mono bg-[var(--color-surface-2)] text-[var(--color-text-dim)]">
+                          term
+                        </span>
+                      </div>
+                      <span className="text-xs text-[var(--color-text-dim)] font-mono truncate">{t.cwd}</span>
                     </div>
-                    <div className="w-2.5 h-2.5 bg-[var(--color-success)] rounded-full shrink-0" aria-label="alive" />
+                    <div
+                      className="w-2.5 h-2.5 bg-[var(--color-success)] rounded-full shrink-0"
+                      aria-label="alive"
+                    />
                   </button>
                 </li>
               );

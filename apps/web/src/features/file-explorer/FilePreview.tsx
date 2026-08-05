@@ -1,4 +1,6 @@
 import type { SelectedFile } from '../../store/file-explorer';
+import type { BridgeClient } from '../../services/bridge-client';
+import { CodeEditorPane } from '../editor/CodeEditorPane';
 
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -8,9 +10,10 @@ function humanSize(bytes: number): string {
 
 interface FilePreviewProps {
   file: SelectedFile | null;
+  client: BridgeClient;
 }
 
-export function FilePreview({ file }: FilePreviewProps): JSX.Element {
+export function FilePreview({ file, client }: FilePreviewProps): JSX.Element {
   if (!file) {
     return (
       <div className="file-preview-empty p-3 text-[var(--color-text-dim)] text-sm font-mono">
@@ -26,16 +29,7 @@ export function FilePreview({ file }: FilePreviewProps): JSX.Element {
     );
   }
   if (file.state === 'text') {
-    return (
-      <div className="file-preview flex flex-col min-h-0">
-        <div className="file-preview-header text-xs text-[var(--color-text-dim)] px-3 py-2 border-b border-[var(--color-border)] truncate font-mono">
-          {file.path} · {humanSize(file.bytesRead)}
-        </div>
-        <pre className="file-preview-pre flex-1 min-h-0 overflow-auto p-3 text-xs font-mono text-[var(--color-text)] whitespace-pre-wrap break-words m-0">
-          {file.content}
-        </pre>
-      </div>
-    );
+    return <CodeEditorPane client={client} file={file} />;
   }
   if (file.state === 'binary') {
     return (

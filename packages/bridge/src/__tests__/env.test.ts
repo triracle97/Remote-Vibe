@@ -19,6 +19,32 @@ describe('loadEnv', () => {
     expect(() => loadEnv({})).toThrow(/BRIDGE_TOKEN/);
   });
 
+  it('defaults both fs size caps to 5 MB', () => {
+    const cfg = loadEnv({ BRIDGE_TOKEN: 'a'.repeat(24), HOME: '/Users/test' });
+    expect(cfg.fsReadMaxBytes).toBe(5 * 1024 * 1024);
+    expect(cfg.fsWriteMaxBytes).toBe(5 * 1024 * 1024);
+  });
+
+  it('reads the fs size caps independently', () => {
+    const cfg = loadEnv({
+      BRIDGE_TOKEN: 'a'.repeat(24),
+      HOME: '/Users/test',
+      BRIDGE_FS_READ_MAX_BYTES: '1048576',
+      BRIDGE_FS_WRITE_MAX_BYTES: '65536',
+    });
+    expect(cfg.fsReadMaxBytes).toBe(1048576);
+    expect(cfg.fsWriteMaxBytes).toBe(65536);
+  });
+
+  it('rejects a non-positive fs size cap', () => {
+    expect(() =>
+      loadEnv({ BRIDGE_TOKEN: 'a'.repeat(24), HOME: '/Users/test', BRIDGE_FS_WRITE_MAX_BYTES: '0' }),
+    ).toThrow(/BRIDGE_FS_WRITE_MAX_BYTES/);
+    expect(() =>
+      loadEnv({ BRIDGE_TOKEN: 'a'.repeat(24), HOME: '/Users/test', BRIDGE_FS_READ_MAX_BYTES: 'lots' }),
+    ).toThrow(/BRIDGE_FS_READ_MAX_BYTES/);
+  });
+
   it('throws when BRIDGE_TOKEN is shorter than 24 chars', () => {
     expect(() => loadEnv({ BRIDGE_TOKEN: 'short' })).toThrow(/24/);
   });
@@ -75,12 +101,15 @@ describe('loadEnv', () => {
     expect(cfg.dataDir).toBe('/var/mrt');
   });
 
-  it('defaults transcriptRetentionDays to 30', () => {
+  it('defaults transcriptRetentionDays to 0, keeping transcripts forever', () => {
+    // Transcripts are the app's only durable record of a session and outlive
+    // the agent CLI's own rotating history — a 30-day default silently
+    // deleted the content behind older board cards.
     const cfg = loadEnv({
       BRIDGE_TOKEN: 'a'.repeat(24),
       HOME: '/Users/test',
     });
-    expect(cfg.transcriptRetentionDays).toBe(30);
+    expect(cfg.transcriptRetentionDays).toBe(0);
   });
 
   it('parses BRIDGE_TRANSCRIPT_RETENTION_DAYS as integer', () => {

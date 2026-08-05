@@ -1,4 +1,15 @@
-import { realpath as fsRealpath, readdir, readFile as fsReadFile, stat, open } from 'node:fs/promises';
+import {
+  realpath as fsRealpath,
+  readdir,
+  readFile as fsReadFile,
+  stat,
+  open,
+  writeFile as fsWriteFile,
+  rename,
+  unlink,
+  chmod,
+} from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
 import { sep } from 'node:path';
 
 const DENIED_PATH_SEGMENTS: ReadonlySet<string> = new Set([
@@ -46,7 +57,13 @@ const MIME_BY_EXT: Record<string, string> = {
 
 export interface FsApiOpts {
   allowedDirs: string[];
+  /** Cap for `readFile`. Callers may still pass a smaller per-call cap. */
+  readMaxBytes?: number;
+  /** Cap for `writeFile`, checked before anything touches the disk. */
+  writeMaxBytes?: number;
 }
+
+const FALLBACK_MAX_BYTES = 5 * 1024 * 1024;
 
 export interface DirEntry {
   name: string;
@@ -55,14 +72,32 @@ export interface DirEntry {
 }
 
 export type FileResult =
-  | { kind: 'text'; content: string; bytesRead: number; truncated: boolean }
+  | { kind: 'text'; content: string; bytesRead: number; truncated: boolean; hash: string }
   | { kind: 'binary'; mime?: string; size: number }
   | { kind: 'too_large'; size: number };
 
+export interface WriteResult {
+  bytesWritten: number;
+  /** Hash of the newly-written content, so the client can keep editing. */
+  hash: string;
+}
+
+export type FsErrorCode =
+  | 'path_outside_allowlist'
+  | 'path_denied'
+  | 'file_too_large'
+  | 'file_conflict'
+  | 'file_write_failed';
+
 export class FsAccessError extends Error {
-  constructor(public code: 'path_outside_allowlist' | 'path_denied', message: string) {
+  constructor(public code: FsErrorCode, message: string) {
     super(message);
   }
+}
+
+/** Content hash used for optimistic-concurrency checks on write. */
+export function hashContent(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
 function splitSegments(p: string): string[] {
@@ -145,9 +180,13 @@ function guessMime(path: string): string | undefined {
 export class FsApi {
   private readonly allowedDirs: string[];
   private resolvedAllowedDirs: string[] | null = null;
+  readonly readMaxBytes: number;
+  readonly writeMaxBytes: number;
 
   constructor(opts: FsApiOpts) {
     this.allowedDirs = opts.allowedDirs;
+    this.readMaxBytes = opts.readMaxBytes ?? FALLBACK_MAX_BYTES;
+    this.writeMaxBytes = opts.writeMaxBytes ?? FALLBACK_MAX_BYTES;
   }
 
   private async getResolvedAllowedDirs(): Promise<string[]> {
@@ -225,7 +264,7 @@ export class FsApi {
     return out;
   }
 
-  async readFile(path: string, sizeCap: number): Promise<FileResult> {
+  async readFile(path: string, sizeCap: number = this.readMaxBytes): Promise<FileResult> {
     const resolved = await this.resolveAndGate(path);
     let st;
     try {
@@ -250,7 +289,83 @@ export class FsApi {
       await fh.close();
     }
     const content = await fsReadFile(resolved, 'utf8');
-    return { kind: 'text', content, bytesRead: Buffer.byteLength(content, 'utf8'), truncated: false };
+    return {
+      kind: 'text',
+      content,
+      bytesRead: Buffer.byteLength(content, 'utf8'),
+      truncated: false,
+      hash: hashContent(content),
+    };
+  }
+
+  /**
+   * Overwrite an existing text file, atomically.
+   *
+   * Deliberately cannot create files. `resolveAndGate` is built on `realpath`,
+   * which only resolves paths that already exist, and that is the property this
+   * whole surface leans on: every write lands on a path the allowlist and
+   * denylist have already vetted as a real file. Supporting creation would mean
+   * gating a *parent* directory and re-deriving the child path by hand — a
+   * second, subtly different check next to the audited one. Not worth it for a
+   * file drawer whose job is editing what the agent already produced.
+   *
+   * `baseHash` is an optimistic-concurrency token: pass the hash the client
+   * originally read and the write is refused with `file_conflict` if anything
+   * (the agent, a build step, another tab) changed the file in the meantime.
+   * Omit it to force the write.
+   */
+  async writeFile(path: string, content: string, baseHash?: string): Promise<WriteResult> {
+    const bytes = Buffer.byteLength(content, 'utf8');
+    if (bytes > this.writeMaxBytes) {
+      throw new FsAccessError(
+        'file_too_large',
+        `${bytes} bytes exceeds the ${this.writeMaxBytes}-byte write cap`,
+      );
+    }
+
+    const resolved = await this.resolveAndGate(path);
+    let st;
+    try {
+      st = await stat(resolved);
+    } catch {
+      throw new FsAccessError('path_outside_allowlist', `cannot stat ${resolved}`);
+    }
+    if (!st.isFile()) {
+      throw new FsAccessError('path_outside_allowlist', `${resolved} is not a regular file`);
+    }
+
+    if (baseHash !== undefined) {
+      let onDisk: string;
+      try {
+        onDisk = await fsReadFile(resolved, 'utf8');
+      } catch (err) {
+        throw new FsAccessError('file_write_failed', `cannot read ${resolved}: ${(err as Error).message}`);
+      }
+      if (hashContent(onDisk) !== baseHash) {
+        throw new FsAccessError(
+          'file_conflict',
+          `${resolved} changed on disk since it was loaded`,
+        );
+      }
+    }
+
+    // tmpfile + rename, so a crash mid-write can never leave a half-file
+    // behind. The tmpfile is a sibling, keeping the rename on one filesystem
+    // (where it is atomic) and inside the directory the gate already cleared.
+    const dir = resolved.slice(0, resolved.lastIndexOf(sep)) || sep;
+    const tmp = `${dir}${sep}.${basenameOf(resolved)}.${randomBytes(6).toString('hex')}.tmp`;
+    try {
+      await fsWriteFile(tmp, content, 'utf8');
+      // Carry the original mode across, or an executable script silently
+      // loses its +x bit the first time it is edited from the browser.
+      await chmod(tmp, st.mode & 0o7777).catch(() => undefined);
+      await rename(tmp, resolved);
+    } catch (err) {
+      await unlink(tmp).catch(() => undefined);
+      throw new FsAccessError('file_write_failed', `cannot write ${resolved}: ${(err as Error).message}`);
+    }
+
+    return { bytesWritten: bytes, hash: hashContent(content) };
   }
 }
 

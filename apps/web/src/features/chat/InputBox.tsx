@@ -1,7 +1,10 @@
-import { useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Paperclip, History } from 'lucide-react';
+import { useHasKeyboard } from '../../shell/useHasKeyboard';
+import { isMac } from '../../shell/shortcuts';
 import { PromptHistoryDropdown } from '../prompt-history/PromptHistoryDropdown';
 import { ImageThumbnails } from '../image-attach/ImageThumbnails';
+import { imageFilesFromClipboard } from '../image-attach/clipboardImages';
 import type { PendingImage, UseImagePaste } from '../image-attach/useImagePaste';
 import type { AgentKind } from '../../types/protocol';
 import { SlashAutocomplete, type SlashAutocompleteHandle } from './SlashAutocomplete';
@@ -10,6 +13,10 @@ import { AtTagAutocomplete, type AtTagAutocompleteHandle } from './AtTagAutocomp
 interface InputBoxProps {
   onSend(text: string, images?: ReadonlyArray<{ mime: string; base64: string }>): void;
   onStop(): void;
+  /** Stop the turn in flight, leaving the session alive. */
+  onInterrupt?(): void;
+  /** True while the agent is mid-turn, i.e. while there is something to stop. */
+  turnRunning?: boolean;
   /**
    * Orthogonal "input is unavailable" flag (e.g. global error / streaming).
    * Distinct from `alive`: a dead session does NOT disable InputBox here,
@@ -39,6 +46,8 @@ interface InputBoxProps {
 export function InputBox({
   onSend,
   onStop,
+  onInterrupt,
+  turnRunning = false,
   disabled,
   alive,
   onResume,
@@ -49,6 +58,10 @@ export function InputBox({
 }: InputBoxProps): JSX.Element {
   const [text, setText] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
+  const hasKeyboard = useHasKeyboard();
+  const sendHint = hasKeyboard
+    ? 'Enter to send, Shift+Enter for a new line.'
+    : 'Cmd/Ctrl+Enter or the send button to send.';
   // Captured at submit-time when the session is dead. Preserves the message
   // even if the user erases or retypes the textarea while the resume is
   // in-flight (or before they click "Resume + send").
@@ -62,7 +75,9 @@ export function InputBox({
   const atRef = useRef<AtTagAutocompleteHandle>(null);
   // Image attach is allowed on dead Claude sessions too — the message + images
   // get queued and flush after resume succeeds.
-  const imagesEnabled = agent === 'claude' && !disabled;
+  // Both CLIs take images — Claude inline on stdin, Codex via `codex exec -i`
+  // — so the only gate left is whether the composer is usable at all.
+  const imagesEnabled = !disabled;
   const { images, error, addImageFromFile, removeImage, clear } = imagePaste;
 
   const updateCursor = (): void => {
@@ -164,9 +179,26 @@ export function InputBox({
         return;
       }
     }
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault();
-      submit();
+    if (e.key === 'Enter') {
+      // Never act mid-composition: on a CJK or predictive keyboard Enter is how
+      // you accept the candidate, and sending there would fire off half a word.
+      if (e.nativeEvent.isComposing) return;
+      // Cmd/Ctrl+Enter always sends, on every device — it was the original
+      // binding and stays in muscle memory.
+      if (e.metaKey || e.ctrlKey) {
+        e.preventDefault();
+        submit();
+        return;
+      }
+      if (e.shiftKey || e.altKey) return; // deliberate newline
+      // Bare Enter sends only where Shift+Enter can actually be typed. Software
+      // keyboards cannot produce it, so on a phone Enter has to stay a newline
+      // or there is no way to write a second line at all; the send button is
+      // the affordance there.
+      if (hasKeyboard) {
+        e.preventDefault();
+        submit();
+      }
       return;
     }
     if (e.key === 'ArrowUp' && text.length === 0) {
@@ -180,17 +212,34 @@ export function InputBox({
     }
   };
 
-  const onPaste: React.ClipboardEventHandler<HTMLTextAreaElement> = async (e) => {
+  /**
+   * ⌘/Ctrl+V anywhere in the app attaches an image from the clipboard.
+   *
+   * Bound to the document rather than the textarea. It used to be a React
+   * `onPaste` on the composer, which meant a screenshot only pasted if you had
+   * already clicked into the input — paste right after taking it, with focus
+   * still on the transcript or a button, and nothing happened at all.
+   *
+   * Text pastes are untouched: the handler bails unless the clipboard actually
+   * carries image files, so pasting into the rename box or the file editor
+   * behaves exactly as before.
+   */
+  useEffect(() => {
     if (!imagesEnabled) return;
-    const items = Array.from(e.clipboardData?.items ?? []);
-    const files = items
-      .filter((it) => it.kind === 'file')
-      .map((it) => it.getAsFile())
-      .filter((f): f is File => f !== null);
-    if (files.length === 0) return;
-    e.preventDefault();
-    for (const f of files) await addImageFromFile(f);
-  };
+    const onPaste = (e: ClipboardEvent): void => {
+      // `DataTransferItem`s are only valid for the synchronous lifetime of the
+      // event, so the files have to come out before any await.
+      const files = imageFilesFromClipboard(e.clipboardData);
+      if (files.length === 0) return;
+      e.preventDefault();
+      void (async () => {
+        for (const f of files) await addImageFromFile(f);
+      })();
+      taRef.current?.focus();
+    };
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [imagesEnabled, addImageFromFile]);
 
   const onAttachClick = (): void => {
     if (!imagesEnabled) return;
@@ -251,9 +300,7 @@ export function InputBox({
           placeholder={
             disabled
               ? 'Session ended.'
-              : agent === 'codex'
-                ? 'Type a prompt. Cmd/Ctrl+Enter to send. ↑ on empty input opens history. (Codex: no image input.)'
-                : 'Type a prompt. Cmd/Ctrl+Enter to send. ↑ on empty input opens history. Paste/drop/📎 to attach images.'
+              : `Type a prompt. ${sendHint} ↑ on empty input opens history. Paste/drop/📎 to attach images.`
           }
           onChange={(e) => {
             setText(e.target.value);
@@ -263,7 +310,6 @@ export function InputBox({
           onKeyUp={updateCursor}
           onSelect={updateCursor}
           onClick={updateCursor}
-          onPaste={onPaste}
           rows={3}
           disabled={disabled}
           className="bg-transparent border-0 outline-none ring-0 text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] resize-none min-h-[3rem] text-sm md:text-[15px] focus:ring-0 disabled:opacity-60"
@@ -283,7 +329,7 @@ export function InputBox({
               className="image-attach-button p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-dim)] hover:text-[var(--color-text)] hover:bg-[color-mix(in_srgb,var(--color-surface)_70%,transparent)] rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
               onClick={onAttachClick}
               disabled={!imagesEnabled}
-              title={agent === 'codex' ? 'Codex sessions do not accept images' : 'Attach image (paste / drop / click)'}
+              title="Attach image (paste / drop / click)"
               aria-label="Attach image"
             >
               <Paperclip size={18} aria-hidden="true" />
@@ -300,15 +346,37 @@ export function InputBox({
             </button>
           </div>
           <div className="flex items-center gap-2 ml-auto">
-            <button
-              type="button"
-              onClick={onStop}
-              disabled={disabled}
-              className="flex items-center gap-2 px-3 py-2 min-h-[44px] bg-[var(--color-surface)] text-[var(--color-text)] rounded-lg text-sm font-medium hover:bg-[var(--color-surface-2)] disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <span className="w-2.5 h-2.5 bg-[var(--color-text)] rounded-sm shrink-0" aria-hidden="true" />
-              <span>Stop</span>
-            </button>
+            {/*
+              Two different stops, deliberately not merged. While a turn is
+              running the prominent action is interrupting it — the session
+              survives, which is what people mean by "stop". Ending the session
+              is the rarer, heavier action and stays available underneath.
+            */}
+            {turnRunning && onInterrupt ? (
+              <button
+                type="button"
+                onClick={onInterrupt}
+                aria-label="Stop the current turn"
+                title={`Stop this turn (Esc${isMac() ? '' : ' / Ctrl+C'})`}
+                className="flex items-center gap-2 px-3 py-2 min-h-[44px] rounded-lg text-sm font-medium border border-[var(--color-state-running)] text-[var(--color-state-running)] hover:bg-[color-mix(in_srgb,var(--color-state-running)_12%,transparent)]"
+              >
+                <span className="w-2.5 h-2.5 bg-[var(--color-state-running)] rounded-sm shrink-0" aria-hidden="true" />
+                <span>Stop</span>
+                <kbd className="text-[10px] opacity-70 font-mono">esc</kbd>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onStop}
+                disabled={disabled}
+                aria-label="End the session"
+                title="End this session"
+                className="flex items-center gap-2 px-3 py-2 min-h-[44px] bg-[var(--color-surface)] text-[var(--color-text)] rounded-lg text-sm font-medium hover:bg-[var(--color-surface-2)] disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <span className="w-2.5 h-2.5 bg-[var(--color-text)] rounded-sm shrink-0" aria-hidden="true" />
+                <span>End</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={submit}

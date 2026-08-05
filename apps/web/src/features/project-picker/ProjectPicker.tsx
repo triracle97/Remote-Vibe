@@ -6,9 +6,10 @@ import { DirPicker } from '../profiles/DirPicker';
 import { ProfilePicker } from '../profiles/ProfilePicker';
 import { ProfileEditor } from '../profiles/ProfileEditor';
 import { Modal } from '../../shell/Modal';
-import type { AgentKind, Profile } from '../../types/protocol';
+import type { AgentKind, EffortLevel, Profile } from '../../types/protocol';
 import { DEFAULT_WORKSPACE_DIRS } from './default-workspaces';
-import { useDefaultWorkspacesStore } from './defaultWorkspacesStore';
+import { ProjectQuickAdd } from './ProjectQuickAdd';
+import { ModelEffortPicker } from '../model-picker/ModelEffortPicker';
 import { useConnectionStore } from '../../store/connection';
 
 const RECENT_KEY = 'mrt.recentProjects';
@@ -51,6 +52,10 @@ export interface ProjectPickerSelection {
   /** Back-compat alias for dirs[0]. */
   projectPath: string;
   account?: string;
+  /** Claude profile name (CLAUDE_CONFIG_DIR); omitted means the default. */
+  claudeConfig?: string;
+  model?: string;
+  effort?: EffortLevel;
 }
 
 interface ProjectPickerProps {
@@ -62,13 +67,17 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
   const [agent, setAgent] = useState<AgentKind | 'terminal'>('claude');
   const [dirs, setDirs] = useState<string[]>([]);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [model, setModel] = useState<string | null>(null);
+  const [effort, setEffort] = useState<EffortLevel | null>(null);
   const accounts = useAccountsStore((s) => s.accounts);
   const selectedAccount = useAccountsStore((s) => s.selectedAccount);
   const setSelectedAccount = useAccountsStore((s) => s.setSelectedAccount);
+  const claudeConfigs = useAccountsStore((s) => s.claudeConfigs);
+  const selectedClaudeConfig = useAccountsStore((s) => s.selectedClaudeConfig);
+  const setSelectedClaudeConfig = useAccountsStore((s) => s.setSelectedClaudeConfig);
   const terminalCapable = useConnectionStore((s) => s.capabilities?.terminal ?? false);
   const profiles = useProfileStore((s) => s.profiles);
   const fetchProfiles = useProfileStore((s) => s.fetch);
-  const defaultWorkspaces = useDefaultWorkspacesStore((s) => s.paths);
   const [recents, setRecents] = useState<string[]>([]);
   const [autoLoaded, setAutoLoaded] = useState(false);
 
@@ -98,12 +107,25 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
     }
   }, [autoLoaded, dirs.length, defaultProfile, agent, setSelectedAccount]);
 
-  const suggestions = useMemo(
-    () => defaultWorkspaces.filter((p) => !dirs.includes(p)),
-    [defaultWorkspaces, dirs],
-  );
+  /** Whichever of account / claudeConfig applies to the selected agent. */
+  const launchProfile = (): {
+    account?: string;
+    claudeConfig?: string;
+    model?: string;
+    effort?: EffortLevel;
+  } => {
+    const tuning = {
+      ...(model !== null ? { model } : {}),
+      ...(effort !== null ? { effort } : {}),
+    };
+    if (agent === 'codex' && selectedAccount) return { account: selectedAccount, ...tuning };
+    if (agent === 'claude' && selectedClaudeConfig) {
+      return { claudeConfig: selectedClaudeConfig, ...tuning };
+    }
+    return tuning;
+  };
 
-  const addSuggestion = (path: string): void => {
+  const addDir = (path: string): void => {
     if (dirs.includes(path)) return;
     setDirs([...dirs, path]);
   };
@@ -119,25 +141,21 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
     const trimmed = dirs.map((d) => d.trim()).filter((d) => d.length > 0);
     if (trimmed.length === 0) return;
     rememberRecentProject(trimmed[0]!);
-    const account =
-      agent === 'codex' && selectedAccount ? { account: selectedAccount } : undefined;
     onPick({
       agent,
       dirs: trimmed,
       projectPath: trimmed[0]!,
-      ...(account ?? {}),
+      ...launchProfile(),
     });
   };
 
   const useRecent = (path: string): void => {
     rememberRecentProject(path);
-    const account =
-      agent === 'codex' && selectedAccount ? { account: selectedAccount } : undefined;
     onPick({
       agent,
       dirs: [path],
       projectPath: path,
-      ...(account ?? {}),
+      ...launchProfile(),
     });
   };
 
@@ -192,12 +210,33 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
             </label>
           )}
         </div>
-        {agent !== 'terminal' && agent === 'codex' && accounts.length > 0 && (
+        {agent === 'claude' && claudeConfigs.length > 1 && (
+          <div className="picker-account mb-3">
+            <label>
+              Claude profile:&nbsp;
+              <select
+                className="bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
+                aria-label="Claude profile"
+                value={selectedClaudeConfig ?? ''}
+                onChange={(e) => setSelectedClaudeConfig(e.target.value)}
+              >
+                {claudeConfigs.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                    {c.isDefault ? ' (default)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
+        {agent === 'codex' && accounts.length > 0 && (
           <div className="picker-account mb-3">
             <label>
               Account:&nbsp;
               <select
                 className="bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
+                aria-label="Codex account"
                 value={selectedAccount ?? ''}
                 onChange={(e) => setSelectedAccount(e.target.value)}
               >
@@ -226,27 +265,19 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
             submit();
           }}
         >
-          <DirPicker dirs={dirs} onChange={setDirs} />
-          {suggestions.length > 0 && (
-            <div className="picker-suggestions mt-3">
-              <h3 className="text-[var(--color-text-dim)] text-xs font-bold tracking-wider uppercase mb-2">Suggestions</h3>
-              <ul className="list-none p-0 m-0 bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg overflow-hidden">
-                {suggestions.map((p) => (
-                  <li key={p} className="border-b border-[var(--color-border)] last:border-b-0">
-                    <button
-                      type="button"
-                      onClick={() => addSuggestion(p)}
-                      className="w-full text-left px-3 py-2 min-h-[44px] flex items-center gap-2 text-sm font-mono text-[var(--color-text)] hover:bg-[var(--color-surface)] transition-colors"
-                      aria-label={`Add ${p}`}
-                    >
-                      <Plus size={14} aria-hidden="true" className="shrink-0 text-[var(--color-accent)]" />
-                      <span className="flex-1 break-all">{p}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+          {agent !== 'terminal' && (
+            <div className="mb-3">
+              <ModelEffortPicker
+                agent={agent}
+                model={model}
+                effort={effort}
+                onModelChange={setModel}
+                onEffortChange={setEffort}
+              />
             </div>
           )}
+          <DirPicker dirs={dirs} onChange={setDirs} />
+          <ProjectQuickAdd selected={dirs} onAdd={addDir} />
           <div className="picker-actions flex p-4 gap-3 bg-[color-mix(in_srgb,var(--color-bg)_50%,var(--color-surface))] border-t border-[var(--color-border)] -mx-6 -mb-6 mt-4">
             <button
               type="button"

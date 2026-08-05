@@ -8,9 +8,9 @@ import {
   tokensMatch,
 } from './auth.js';
 import type { SessionManager } from './session.js';
-import type { CodexAccount } from './accounts.js';
+import type { ClaudeConfigProfile, CodexAccount } from './accounts.js';
 import type { PromptStore } from './prompt-store.js';
-import type { FsApi } from './fs-api.js';
+import type { FsApi, FsErrorCode } from './fs-api.js';
 import type { ImageStore } from './image-store.js';
 import type { HistoryScanner } from './history-scanner.js';
 import type { ProfileStore } from './profile-store.js';
@@ -18,6 +18,7 @@ import type { SlashCommandsScanner } from './slash-commands.js';
 import type { FileSearch } from './file-search.js';
 import type { TerminalManager } from './terminal-manager.js';
 import { PathOutsideAllowlistError } from './path-allowlist.js';
+import { JobNotFoundError, jobLaunchPrompt, type JobStore } from './job-store.js';
 import type {
   ClientMsg,
   ServerErrorMsg,
@@ -31,6 +32,8 @@ export interface AttachWsOpts {
   token: string;
   sessionManager: SessionManager;
   accounts: Map<string, CodexAccount>;
+  /** Named CLAUDE_CONFIG_DIR profiles, surfaced through `list_accounts`. */
+  claudeConfigs?: Map<string, ClaudeConfigProfile>;
   promptStore?: PromptStore;
   fsApi: FsApi;
   imageStore: ImageStore;
@@ -39,6 +42,10 @@ export interface AttachWsOpts {
   slashCommands: SlashCommandsScanner;
   fileSearch: FileSearch;
   terminalManager: TerminalManager;
+  /** Backlog jobs — work written down before an agent runs. */
+  jobStore: JobStore;
+  /** Roots the client may browse for projects. */
+  allowedDirs: string[];
   capabilities: { terminal: boolean };
 }
 
@@ -67,6 +74,15 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
       setTimeout(() => wss.emit('connection', ws, req), 0);
     });
   });
+
+  /**
+   * Fan a message out to every connected socket. Job mutations use this so a
+   * card created on your laptop appears on your phone, matching how session
+   * mutations already behave.
+   */
+  const broadcastAll = (m: ServerMsg): void => {
+    opts.sessionManager.emit('broadcast', m);
+  };
 
   // wsId → ws (so terminalManager output/exit can find the right socket)
   const wsByConn = new Map<string, WebSocket>();
@@ -124,7 +140,12 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
       opts.terminalManager.killByWs(wsId);
     });
 
-    send({ type: 'system', event: 'init', capabilities: opts.capabilities });
+    send({
+      type: 'system',
+      event: 'init',
+      capabilities: opts.capabilities,
+      allowedDirs: opts.allowedDirs,
+    });
 
     ws.on('message', (raw) => {
       void handleMessage(
@@ -136,6 +157,7 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
         termOwner,
         send,
         opts.accounts,
+        opts.claudeConfigs ?? new Map(),
         opts.promptStore,
         opts.fsApi,
         opts.imageStore,
@@ -143,6 +165,8 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
         opts.profileStore,
         opts.slashCommands,
         opts.fileSearch,
+        opts.jobStore,
+        broadcastAll,
         opts.capabilities,
       );
     });
@@ -164,6 +188,7 @@ async function handleMessage(
   termOwner: Map<string, string>,
   send: (m: ServerMsg) => void,
   accounts: Map<string, CodexAccount>,
+  claudeConfigs: Map<string, ClaudeConfigProfile>,
   promptStore: PromptStore | undefined,
   fsApi: FsApi,
   imageStore: ImageStore,
@@ -171,6 +196,8 @@ async function handleMessage(
   profileStore: ProfileStore,
   slashCommands: SlashCommandsScanner,
   fileSearch: FileSearch,
+  jobStore: JobStore,
+  broadcastAll: (m: ServerMsg) => void,
   capabilities: { terminal: boolean },
 ): Promise<void> {
   const mgr = sessionManager;
@@ -208,6 +235,9 @@ async function handleMessage(
           agent: msg.agent,
           dirs,
           ...(msg.account ? { account: msg.account } : {}),
+          ...(msg.claudeConfig ? { claudeConfig: msg.claudeConfig } : {}),
+          ...(msg.model ? { model: msg.model } : {}),
+          ...(msg.effort ? { effort: msg.effort } : {}),
           ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
         });
         return;
@@ -216,6 +246,7 @@ async function handleMessage(
         const session = mgr.knowsSession(msg.sessionId)
           ? mgr.listSessions().find((s) => s.sessionId === msg.sessionId)
           : undefined;
+        let imagePaths: string[] | undefined;
         if (msg.images && msg.images.length > 0) {
           const agent = session?.agent;
           if (!agent) {
@@ -227,9 +258,18 @@ async function handleMessage(
             sendError(send, v.error, errorMessageFor(v.error), msg.correlationId, msg.sessionId);
             return;
           }
+          // Codex reads images off disk (`-i <FILE>`), so they have to exist
+          // before the turn spawns. Written here, where we can await, rather
+          // than inside the driver — `sendUserText` is synchronous, and making
+          // it await would let two rapid turns both pass the concurrent-turn
+          // guard and spawn. Claude keeps the fire-and-forget write inside
+          // `sendInput`, since it gets the bytes inline on stdin.
+          if (agent === 'codex') {
+            imagePaths = await imageStore.writeAuditCopy(msg.sessionId, msg.images.slice());
+          }
         }
         try {
-          mgr.sendInput(msg.sessionId, msg.text, msg.images);
+          mgr.sendInput(msg.sessionId, msg.text, msg.images, imagePaths);
         } catch (err) {
           const e = err as { code?: string; message?: string };
           if (e.code === 'session_dead') {
@@ -242,6 +282,27 @@ async function handleMessage(
       }
       case 'stop_session': {
         mgr.stop(msg.sessionId);
+        return;
+      }
+      case 'interrupt_session': {
+        try {
+          if (!mgr.interrupt(msg.sessionId)) {
+            sendError(
+              send,
+              'interrupt_not_supported',
+              errorMessageFor('interrupt_not_supported'),
+              msg.correlationId,
+              msg.sessionId,
+            );
+          }
+        } catch (err) {
+          const e = err as { code?: string; message?: string };
+          if (e.code === 'session_dead') {
+            sendError(send, 'session_dead', e.message ?? 'session dead', msg.correlationId, msg.sessionId);
+            return;
+          }
+          throw err;
+        }
         return;
       }
       case 'list_sessions': {
@@ -279,12 +340,189 @@ async function handleMessage(
       case 'list_accounts': {
         send({
           type: 'account_list',
-          accounts: [...accounts.values()].map((a) => ({
-            name: a.name,
-            agent: 'codex' as const,
-            isDefault: a.isDefault,
-          })),
+          accounts: [
+            ...[...accounts.values()].map((a) => ({
+              name: a.name,
+              agent: 'codex' as const,
+              isDefault: a.isDefault,
+            })),
+            // Claude profiles ride the same channel so the picker has one
+            // source. `configDir` is intentionally NOT sent — it is a local
+            // filesystem path and the client only needs the name.
+            ...[...claudeConfigs.values()].map((c) => ({
+              name: c.name,
+              agent: 'claude' as const,
+              isDefault: c.isDefault,
+            })),
+          ],
           ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+        });
+        return;
+      }
+      case 'list_all_sessions': {
+        send({
+          type: 'all_sessions',
+          sessions: sessionManager.listBoardSessions({
+            includeArchived: msg.includeArchived === true,
+          }),
+          ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+        });
+        return;
+      }
+      case 'set_session_model': {
+        await runBoardMutation(send, msg.correlationId, 'session_model_invalid', () =>
+          sessionManager.setSessionModel(msg.sessionId, {
+            ...(msg.model !== undefined ? { model: msg.model } : {}),
+            ...(msg.effort !== undefined ? { effort: msg.effort } : {}),
+          }),
+        );
+        return;
+      }
+      case 'set_session_phase': {
+        await runBoardMutation(send, msg.correlationId, 'session_phase_invalid', () =>
+          sessionManager.setSessionPhase(msg.sessionId, msg.phase),
+        );
+        return;
+      }
+      case 'set_session_tags': {
+        await runBoardMutation(send, msg.correlationId, 'session_tags_invalid', () =>
+          sessionManager.setSessionTags(msg.sessionId, msg.tags),
+        );
+        return;
+      }
+      case 'archive_session': {
+        await runBoardMutation(send, msg.correlationId, 'session_not_found', () =>
+          sessionManager.setSessionArchived(msg.sessionId, msg.archived === true),
+        );
+        return;
+      }
+      case 'delete_session': {
+        await runBoardMutation(send, msg.correlationId, 'session_not_found', () =>
+          sessionManager.deleteSession(msg.sessionId),
+        );
+        return;
+      }
+      case 'get_rate_limits': {
+        send({
+          type: 'rate_limits',
+          windows: sessionManager.rateLimitWindows(),
+          ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+        });
+        return;
+      }
+      case 'list_jobs': {
+        send({
+          type: 'job_list',
+          jobs: jobStore.all({
+            includeArchived: msg.includeArchived === true,
+            includeStarted: msg.includeStarted === true,
+          }),
+          ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+        });
+        return;
+      }
+      case 'create_job': {
+        await runBoardMutation(send, msg.correlationId, 'job_invalid', async () => {
+          // Validate the target dir against the allowlist now rather than at
+          // start time — a job pointing somewhere unreachable is a trap the
+          // user only discovers later.
+          const real = await sessionManager.validatePath(msg.projectPath);
+          const job = await jobStore.create({
+            title: msg.title,
+            ...(msg.notes !== undefined ? { notes: msg.notes } : {}),
+            ...(msg.tags !== undefined ? { tags: msg.tags } : {}),
+            projectPath: real,
+            ...(msg.additionalDirs ? { additionalDirs: msg.additionalDirs } : {}),
+            agent: msg.agent,
+            ...(msg.account !== undefined ? { account: msg.account } : {}),
+            ...(msg.claudeConfig !== undefined ? { claudeConfig: msg.claudeConfig } : {}),
+            ...(msg.model !== undefined ? { model: msg.model } : {}),
+            ...(msg.effort !== undefined ? { effort: msg.effort } : {}),
+          });
+          broadcastAll({
+            type: 'job_upserted',
+            job,
+            ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+          });
+        });
+        return;
+      }
+      case 'update_job': {
+        await runBoardMutation(send, msg.correlationId, 'job_invalid', async () => {
+          const patch: Parameters<typeof jobStore.update>[1] = {};
+          if (msg.title !== undefined) patch.title = msg.title;
+          if (msg.notes !== undefined) patch.notes = msg.notes;
+          if (msg.tags !== undefined) patch.tags = msg.tags;
+          if (msg.projectPath !== undefined) {
+            patch.projectPath = await sessionManager.validatePath(msg.projectPath);
+          }
+          if (msg.additionalDirs !== undefined) patch.additionalDirs = msg.additionalDirs;
+          if (msg.agent !== undefined) patch.agent = msg.agent;
+          if (msg.account !== undefined) patch.account = msg.account;
+          if (msg.claudeConfig !== undefined) patch.claudeConfig = msg.claudeConfig;
+          if (msg.model !== undefined) patch.model = msg.model;
+          if (msg.effort !== undefined) patch.effort = msg.effort;
+          if (msg.archived !== undefined) patch.archived = msg.archived;
+          const job = await jobStore.update(msg.jobId, patch);
+          broadcastAll({
+            type: 'job_upserted',
+            job,
+            ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+          });
+        });
+        return;
+      }
+      case 'delete_job': {
+        await runBoardMutation(send, msg.correlationId, 'job_not_found', async () => {
+          await jobStore.remove(msg.jobId);
+          broadcastAll({
+            type: 'job_deleted',
+            jobId: msg.jobId,
+            ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+          });
+        });
+        return;
+      }
+      case 'start_job': {
+        await runBoardMutation(send, msg.correlationId, 'job_not_found', async () => {
+          const job = jobStore.get(msg.jobId);
+          if (!job) throw new JobNotFoundError(msg.jobId);
+          if (job.startedSessionId !== null) {
+            throw Object.assign(new Error(`Job ${job.id} already started`), {
+              code: 'job_already_started',
+            });
+          }
+
+          const info = await sessionManager.spawnSession({
+            agent: job.agent,
+            dirs: [job.projectPath, ...job.additionalDirs],
+            ...(job.account ? { account: job.account } : {}),
+            ...(job.claudeConfig ? { claudeConfig: job.claudeConfig } : {}),
+            ...(job.model ? { model: job.model } : {}),
+            ...(job.effort ? { effort: job.effort } : {}),
+            ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+          });
+
+          // Carry the tags over so the board keeps its grouping across the
+          // job → session hand-off.
+          if (job.tags.length > 0) {
+            await sessionManager.setSessionTags(info.sessionId, job.tags).catch((err: unknown) =>
+              console.warn('[jobs] tag carry-over failed:', err),
+            );
+          }
+
+          // Seed the first turn with the job text. This also triggers the
+          // usual auto-name + titler path, so the session names itself.
+          sessionManager.sendInput(info.sessionId, jobLaunchPrompt(job));
+
+          const started = await jobStore.markStarted(job.id, info.sessionId);
+          broadcastAll({ type: 'job_upserted', job: started });
+          broadcastAll({
+            type: 'job_started',
+            jobId: job.id,
+            sessionId: info.sessionId,
+            ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+          });
         });
         return;
       }
@@ -314,18 +552,13 @@ async function handleMessage(
             ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
           });
         } catch (err) {
-          const e = err as { code?: 'path_outside_allowlist' | 'path_denied' };
-          if (e.code === 'path_outside_allowlist' || e.code === 'path_denied') {
-            sendError(send, e.code, (err as Error).message, msg.correlationId);
-          } else {
-            sendError(send, 'unsupported_message', (err as Error).message, msg.correlationId);
-          }
+          sendFsError(send, err, msg.correlationId);
         }
         return;
       }
       case 'read_file': {
         try {
-          const result = await fsApi.readFile(msg.path, 5 * 1024 * 1024);
+          const result = await fsApi.readFile(msg.path);
           if (result.kind === 'text') {
             send({
               type: 'file_result',
@@ -334,6 +567,7 @@ async function handleMessage(
               content: result.content,
               bytesRead: result.bytesRead,
               truncated: result.truncated,
+              hash: result.hash,
               ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
             });
           } else if (result.kind === 'binary') {
@@ -355,12 +589,26 @@ async function handleMessage(
             });
           }
         } catch (err) {
-          const e = err as { code?: 'path_outside_allowlist' | 'path_denied' };
-          if (e.code === 'path_outside_allowlist' || e.code === 'path_denied') {
-            sendError(send, e.code, (err as Error).message, msg.correlationId);
-          } else {
-            sendError(send, 'unsupported_message', (err as Error).message, msg.correlationId);
-          }
+          sendFsError(send, err, msg.correlationId);
+        }
+        return;
+      }
+      case 'write_file': {
+        if (typeof msg.path !== 'string' || typeof msg.content !== 'string') {
+          sendError(send, 'unsupported_message', 'write_file needs path and content', msg.correlationId);
+          return;
+        }
+        try {
+          const result = await fsApi.writeFile(msg.path, msg.content, msg.baseHash);
+          send({
+            type: 'file_written',
+            path: msg.path,
+            bytesWritten: result.bytesWritten,
+            hash: result.hash,
+            ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+          });
+        } catch (err) {
+          sendFsError(send, err, msg.correlationId);
         }
         return;
       }
@@ -630,6 +878,28 @@ async function handleMessage(
   }
 }
 
+/**
+ * Run a board mutation, replying only on failure.
+ *
+ * Success is already announced to every connected client by the manager's
+ * `broadcast` fan-out, so a direct reply would just duplicate it. Errors do
+ * need a targeted reply, since only the requesting client has an optimistic
+ * update to roll back — hence the correlationId.
+ */
+async function runBoardMutation(
+  send: (m: ServerMsg) => void,
+  correlationId: string | undefined,
+  fallbackCode: ServerErrorMsg['code'],
+  run: () => Promise<void>,
+): Promise<void> {
+  try {
+    await run();
+  } catch (err) {
+    const code = ((err as { code?: string }).code ?? fallbackCode) as ServerErrorMsg['code'];
+    sendError(send, code, (err as Error).message, correlationId);
+  }
+}
+
 function sendError(
   send: (m: ServerMsg) => void,
   code: ServerErrorMsg['code'],
@@ -646,10 +916,38 @@ function sendError(
   });
 }
 
+const FS_ERROR_CODES: ReadonlySet<string> = new Set<FsErrorCode>([
+  'path_outside_allowlist',
+  'path_denied',
+  'file_too_large',
+  'file_conflict',
+  'file_write_failed',
+]);
+
+/**
+ * Forward an `FsAccessError` code straight to the client, so the UI can tell a
+ * conflict apart from a denial. Anything else is an unexpected throw and stays
+ * generic rather than leaking an internal message shape as a typed code.
+ */
+function sendFsError(
+  send: (m: ServerMsg) => void,
+  err: unknown,
+  correlationId?: string,
+): void {
+  const code = (err as { code?: string }).code;
+  if (code && FS_ERROR_CODES.has(code)) {
+    sendError(send, code as ServerErrorMsg['code'], (err as Error).message, correlationId);
+  } else {
+    sendError(send, 'unsupported_message', (err as Error).message, correlationId);
+  }
+}
+
 function errorMessageFor(code: ServerErrorMsg['code']): string {
   switch (code) {
     case 'images_not_supported_for_agent':
-      return 'Codex sessions do not accept images.';
+      return 'This agent does not accept images.';
+    case 'interrupt_not_supported':
+      return 'This session cannot be interrupted; stop it instead.';
     case 'too_many_images':
       return 'At most 4 images per message.';
     case 'image_too_large':

@@ -258,3 +258,59 @@ describe('CodexProcess', () => {
     expect(exits).toEqual([[null, 'idle_stop']]);
   });
 });
+
+describe('CodexProcess — image input', () => {
+  const BASE = { projectPath: '/Users/test/proj', codexHome: '/Users/test/.codex' };
+
+  function spawnCapture() {
+    const fakes = makeFakeChild();
+    const spawn = vi.fn().mockReturnValue(fakes.child);
+    return { child: fakes.child, spawn };
+  }
+
+  it('passes each image to codex exec as -i <FILE>', () => {
+    const { spawn } = spawnCapture();
+    const proc = new CodexProcess({ ...BASE, spawn: spawn as never });
+    proc.sendUserText('what is wrong here', undefined, ['/tmp/a.png', '/tmp/b.jpg']);
+
+    const args = spawn.mock.calls[0]![1] as string[];
+    expect(args).toContain('-i');
+    // Repeated flag rather than a comma list — that is the shape `-i <FILE>...`
+    // actually accepts.
+    const pairs: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '-i') pairs.push(args[i + 1]!);
+    }
+    expect(pairs).toEqual(['/tmp/a.png', '/tmp/b.jpg']);
+  });
+
+  it('sends no image flags for a text-only turn', () => {
+    const { spawn } = spawnCapture();
+    const proc = new CodexProcess({ ...BASE, spawn: spawn as never });
+    proc.sendUserText('just text');
+    expect(spawn.mock.calls[0]![1]).not.toContain('-i');
+  });
+
+  it('keeps the prompt last so it is not eaten by -i', () => {
+    // `-i <FILE>...` is variadic; the positional prompt has to come after the
+    // rest of the flags or the CLI reads it as another image path.
+    const { spawn } = spawnCapture();
+    const proc = new CodexProcess({ ...BASE, spawn: spawn as never });
+    proc.sendUserText('describe this', undefined, ['/tmp/a.png']);
+    const args = spawn.mock.calls[0]![1] as string[];
+    expect(args[args.length - 1]).toBe('describe this');
+  });
+
+  it('attaches images on a resumed turn too, not only the first', () => {
+    // Codex spawns per turn, so every turn is an "initial prompt" as far as
+    // `-i` is concerned.
+    const { child, spawn } = spawnCapture();
+    const proc = new CodexProcess({ ...BASE, codexResumeSeed: 'sess-uuid', spawn: spawn as never });
+    proc.sendUserText('and this one', undefined, ['/tmp/c.png']);
+    const args = spawn.mock.calls[0]![1] as string[];
+    expect(args).toContain('resume');
+    expect(args).toContain('-i');
+    expect(args[args.length - 1]).toBe('and this one');
+    void child;
+  });
+});

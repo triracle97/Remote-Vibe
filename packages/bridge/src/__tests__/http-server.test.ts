@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHttpHandler } from '../http-server.js';
+import { createHttpHandler, type HttpHandlerOpts } from '../http-server.js';
 
 const TOKEN = 'a'.repeat(32);
 
@@ -223,6 +223,197 @@ describe('http-server', () => {
     });
     const pp = res.headers.get('permissions-policy') ?? '';
     expect(pp).toBe('camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+    await close();
+  });
+});
+
+describe('http-server static compression', () => {
+  /** A JS asset comfortably over the gzip threshold, and very compressible. */
+  function setupWithBigAsset() {
+    const dir = mkdtempSync(join(tmpdir(), 'bridge-http-gz-'));
+    mkdirSync(join(dir, 'assets'), { recursive: true });
+    writeFileSync(join(dir, 'index.html'), '<!doctype html><body>app</body>');
+    writeFileSync(join(dir, 'assets', 'big.js'), 'console.log("x");\n'.repeat(2000));
+    writeFileSync(join(dir, 'assets', 'tiny.js'), 'x');
+    writeFileSync(join(dir, 'assets', 'logo.png'), Buffer.alloc(4096, 7));
+    const dataDir = mkdtempSync(join(tmpdir(), 'bridge-data-gz-'));
+    mkdirSync(join(dataDir, 'transcripts'), { recursive: true });
+    const server = createServer(createHttpHandler({ token: TOKEN, staticDir: dir, dataDir }));
+    return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no addr');
+        resolve({
+          baseUrl: `http://127.0.0.1:${addr.port}`,
+          close: () => new Promise<void>((r) => server.close(() => r())),
+        });
+      });
+    });
+  }
+
+  it('gzips a large JS asset and still delivers the original bytes', async () => {
+    const { baseUrl, close } = await setupWithBigAsset();
+    const res = await fetch(`${baseUrl}/assets/big.js`, {
+      headers: { cookie: `bridge_session=${TOKEN}`, 'accept-encoding': 'gzip' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-encoding')).toBe('gzip');
+    expect(res.headers.get('vary')).toBe('Accept-Encoding');
+    // undici transparently decodes, so this is the round-trip check.
+    expect(await res.text()).toBe('console.log("x");\n'.repeat(2000));
+    await close();
+  });
+
+  it('serves plain bytes when the client does not accept gzip', async () => {
+    const { baseUrl, close } = await setupWithBigAsset();
+    const res = await fetch(`${baseUrl}/assets/big.js`, {
+      headers: { cookie: `bridge_session=${TOKEN}`, 'accept-encoding': 'identity' },
+    });
+    expect(res.headers.get('content-encoding')).toBeNull();
+    expect(res.headers.get('content-length')).toBe(String('console.log("x");\n'.repeat(2000).length));
+    await close();
+  });
+
+  it('leaves tiny files and already-compressed formats alone', async () => {
+    const { baseUrl, close } = await setupWithBigAsset();
+    const tiny = await fetch(`${baseUrl}/assets/tiny.js`, {
+      headers: { cookie: `bridge_session=${TOKEN}`, 'accept-encoding': 'gzip' },
+    });
+    expect(tiny.headers.get('content-encoding')).toBeNull();
+
+    const png = await fetch(`${baseUrl}/assets/logo.png`, {
+      headers: { cookie: `bridge_session=${TOKEN}`, 'accept-encoding': 'gzip' },
+    });
+    expect(png.headers.get('content-encoding')).toBeNull();
+    await close();
+  });
+
+  it('never sends a Content-Length that contradicts a gzipped body', async () => {
+    const { baseUrl, close } = await setupWithBigAsset();
+    const res = await fetch(`${baseUrl}/assets/big.js`, {
+      headers: { cookie: `bridge_session=${TOKEN}`, 'accept-encoding': 'gzip' },
+    });
+    expect(res.headers.get('content-length')).toBeNull();
+    await close();
+  });
+
+  it('allows Monaco workers in the CSP', async () => {
+    const { baseUrl, close } = await setupWithBigAsset();
+    const res = await fetch(`${baseUrl}/assets/big.js`, {
+      headers: { cookie: `bridge_session=${TOKEN}`, 'accept-encoding': 'gzip' },
+    });
+    expect(res.headers.get('content-security-policy')).toContain("worker-src 'self' blob:");
+    await close();
+  });
+});
+
+describe('http-server /mcp route', () => {
+  function setupMcp(mcp?: HttpHandlerOpts['mcp']) {
+    const dir = mkdtempSync(join(tmpdir(), 'bridge-mcp-'));
+    writeFileSync(join(dir, 'index.html'), '<!doctype html><body>app</body>');
+    const dataDir = mkdtempSync(join(tmpdir(), 'bridge-mcp-data-'));
+    mkdirSync(join(dataDir, 'transcripts'), { recursive: true });
+    const server = createServer(
+      createHttpHandler({ token: TOKEN, staticDir: dir, dataDir, ...(mcp ? { mcp } : {}) }),
+    );
+    return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no addr');
+        resolve({
+          baseUrl: `http://127.0.0.1:${addr.port}`,
+          close: () => new Promise<void>((r) => server.close(() => r())),
+        });
+      });
+    });
+  }
+
+  const echo: HttpHandlerOpts['mcp'] = async (req, res, body) => {
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ session: req.headers['x-mrt-session'] ?? null, body }));
+  };
+
+  it('404s when no MCP handler is wired', async () => {
+    const { baseUrl, close } = await setupMcp();
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}` },
+      body: '{}',
+    });
+    expect(res.status).toBe(404);
+    await close();
+  });
+
+  it('authenticates with a Bearer header, not the session cookie', async () => {
+    const { baseUrl, close } = await setupMcp(echo);
+    // Agents are not browsers: they have no cookie jar and send no Origin.
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}`, 'x-mrt-session': 'web-1' },
+      body: JSON.stringify({ hello: 'world' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ session: 'web-1', body: { hello: 'world' } });
+    await close();
+  });
+
+  it('rejects a missing or wrong Bearer token', async () => {
+    const { baseUrl, close } = await setupMcp(echo);
+    const noAuth = await fetch(`${baseUrl}/mcp`, { method: 'POST', body: '{}' });
+    expect(noAuth.status).toBe(401);
+
+    const wrong = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${'b'.repeat(32)}` },
+      body: '{}',
+    });
+    expect(wrong.status).toBe(401);
+    await close();
+  });
+
+  it('does not accept the cookie that works for the rest of the app', async () => {
+    const { baseUrl, close } = await setupMcp(echo);
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: { cookie: `bridge_session=${TOKEN}` },
+      body: '{}',
+    });
+    expect(res.status).toBe(401);
+    await close();
+  });
+
+  it('rejects non-POST', async () => {
+    const { baseUrl, close } = await setupMcp(echo);
+    const res = await fetch(`${baseUrl}/mcp`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    expect(res.status).toBe(405);
+    await close();
+  });
+
+  it('rejects malformed JSON before the handler sees it', async () => {
+    let called = false;
+    const { baseUrl, close } = await setupMcp(async (_req, res) => {
+      called = true;
+      res.end();
+    });
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}` },
+      body: '{ not json',
+    });
+    expect(res.status).toBe(400);
+    expect(called).toBe(false);
+    await close();
+  });
+
+  it('caps the request body', async () => {
+    const { baseUrl, close } = await setupMcp(echo);
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ pad: 'x'.repeat(2 * 1024 * 1024) }),
+    });
+    expect(res.status).toBe(413);
     await close();
   });
 });

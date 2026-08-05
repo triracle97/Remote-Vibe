@@ -52,6 +52,21 @@ export class TranscriptStore {
     for (const id of [...this.handles.keys()]) this.close(id);
   }
 
+  /**
+   * Remove one session's transcript. Closes the write handle first so the file
+   * is not resurrected by a pending append. A missing file is not an error —
+   * a session that never produced output has no transcript to delete.
+   */
+  async delete(sessionId: string): Promise<void> {
+    this.close(sessionId);
+    try {
+      await unlink(this.pathFor(sessionId));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+  }
+
   async prune(retentionDays: number): Promise<number> {
     if (retentionDays <= 0) return 0;
     const cutoffMs = Date.now() - retentionDays * 86_400_000;

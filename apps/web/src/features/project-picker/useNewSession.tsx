@@ -72,6 +72,9 @@ export function useNewSession(client: BridgeClient): {
             dirs: selection.dirs,
             projectPath: selection.projectPath,
             ...(selection.account ? { account: selection.account } : {}),
+            ...(selection.claudeConfig ? { claudeConfig: selection.claudeConfig } : {}),
+            ...(selection.model ? { model: selection.model } : {}),
+            ...(selection.effort ? { effort: selection.effort } : {}),
             correlationId,
           });
         }

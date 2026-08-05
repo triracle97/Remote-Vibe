@@ -5,6 +5,7 @@ import { useThemeStore, type ThemeMode } from '../shell/themeStore';
 import { useDefaultWorkspacesStore } from '../features/project-picker/defaultWorkspacesStore';
 import { useAccountsStore } from '../store/accounts';
 import { ProfileEditor } from '../features/profiles/ProfileEditor';
+import { ShortcutList } from '../shell/CommandPalette';
 
 const themes: ReadonlyArray<{ value: ThemeMode; label: string }> = [
   { value: 'system', label: 'System' },
@@ -63,6 +64,18 @@ export function Settings(): JSX.Element {
             ))}
           </div>
         </fieldset>
+      </section>
+
+      <section className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4">
+        <h2 className="text-[var(--color-text-dim)] text-xs font-bold tracking-wider uppercase mb-3">
+          Keyboard shortcuts
+        </h2>
+        <p className="mt-0 mb-3 text-sm text-[var(--color-text-dim)]">
+          Press <kbd className="px-1 py-0.5 rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] text-[11px] font-mono text-[var(--color-text)]">?</kbd>{' '}
+          anywhere outside a text box to bring this up without leaving what you
+          are doing.
+        </p>
+        <ShortcutList />
       </section>
 
       <section className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4">

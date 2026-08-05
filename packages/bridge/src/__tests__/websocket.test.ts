@@ -101,6 +101,34 @@ function makeFakeFileSearch(
   } as unknown as FileSearch;
 }
 
+/** Real JobStore on a throwaway path — the store is small and disk-backed. */
+async function makeTempJobStore() {
+  const { JobStore } = await import('../job-store.js');
+  const { mkdtemp } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'mrt-ws-jobs-'));
+  const store = new JobStore(join(dir, 'jobs.json'));
+  await store.load();
+  return store;
+}
+
+/**
+ * Real SessionRegistry on a throwaway path. Board state (tags, phase) lives in
+ * the registry, so tests that assert on it need a real one — without it
+ * `listBoardSessions()` is empty and `setSessionTags` is a no-op.
+ */
+async function makeTempRegistry() {
+  const { SessionRegistry } = await import('../session-registry.js');
+  const { mkdtemp } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'mrt-ws-reg-'));
+  const registry = new SessionRegistry(join(dir, 'sessions.json'));
+  await registry.load();
+  return registry;
+}
+
 async function startServer(opts: {
   accounts?: Map<string, import('../accounts.js').CodexAccount>;
   fsApi?: import('../fs-api.js').FsApi;
@@ -110,6 +138,8 @@ async function startServer(opts: {
   profileStore?: ProfileStore;
   slashCommands?: SlashCommandsScanner;
   fileSearch?: FileSearch;
+  jobStore?: import('../job-store.js').JobStore;
+  registry?: import('../session-registry.js').SessionRegistry;
 } = {}) {
   const procs: FakeProc[] = [];
   const fsApi =
@@ -138,11 +168,13 @@ async function startServer(opts: {
       realpath: async (p) => p,
       accounts: opts.accounts ?? new Map(),
       imageStore,
+      ...(opts.registry ? { registry: opts.registry } : {}),
     });
   const historyScanner = opts.historyScanner ?? makeFakeScanner();
   const profileStore = opts.profileStore ?? makeFakeProfileStore();
   const slashCommands = opts.slashCommands ?? makeFakeSlashCommands();
   const fileSearch = opts.fileSearch ?? makeFakeFileSearch();
+  const jobStore = opts.jobStore ?? (await makeTempJobStore());
   const server = createServer();
   attachWebSocket({
     server,
@@ -156,6 +188,8 @@ async function startServer(opts: {
     slashCommands,
     fileSearch,
     terminalManager: stubTermMgr,
+    jobStore,
+    allowedDirs: ['/Users/test'],
     capabilities: { terminal: true },
   });
 
@@ -178,8 +212,41 @@ async function startServer(opts: {
   };
 }
 
+/**
+ * Message buffers, filled from the moment the socket is created.
+ *
+ * Without this, `await`ing the `open` event yields to the microtask queue and
+ * the server's `init` frame can be emitted before a later `once('message')`
+ * listener attaches — the listener then waits for a second frame that never
+ * comes, and the test dies on its 5s timeout. The symptom is a different
+ * websocket test failing on each run, only under parallel load.
+ */
+const wsBuffers = new WeakMap<WebSocket, unknown[]>();
+
 function ws(url: string, headers: Record<string, string> = {}) {
-  return new WebSocket(url, { headers });
+  const sock = new WebSocket(url, { headers });
+  const queue: unknown[] = [];
+  wsBuffers.set(sock, queue);
+  sock.on('message', (raw) => {
+    try {
+      queue.push(JSON.parse(raw.toString()));
+    } catch {
+      /* non-JSON frames are not used by these tests */
+    }
+  });
+  return sock;
+}
+
+/** Take the next buffered frame, waiting for one if the buffer is empty. */
+async function nextMessage(sock: WebSocket): Promise<Record<string, unknown>> {
+  const queue = wsBuffers.get(sock);
+  if (!queue) throw new Error('socket was not created via ws()');
+  const deadline = Date.now() + 4000;
+  while (queue.length === 0) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for a websocket frame');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return queue.shift() as Record<string, unknown>;
 }
 
 function once<T>(emitter: EventEmitter, event: string): Promise<T> {
@@ -214,8 +281,14 @@ describe('websocket', () => {
     });
     const opened = new Promise<void>((r) => sock.on('open', () => r()));
     await opened;
-    const msg = await once<Buffer>(sock as unknown as EventEmitter, 'message');
-    expect(JSON.parse(msg.toString())).toMatchObject({ type: 'system', event: 'init' });
+    // The client builds its project suggestions from `allowedDirs`, so the
+    // init frame has to carry them — it is the only place they are sent.
+    expect(await nextMessage(sock)).toMatchObject({
+      type: 'system',
+      event: 'init',
+      capabilities: { terminal: true },
+      allowedDirs: ['/Users/test'],
+    });
     sock.close();
     await close();
   });
@@ -227,7 +300,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message'); // init
+    await nextMessage(sock); // init
 
     const messages: unknown[] = [];
     sock.on('message', (raw) => messages.push(JSON.parse(raw.toString())));
@@ -264,13 +337,14 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message'); // init
+    await nextMessage(sock); // init
 
     const session = await mgr.create({ agent: 'claude', projectPath: '/Users/test/proj' });
     sock.send(JSON.stringify({ type: 'input', sessionId: session.sessionId, text: 'hello' }));
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(procs[0]!.sendUserText).toHaveBeenCalledWith('hello', undefined);
+    // Third arg is imagePaths, absent for a text-only turn.
+    expect(procs[0]!.sendUserText).toHaveBeenCalledWith('hello', undefined, undefined);
     sock.close();
     await close();
   });
@@ -284,7 +358,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message'); // init
+    await nextMessage(sock); // init
 
     const got = new Promise<unknown>((r) => {
       sock.on('message', (raw) => {
@@ -308,7 +382,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message'); // init
+    await nextMessage(sock); // init
 
     const got = new Promise<{ type: string; code?: string }>((r) => {
       sock.on('message', (raw) => r(JSON.parse(raw.toString())));
@@ -332,7 +406,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
     const got = new Promise<{ type: string; accounts: Array<{ name: string; agent: string; isDefault: boolean }>; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
         const m = JSON.parse(raw.toString());
@@ -360,7 +434,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
     const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
         const m = JSON.parse(raw.toString());
@@ -393,7 +467,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
     const got = new Promise<{ type: string; event?: string; account?: string }>((r) => {
       sock.on('message', (raw) => {
         const m = JSON.parse(raw.toString());
@@ -421,7 +495,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
     const got = new Promise<{ type: string; code?: string; sessionId?: string; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
         const m = JSON.parse(raw.toString());
@@ -486,7 +560,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${addr.port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
     const got = new Promise<{ type: string; prompts: Array<{ text: string }> }>((r) => {
       sock.on('message', (raw) => {
         const m = JSON.parse(raw.toString());
@@ -515,7 +589,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
     const got = new Promise<{ type: string; entries: unknown[]; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
         const m = JSON.parse(raw.toString());
@@ -545,7 +619,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
     const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
         const m = JSON.parse(raw.toString());
@@ -576,7 +650,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
     const got = new Promise<{ type: string; kind?: string; content?: string; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
         const m = JSON.parse(raw.toString());
@@ -588,6 +662,156 @@ describe('websocket', () => {
     expect(m.kind).toBe('text');
     expect(m.content).toBe('hello');
     expect(m.correlationId).toBe('cf');
+    sock.close();
+    await close();
+  });
+
+  it('write_file forwards path/content/baseHash and replies file_written', async () => {
+    const calls: Array<{ path: string; content: string; baseHash?: string }> = [];
+    const fakeFsApi = {
+      listDirs: async () => [],
+      readFile: async () => ({ kind: 'text' as const, content: '', bytesRead: 0, truncated: false, hash: 'h' }),
+      writeFile: async (path: string, content: string, baseHash?: string) => {
+        calls.push({ path, content, baseHash });
+        return { bytesWritten: content.length, hash: 'newhash' };
+      },
+    };
+    const { port, close } = await startServer({
+      fsApi: fakeFsApi as unknown as import('../fs-api.js').FsApi,
+    });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await nextMessage(sock);
+    const got = new Promise<{ type: string; bytesWritten?: number; hash?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'file_written') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'write_file',
+        path: '/Users/test/proj/a.txt',
+        content: 'hello',
+        baseHash: 'oldhash',
+        correlationId: 'cw',
+      }),
+    );
+    const m = await got;
+    expect(calls).toEqual([
+      { path: '/Users/test/proj/a.txt', content: 'hello', baseHash: 'oldhash' },
+    ]);
+    expect(m.bytesWritten).toBe(5);
+    expect(m.hash).toBe('newhash');
+    expect(m.correlationId).toBe('cw');
+    sock.close();
+    await close();
+  });
+
+  it('write_file propagates file_conflict with correlationId', async () => {
+    const fakeFsApi = {
+      listDirs: async () => [],
+      readFile: async () => ({ kind: 'text' as const, content: '', bytesRead: 0, truncated: false, hash: 'h' }),
+      writeFile: async () => {
+        const e = new Error('changed on disk') as Error & { code?: string };
+        e.code = 'file_conflict';
+        throw e;
+      },
+    };
+    const { port, close } = await startServer({
+      fsApi: fakeFsApi as unknown as import('../fs-api.js').FsApi,
+    });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await nextMessage(sock);
+    const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'error') r(m);
+      });
+    });
+    sock.send(
+      JSON.stringify({
+        type: 'write_file',
+        path: '/Users/test/proj/a.txt',
+        content: 'x',
+        baseHash: 'stale',
+        correlationId: 'ck',
+      }),
+    );
+    const m = await got;
+    expect(m.code).toBe('file_conflict');
+    expect(m.correlationId).toBe('ck');
+    sock.close();
+    await close();
+  });
+
+  it('write_file omits baseHash when the client force-saves', async () => {
+    const calls: Array<{ baseHash?: string }> = [];
+    const fakeFsApi = {
+      listDirs: async () => [],
+      readFile: async () => ({ kind: 'text' as const, content: '', bytesRead: 0, truncated: false, hash: 'h' }),
+      writeFile: async (_path: string, _content: string, baseHash?: string) => {
+        calls.push({ baseHash });
+        return { bytesWritten: 1, hash: 'h2' };
+      },
+    };
+    const { port, close } = await startServer({
+      fsApi: fakeFsApi as unknown as import('../fs-api.js').FsApi,
+    });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await nextMessage(sock);
+    const got = new Promise<void>((r) => {
+      sock.on('message', (raw) => {
+        if (JSON.parse(raw.toString()).type === 'file_written') r();
+      });
+    });
+    sock.send(JSON.stringify({ type: 'write_file', path: '/Users/test/proj/a.txt', content: 'x' }));
+    await got;
+    expect(calls).toEqual([{ baseHash: undefined }]);
+    sock.close();
+    await close();
+  });
+
+  it('write_file rejects a malformed payload without calling the fs layer', async () => {
+    let called = false;
+    const fakeFsApi = {
+      listDirs: async () => [],
+      readFile: async () => ({ kind: 'text' as const, content: '', bytesRead: 0, truncated: false, hash: 'h' }),
+      writeFile: async () => {
+        called = true;
+        return { bytesWritten: 0, hash: '' };
+      },
+    };
+    const { port, close } = await startServer({
+      fsApi: fakeFsApi as unknown as import('../fs-api.js').FsApi,
+    });
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await nextMessage(sock);
+    const got = new Promise<{ code?: string }>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'error') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'write_file', path: '/Users/test/proj/a.txt', correlationId: 'cb' }));
+    const m = await got;
+    expect(m.code).toBe('unsupported_message');
+    expect(called).toBe(false);
     sock.close();
     await close();
   });
@@ -611,7 +835,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
     const got = new Promise<{ type: string; code?: string; sessionId?: string; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
         const m = JSON.parse(raw.toString());
@@ -665,7 +889,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const got = new Promise<{ type: string; claude: HistoryEntry[]; codex: HistoryEntry[]; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
@@ -708,7 +932,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const replies: Array<{ type: string; correlationId?: string }> = [];
     sock.on('message', (raw) => {
@@ -775,7 +999,7 @@ describe('websocket', () => {
         origin: `http://127.0.0.1:${port}`,
       });
       await new Promise<void>((r) => sock.on('open', () => r()));
-      await once(sock as unknown as EventEmitter, 'message');
+      await nextMessage(sock);
 
       const got = new Promise<{ type: string; webSessionId?: string; alive?: boolean; correlationId?: string }>((r) => {
         sock.on('message', (raw) => {
@@ -854,7 +1078,7 @@ describe('websocket', () => {
         origin: `http://127.0.0.1:${port}`,
       });
       await new Promise<void>((r) => sock.on('open', () => r()));
-      await once(sock as unknown as EventEmitter, 'message');
+      await nextMessage(sock);
 
       const got = new Promise<{ type: string; webSessionId?: string; alive?: boolean; correlationId?: string }>((r) => {
         sock.on('message', (raw) => {
@@ -899,7 +1123,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
@@ -962,7 +1186,7 @@ describe('websocket', () => {
         origin: `http://127.0.0.1:${port}`,
       });
       await new Promise<void>((r) => sock.on('open', () => r()));
-      await once(sock as unknown as EventEmitter, 'message');
+      await nextMessage(sock);
 
       const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
         sock.on('message', (raw) => {
@@ -1000,7 +1224,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const got = new Promise<{ type: string; profiles: Profile[]; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
@@ -1025,7 +1249,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const profile: Profile = {
       name: 'work',
@@ -1057,7 +1281,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const profile: Profile = {
       name: 'bad/name!', // contains disallowed chars
@@ -1095,7 +1319,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const got = new Promise<{ type: string; name?: string; agent?: string; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
@@ -1126,7 +1350,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
@@ -1164,7 +1388,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const got = new Promise<{ type: string; name?: string; agent?: string; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
@@ -1200,7 +1424,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const got = new Promise<{ type: string; commands?: SlashCommand[]; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
@@ -1234,7 +1458,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
@@ -1267,7 +1491,7 @@ describe('websocket', () => {
       origin: `http://127.0.0.1:${port}`,
     });
     await new Promise<void>((r) => sock.on('open', () => r()));
-    await once(sock as unknown as EventEmitter, 'message');
+    await nextMessage(sock);
 
     const got = new Promise<{ type: string; hits: SearchHit[]; truncated: boolean; correlationId?: string }>((r) => {
       sock.on('message', (raw) => {
@@ -1319,7 +1543,7 @@ describe('websocket', () => {
         origin: `http://127.0.0.1:${port}`,
       });
       await new Promise<void>((r) => sock.on('open', () => r()));
-      await once(sock as unknown as EventEmitter, 'message');
+      await nextMessage(sock);
 
       // Both the handler's direct reply (correlationId='cid-rn') and the
       // session-manager broadcast (correlationId='') deliver a session_renamed
@@ -1388,7 +1612,7 @@ describe('websocket', () => {
         origin: `http://127.0.0.1:${port}`,
       });
       await new Promise<void>((r) => sock.on('open', () => r()));
-      await once(sock as unknown as EventEmitter, 'message');
+      await nextMessage(sock);
 
       const got = new Promise<{ type: string; code?: string; correlationId?: string }>((r) => {
         sock.on('message', (raw) => {
@@ -1443,7 +1667,7 @@ describe('websocket', () => {
         origin: `http://127.0.0.1:${port}`,
       });
       await new Promise<void>((r) => sock.on('open', () => r()));
-      await once(sock as unknown as EventEmitter, 'message');
+      await nextMessage(sock);
 
       const got = new Promise<{ type: string; event?: string; sessionId?: string; projectPath?: string; correlationId?: string }>(
         (r) => {
@@ -1474,5 +1698,192 @@ describe('websocket', () => {
       await new Promise((r) => setTimeout(r, 10));
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  // --- jobs (Backlog) ---------------------------------------------------
+
+  /** Open an authenticated socket and swallow the `init` frame. */
+  async function connectJobs(port: number) {
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await nextMessage(sock);
+    const waitFor = (type: string): Promise<Record<string, unknown>> =>
+      new Promise((r) => {
+        const onMsg = (raw: unknown): void => {
+          const m = JSON.parse(String(raw)) as Record<string, unknown>;
+          if (m.type === type) {
+            sock.off('message', onMsg as never);
+            r(m);
+          }
+        };
+        sock.on('message', onMsg as never);
+      });
+    return { sock, waitFor };
+  }
+
+  it('create_job validates the dir against the allowlist and broadcasts the card', async () => {
+    const { port, close } = await startServer();
+    const { sock, waitFor } = await connectJobs(port);
+    const got = waitFor('job_upserted');
+    sock.send(
+      JSON.stringify({
+        type: 'create_job',
+        title: 'fix auth expiry',
+        notes: 'detail',
+        tags: ['  API ', 'api'],
+        projectPath: '/Users/test/proj',
+        agent: 'claude',
+        correlationId: 'c1',
+      }),
+    );
+    const msg = (await got).job as Record<string, unknown>;
+    expect(msg.title).toBe('fix auth expiry');
+    // Tags are normalized server-side, so the board never shows a dupe.
+    expect(msg.tags).toEqual(['API']);
+    expect(msg.startedSessionId).toBeNull();
+    sock.close();
+    await close();
+  });
+
+  it('create_job outside the allowlist is rejected', async () => {
+    const { port, close } = await startServer();
+    const { sock, waitFor } = await connectJobs(port);
+    const got = waitFor('error');
+    sock.send(
+      JSON.stringify({
+        type: 'create_job',
+        title: 'sneak',
+        projectPath: '/etc',
+        agent: 'claude',
+        correlationId: 'c1',
+      }),
+    );
+    const err = await got;
+    expect(err.code).toBe('path_outside_allowlist');
+    sock.close();
+    await close();
+  });
+
+  it('list_jobs returns unstarted jobs', async () => {
+    const { port, close } = await startServer();
+    const { sock, waitFor } = await connectJobs(port);
+    const created = waitFor('job_upserted');
+    sock.send(
+      JSON.stringify({
+        type: 'create_job',
+        title: 'a job',
+        projectPath: '/Users/test/proj',
+        agent: 'claude',
+      }),
+    );
+    await created;
+    const listed = waitFor('job_list');
+    sock.send(JSON.stringify({ type: 'list_jobs', correlationId: 'c2' }));
+    const list = (await listed).jobs as Array<Record<string, unknown>>;
+    expect(list).toHaveLength(1);
+    expect(list[0]!.title).toBe('a job');
+    sock.close();
+    await close();
+  });
+
+  it('start_job spawns a session, seeds the prompt and carries the tags', async () => {
+    // Board state lives in the registry, so this test needs a real one.
+    const { port, close, procs, mgr } = await startServer({
+      registry: await makeTempRegistry(),
+    });
+    const { sock, waitFor } = await connectJobs(port);
+
+    const created = waitFor('job_upserted');
+    sock.send(
+      JSON.stringify({
+        type: 'create_job',
+        title: 'fix auth expiry',
+        notes: 'use <= not <',
+        tags: ['api'],
+        projectPath: '/Users/test/proj',
+        agent: 'claude',
+      }),
+    );
+    const jobId = ((await created).job as Record<string, unknown>).id as string;
+
+    const started = waitFor('job_started');
+    sock.send(JSON.stringify({ type: 'start_job', jobId, correlationId: 'c3' }));
+    const startedMsg = await started;
+    const sessionId = startedMsg.sessionId as string;
+    expect(sessionId).toBeTruthy();
+
+    // The job's text becomes the session's first turn.
+    expect(procs).toHaveLength(1);
+    expect(procs[0]!.sendUserText).toHaveBeenCalledWith(
+      'fix auth expiry\n\nuse <= not <',
+      undefined,
+      undefined,
+    );
+
+    // And the tags follow the work onto the session card.
+    const card = mgr.listBoardSessions().find((s) => s.sessionId === sessionId)!;
+    expect(card.tags).toEqual(['api']);
+
+    sock.close();
+    await close();
+  });
+
+  it('start_job twice is rejected', async () => {
+    const { port, close } = await startServer();
+    const { sock, waitFor } = await connectJobs(port);
+    const created = waitFor('job_upserted');
+    sock.send(
+      JSON.stringify({
+        type: 'create_job',
+        title: 'once only',
+        projectPath: '/Users/test/proj',
+        agent: 'claude',
+      }),
+    );
+    const jobId = ((await created).job as Record<string, unknown>).id as string;
+
+    const started = waitFor('job_started');
+    sock.send(JSON.stringify({ type: 'start_job', jobId }));
+    await started;
+
+    const err = waitFor('error');
+    sock.send(JSON.stringify({ type: 'start_job', jobId, correlationId: 'c4' }));
+    expect((await err).code).toBe('job_already_started');
+    sock.close();
+    await close();
+  });
+
+  it('delete_job removes the card', async () => {
+    const { port, close } = await startServer();
+    const { sock, waitFor } = await connectJobs(port);
+    const created = waitFor('job_upserted');
+    sock.send(
+      JSON.stringify({
+        type: 'create_job',
+        title: 'delete me',
+        projectPath: '/Users/test/proj',
+        agent: 'claude',
+      }),
+    );
+    const jobId = ((await created).job as Record<string, unknown>).id as string;
+
+    const deleted = waitFor('job_deleted');
+    sock.send(JSON.stringify({ type: 'delete_job', jobId, correlationId: 'c5' }));
+    expect((await deleted).jobId).toBe(jobId);
+    sock.close();
+    await close();
+  });
+
+  it('start_job on an unknown job errors', async () => {
+    const { port, close } = await startServer();
+    const { sock, waitFor } = await connectJobs(port);
+    const err = waitFor('error');
+    sock.send(JSON.stringify({ type: 'start_job', jobId: 'nope', correlationId: 'c6' }));
+    expect((await err).code).toBe('job_not_found');
+    sock.close();
+    await close();
   });
 });

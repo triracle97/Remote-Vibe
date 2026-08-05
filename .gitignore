@@ -16,6 +16,9 @@ build/
 
 # Bridge runtime data (prompts, transcripts, images)
 .config/mac-remote-terminal/
+# Session registry, jobs, and profiles. Local state, and sessions.json carries
+# project paths and agent-derived session names.
+.bridge/
 
 # Env / secrets
 .env

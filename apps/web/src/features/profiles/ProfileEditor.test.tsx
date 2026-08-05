@@ -3,6 +3,7 @@ import { render, fireEvent, act, cleanup } from '@testing-library/react';
 import { ProfileEditor } from './ProfileEditor';
 import { useProfileStore } from './profileStore';
 import { useAccountsStore } from '../../store/accounts';
+import { DEFAULT_WORKSPACE_DIRS } from '../project-picker/default-workspaces';
 import type { Profile } from '../../types/protocol';
 
 vi.mock('../../services/bridge-client-singleton', () => ({
@@ -18,11 +19,7 @@ const mk = (over: Partial<Profile> = {}): Profile => ({
   ...over,
 });
 
-const DEFAULT_DIRS = [
-  '/Volumes/WDSSD/Code/storybook-solid-js',
-  '/Volumes/WDSSD/Code/posRN1',
-  '/Volumes/WDSSD/Code/customer-management',
-];
+const DEFAULT_DIRS = [...DEFAULT_WORKSPACE_DIRS];
 
 describe('ProfileEditor', () => {
   beforeEach(() => {
@@ -102,7 +99,7 @@ describe('ProfileEditor', () => {
     const newBtn = container.querySelector('.profile-editor-new') as HTMLButtonElement;
     fireEvent.click(newBtn);
     const rows = getAllByTestId('dir-picker-row');
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(DEFAULT_DIRS.length);
     expect(rows.map((row) => row.textContent)).toEqual(
       DEFAULT_DIRS.map((dir) => expect.stringContaining(dir)),
     );

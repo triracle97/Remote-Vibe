@@ -4,6 +4,12 @@ import type { HistoryEntry } from './types.js';
 
 interface ScannerOpts {
   homeDir: string;
+  /**
+   * Overrides `<homeDir>/.claude` when sessions run against a non-default
+   * CLAUDE_CONFIG_DIR. Without this, history discovery reads a different
+   * profile than the one the sessions actually use.
+   */
+  claudeConfigDir?: string;
   allowedDirs: string[];
   /**
    * Phase 3 allowlist + denylist gate. Should return true iff the path is
@@ -94,7 +100,10 @@ export class HistoryScanner {
   }
 
   private async scanClaude(): Promise<HistoryEntry[]> {
-    const projectsRoot = join(this.opts.homeDir, '.claude', 'projects');
+    const projectsRoot = join(
+      this.opts.claudeConfigDir ?? join(this.opts.homeDir, '.claude'),
+      'projects',
+    );
     let projectDirs: string[];
     try {
       projectDirs = (await fsp.readdir(projectsRoot, { withFileTypes: true }))

@@ -150,3 +150,208 @@ describe('InputBox — dead-session auto-prompt-on-send (T13)', () => {
     expect(ta.disabled).toBe(false);
   });
 });
+
+/**
+ * Enter-to-send.
+ *
+ * happy-dom has no real `matchMedia`, so the pointer capability is stubbed per
+ * test — that flag is the whole behavioural switch.
+ */
+function stubPointer(fine: boolean): () => void {
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes('pointer: fine') ? fine : !fine,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = original;
+  };
+}
+
+describe('InputBox — Enter to send', () => {
+  it('sends on a bare Enter when there is a real keyboard', () => {
+    const restore = stubPointer(true);
+    try {
+      const props = defaultProps();
+      const { container } = render(<InputBox {...props} />);
+      const ta = container.querySelector('textarea')!;
+      fireEvent.change(ta, { target: { value: 'ship it' } });
+      fireEvent.keyDown(ta, { key: 'Enter' });
+      expect(props.onSend).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(props.onSend).mock.calls[0]![0]).toBe('ship it');
+    } finally {
+      restore();
+    }
+  });
+
+  it('inserts a newline on Shift+Enter instead of sending', () => {
+    const restore = stubPointer(true);
+    try {
+      const props = defaultProps();
+      const { container } = render(<InputBox {...props} />);
+      const ta = container.querySelector('textarea')!;
+      fireEvent.change(ta, { target: { value: 'line one' } });
+      fireEvent.keyDown(ta, { key: 'Enter', shiftKey: true });
+      expect(props.onSend).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('never sends mid-composition', () => {
+    // On a CJK or predictive keyboard Enter accepts the candidate; sending
+    // there would fire off half a word.
+    const restore = stubPointer(true);
+    try {
+      const props = defaultProps();
+      const { container } = render(<InputBox {...props} />);
+      const ta = container.querySelector('textarea')!;
+      fireEvent.change(ta, { target: { value: 'にほん' } });
+      fireEvent.keyDown(ta, { key: 'Enter', isComposing: true });
+      expect(props.onSend).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('leaves Enter as a newline on a touch device', () => {
+    // Software keyboards cannot produce Shift+Enter, so binding Enter to send
+    // would leave no way to type a second line at all.
+    const restore = stubPointer(false);
+    try {
+      const props = defaultProps();
+      const { container } = render(<InputBox {...props} />);
+      const ta = container.querySelector('textarea')!;
+      fireEvent.change(ta, { target: { value: 'first line' } });
+      fireEvent.keyDown(ta, { key: 'Enter' });
+      expect(props.onSend).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('still sends on Cmd/Ctrl+Enter everywhere, including touch', () => {
+    for (const fine of [true, false]) {
+      const restore = stubPointer(fine);
+      try {
+        const props = defaultProps();
+        const { container } = render(<InputBox {...props} />);
+        const ta = container.querySelector('textarea')!;
+        fireEvent.change(ta, { target: { value: 'go' } });
+        fireEvent.keyDown(ta, { key: 'Enter', metaKey: true });
+        expect(props.onSend).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(props.onSend).mock.calls[0]![0]).toBe('go');
+      } finally {
+        restore();
+      }
+    }
+  });
+
+  it('does not send an empty message', () => {
+    const restore = stubPointer(true);
+    try {
+      const props = defaultProps();
+      const { container } = render(<InputBox {...props} />);
+      const ta = container.querySelector('textarea')!;
+      fireEvent.keyDown(ta, { key: 'Enter' });
+      expect(props.onSend).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+});
+
+/** Fire a paste at the document with the given clipboard payload. */
+function pasteFiles(files: File[]): void {
+  const event = new Event('paste', { bubbles: true, cancelable: true }) as Event & {
+    clipboardData: unknown;
+  };
+  event.clipboardData = {
+    items: files.map((f) => ({ kind: 'file', type: f.type, getAsFile: () => f })),
+    files,
+  };
+  document.dispatchEvent(event);
+}
+
+const PNG = (): File => new File([new Uint8Array(8)], 'shot.png', { type: 'image/png' });
+
+describe('InputBox — paste an image', () => {
+  /**
+   * The image hook lives in its own render root, so the object handed to
+   * InputBox is a snapshot. Its `addImageFromFile` is stable, so calls land on
+   * the real hook — but assertions have to read `getCurrent()` for live state.
+   */
+  function renderWithImages(overrides: Record<string, unknown> = {}) {
+    const harness = makeImagePaste();
+    const props = { ...defaultProps(overrides), imagePaste: harness.paste };
+    const view = render(<InputBox {...props} />);
+    return { harness, props, ...view };
+  }
+
+  it('attaches a pasted image without the composer being focused', async () => {
+    // The bug this covers: paste used to be a React onPaste on the textarea, so
+    // taking a screenshot and hitting ⌘V with focus anywhere else did nothing.
+    const { harness } = renderWithImages();
+
+    pasteFiles([PNG()]);
+
+    await waitFor(() => {
+      expect(harness.getCurrent().images.length).toBe(1);
+    });
+    expect(harness.getCurrent().images[0]!.mime).toBe('image/png');
+  });
+
+  it('leaves a text paste alone', async () => {
+    const { harness } = renderWithImages();
+
+    const event = new Event('paste', { bubbles: true, cancelable: true }) as Event & {
+      clipboardData: unknown;
+    };
+    event.clipboardData = {
+      items: [{ kind: 'string', type: 'text/plain', getAsFile: () => null }],
+      files: [],
+    };
+    document.dispatchEvent(event);
+
+    // Not prevented, so the browser still inserts the text normally.
+    expect(event.defaultPrevented).toBe(false);
+    expect(harness.getCurrent().images).toHaveLength(0);
+  });
+
+  it('attaches images on a codex session too', async () => {
+    // `codex exec -i <FILE>` takes images, so the composer no longer gates on
+    // the agent — only on whether the session can take input at all.
+    const { harness } = renderWithImages({ agent: 'codex' as const });
+
+    pasteFiles([PNG()]);
+
+    await waitFor(() => {
+      expect(harness.getCurrent().images.length).toBe(1);
+    });
+  });
+
+  it('does not attach images once the session has ended', async () => {
+    const { harness } = renderWithImages({ disabled: true });
+
+    pasteFiles([PNG()]);
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(harness.getCurrent().images).toHaveLength(0);
+  });
+
+  it('stops listening once unmounted', async () => {
+    const { harness, unmount } = renderWithImages();
+    unmount();
+
+    pasteFiles([PNG()]);
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(harness.getCurrent().images).toHaveLength(0);
+  });
+});

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type ChildProcessByStdio, type SpawnOptions } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import { parseClaudeLine } from './parser.js';
+import { isEffortLevel, isValidModelId, type EffortLevel } from './models.js';
 import type { AgentEvent } from './types.js';
 
 const STDERR_TAIL_BYTES = 4096;
@@ -26,6 +27,11 @@ const CLAUDE_FLAGS = CLAUDE_FLAG_TOKENS.join(' ');
  * practice. We still validate to be defensive: reject anything that contains
  * shell metacharacters or whitespace, since a bad value would let the caller
  * inject arbitrary shell at the `exec claude ...` line.
+ *
+ * Also applied to `--add-dir` paths, the headroom binary and CLAUDE_CONFIG_DIR,
+ * all of which are interpolated into the same command line. Note `~` is NOT in
+ * the allowlist — callers must pass absolute paths (see `resolveHomePath` in
+ * env.ts).
  */
 function assertResumeArgSafe(token: string): void {
   if (!/^[A-Za-z0-9_./-]+$/.test(token)) {
@@ -52,6 +58,85 @@ export interface ClaudeProcessOpts {
    * prevent shell-meta injection at the `exec claude ...` line.
    */
   additionalDirs?: string[];
+  /**
+   * Absolute CLAUDE_CONFIG_DIR for this session. Swaps the entire Claude
+   * profile — settings, hooks, enabled plugins, slash commands, and native
+   * session history. Must be absolute (`~` fails `assertResumeArgSafe`).
+   */
+  claudeConfigDir?: string;
+  /**
+   * Absolute path to an MCP config JSON, passed as `--mcp-config <path>`.
+   *
+   * A file rather than the inline-JSON form the flag also accepts: inline JSON
+   * would have to survive `assertResumeArgSafe`, which rejects braces and
+   * quotes precisely because everything here lands on a `zsh -lic` line. A path
+   * made of `[A-Za-z0-9_./-]` passes cleanly.
+   *
+   * Deliberately NOT paired with `--strict-mcp-config`: this adds the bridge's
+   * own server, it does not take over the user's MCP setup.
+   */
+  mcpConfigPath?: string;
+  /**
+   * When set, `claude` is launched through `headroom wrap claude` so its API
+   * traffic routes via the local Headroom proxy. The proxy itself is owned by
+   * the bridge (see `headroom.ts`), hence `--no-proxy`.
+   */
+  headroom?: { bin: string; port: number };
+  /**
+   * Extra system-prompt text, passed as `--append-system-prompt`. Used to tell
+   * the agent about the board directives it can emit (see `agent-directives.ts`).
+   */
+  appendSystemPrompt?: string;
+  /**
+   * Model alias or full id, passed as `--model`. Aliases (`opus`, `sonnet`,
+   * `haiku`, `fable`) always resolve to the latest model on that line.
+   */
+  model?: string;
+  /** Reasoning effort, passed as `--effort`. Omitted leaves the CLI default. */
+  effort?: EffortLevel;
+}
+
+/**
+ * Single-quote a value for the `zsh -c` command line.
+ *
+ * Everything else interpolated into that line goes through
+ * `assertResumeArgSafe`, but the system prompt is prose — it legitimately
+ * contains spaces, `|`, `<`, `>` — so it needs real quoting instead.
+ */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Build the `zsh -lic` command line.
+ *
+ * Two shapes:
+ *   plain     `exec claude <flags>`
+ *   headroom  `exec <bin> wrap claude --port N --no-proxy ... -- <flags>`
+ *
+ * The `--` separator is mandatory: headroom's own `-p/--port` and
+ * `-v/--verbose` collide with claude's `-p` and `--verbose`, and Click parses
+ * known options even under `ignore_unknown_options`.
+ *
+ * `--no-mcp --no-serena --no-rtk` are load-bearing. Those steps rewrite the
+ * active Claude config dir; with concurrent sessions they would race on the
+ * same `.claude.json`, and we do not want the bridge silently editing the
+ * user's profile.
+ *
+ * `exec` is safe on both branches — headroom is the process being replaced, and
+ * it reaps `claude` itself via `subprocess.run`.
+ */
+export function buildClaudeCommand(opts: {
+  claudeFlags: string;
+  headroom?: { bin: string; port: number } | undefined;
+}): string {
+  const { claudeFlags, headroom } = opts;
+  if (!headroom) return `exec claude ${claudeFlags}`;
+  assertResumeArgSafe(headroom.bin);
+  return (
+    `exec ${headroom.bin} wrap claude --port ${headroom.port} ` +
+    `--no-proxy --no-mcp --no-serena --no-rtk -- ${claudeFlags}`
+  );
 }
 
 export class ClaudeProcess extends EventEmitter {
@@ -60,6 +145,8 @@ export class ClaudeProcess extends EventEmitter {
   private stderrBuf = Buffer.alloc(0);
   private killed = false;
   private claudeSessionIdEmitted = false;
+  /** Distinguishes successive interrupt requests in the CLI's responses. */
+  private interruptSeq = 0;
   /** True iff this driver was spawned with --resume; used by SessionManager to classify exit reason. */
   readonly resumed: boolean;
 
@@ -82,12 +169,48 @@ export class ClaudeProcess extends EventEmitter {
     // Resume tokens are prepended to the existing claude argv so the final
     // shell command is `exec claude --resume <id> --add-dir <dir>... -p --dangerously-skip-permissions ...`.
     const claudePrefix = resumeArgs.length > 0 ? `${resumeArgs.join(' ')} ` : '';
+    const mcpConfigPath = opts.mcpConfigPath;
+    if (mcpConfigPath !== undefined) assertResumeArgSafe(mcpConfigPath);
+    const mcpFlag = mcpConfigPath !== undefined ? `--mcp-config ${mcpConfigPath} ` : '';
     const addDirPrefix = addDirArgs.length > 0 ? `${addDirArgs.join(' ')} ` : '';
-    const argv = ['-li', '-c', `exec claude ${claudePrefix}${addDirPrefix}${CLAUDE_FLAGS}`];
+    const appendPrompt = opts.appendSystemPrompt;
+    const promptFlag =
+      appendPrompt !== undefined && appendPrompt.length > 0
+        ? `--append-system-prompt ${shellQuote(appendPrompt)} `
+        : '';
+    // `--model` is shell-quoted rather than run through assertResumeArgSafe:
+    // the extended-context spelling (`opus[1m]`) contains brackets, which that
+    // allowlist rejects. isValidModelId is the gate; quoting handles the rest.
+    const { model, effort } = opts;
+    if (model !== undefined && !isValidModelId(model)) {
+      throw new Error(`unsafe model id: ${model}`);
+    }
+    if (effort !== undefined && !isEffortLevel(effort)) {
+      throw new Error(`unknown effort level: ${effort}`);
+    }
+    const modelFlag = model !== undefined ? `--model ${shellQuote(model)} ` : '';
+    const effortFlag = effort !== undefined ? `--effort ${effort} ` : '';
+    const claudeFlags =
+      `${claudePrefix}${addDirPrefix}${mcpFlag}${modelFlag}${effortFlag}${promptFlag}${CLAUDE_FLAGS}`;
+    const claudeConfigDir = opts.claudeConfigDir;
+    if (claudeConfigDir !== undefined) assertResumeArgSafe(claudeConfigDir);
+    const argv = [
+      '-li',
+      '-c',
+      buildClaudeCommand({ claudeFlags, headroom: opts.headroom }),
+    ];
     this.child = spawnFn('zsh', argv, {
       cwd: projectPath,
-      env: process.env,
+      env: {
+        ...process.env,
+        ...(claudeConfigDir !== undefined ? { CLAUDE_CONFIG_DIR: claudeConfigDir } : {}),
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
+      // Own process group so kill() can signal the whole tree. Under headroom,
+      // `claude` is a grandchild: Python's default SIGTERM handling exits
+      // without forwarding, which would orphan the agent. Never unref'd — the
+      // bridge must not exit with live children.
+      detached: true,
     });
 
     this.child.stdout.setEncoding('utf8');
@@ -118,19 +241,21 @@ export class ClaudeProcess extends EventEmitter {
       const line = this.stdoutBuf.slice(0, nl);
       this.stdoutBuf = this.stdoutBuf.slice(nl + 1);
       if (line.length === 0) continue;
-      const parsed = parseClaudeLine(line);
-      if (parsed === null) continue;
-      if (parsed.kind === 'session_id') {
-        // Capture Claude's CLI session uuid — emit once per driver lifetime
-        // so SessionManager can persist it. Do NOT pass through to the
-        // downstream `event` channel.
-        if (!this.claudeSessionIdEmitted) {
-          this.emit('cli_session_id', parsed.id);
-          this.claudeSessionIdEmitted = true;
+      // One line can carry several events — an assistant message often holds
+      // prose plus one or more tool calls.
+      for (const parsed of parseClaudeLine(line)) {
+        if (parsed.kind === 'session_id') {
+          // Capture Claude's CLI session uuid — emit once per driver lifetime
+          // so SessionManager can persist it. Do NOT pass through to the
+          // downstream `event` channel.
+          if (!this.claudeSessionIdEmitted) {
+            this.emit('cli_session_id', parsed.id);
+            this.claudeSessionIdEmitted = true;
+          }
+          continue;
         }
-        continue;
+        this.emit('event', parsed);
       }
-      this.emit('event', parsed);
     }
   }
 
@@ -162,16 +287,87 @@ export class ClaudeProcess extends EventEmitter {
     this.child.stdin.write(line);
   }
 
+  /**
+   * Stop the turn in flight, leaving the session alive.
+   *
+   * The CLI takes this on stdin as a control request and answers with a
+   * `control_response`; verified against claude-cli directly — the turn ends
+   * with `result.subtype = error_during_execution` and the **process keeps
+   * running**, ready for the next prompt. That is the whole reason stop can
+   * mean "stop this turn" rather than "kill the session".
+   *
+   * Best-effort: a write to a closed stdin is swallowed the same way
+   * `sendUserText`'s is, because an interrupt racing a natural turn end is
+   * normal, not an error.
+   */
+  interrupt(): void {
+    if (this.killed) return;
+    this.interruptSeq += 1;
+    const line = JSON.stringify({
+      type: 'control_request',
+      request_id: `mrt-interrupt-${this.interruptSeq}`,
+      request: { subtype: 'interrupt' },
+    }) + '\n';
+    try {
+      this.child.stdin.write(line);
+    } catch {
+      /* stdin already gone — the turn is over anyway */
+    }
+  }
+
+  /**
+   * Switch model and/or effort on a running session.
+   *
+   * The CLI accepts `/model <alias>` and `/effort <level>` as ordinary user
+   * messages on the stream-json stdin and applies them immediately — verified
+   * against claude 2.x, where a session spawned `--model haiku` reported
+   * `claude-sonnet-5` on the turn after `/model sonnet`. So no restart, and
+   * no lost transcript.
+   *
+   * The CLI answers each with a one-line confirmation ("Set model to Sonnet 5
+   * for this session only"), which flows through as a normal assistant message.
+   */
+  applyModelChange(next: { model?: string; effort?: EffortLevel }): void {
+    if (next.model !== undefined) {
+      if (!isValidModelId(next.model)) throw new Error(`unsafe model id: ${next.model}`);
+      this.sendUserText(`/model ${next.model}`);
+    }
+    if (next.effort !== undefined) {
+      if (!isEffortLevel(next.effort)) throw new Error(`unknown effort level: ${next.effort}`);
+      this.sendUserText(`/effort ${next.effort}`);
+    }
+  }
+
+  /**
+   * Signal the child's whole process group, falling back to the direct child.
+   *
+   * We spawn `detached`, so the child leads its own group and `kill(-pid)`
+   * reaches grandchildren too. That matters under headroom, where `claude` is a
+   * grandchild that would otherwise survive the wrapper's death.
+   */
+  private signalTree(sig: NodeJS.Signals): void {
+    const pid = this.child.pid;
+    if (pid !== undefined) {
+      try {
+        process.kill(-pid, sig);
+        return;
+      } catch {
+        // ESRCH (group already gone) or EPERM — fall through to the child.
+      }
+    }
+    try {
+      this.child.kill(sig);
+    } catch {
+      /* already dead */
+    }
+  }
+
   kill(): void {
     if (this.killed) return;
     this.killed = true;
-    this.child.kill('SIGTERM');
+    this.signalTree('SIGTERM');
     setTimeout(() => {
-      try {
-        this.child.kill('SIGKILL');
-      } catch {
-        /* already dead */
-      }
+      this.signalTree('SIGKILL');
     }, KILL_GRACE_MS).unref();
   }
 }

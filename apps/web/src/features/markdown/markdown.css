@@ -137,6 +137,75 @@
     outline-offset: -1px;
   }
 
+  /* Line-wrap toggle. Sits left of the copy button, revealed on hover so it
+     doesn't compete with the code for attention. */
+  .md-code-wrap-toggle {
+    position: absolute;
+    top: 0;
+    right: 30px;
+    height: 22px;
+    background: transparent;
+    border: 0;
+    color: #8b949e;
+    cursor: pointer;
+    padding: 0 6px;
+    font-size: 12px;
+    line-height: 1;
+    border-radius: 3px;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+  .md-code-block:hover .md-code-wrap-toggle,
+  .md-code-wrap-toggle:focus-visible,
+  .md-code-wrap-toggle[aria-pressed='true'] {
+    opacity: 1;
+  }
+  .md-code-wrap-toggle:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #e6edf3;
+  }
+  .md-code-wrap-toggle[aria-pressed='true'] {
+    color: var(--color-accent);
+  }
+  .md-code-wrap-toggle:focus-visible {
+    outline: 1px solid var(--color-accent);
+    outline-offset: -1px;
+  }
+
+  /* Wrapping mode: no horizontal scroll, long tokens break. */
+  .md-code-wrap pre,
+  .md-code-wrap code {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  .md-code-wrap pre {
+    overflow-x: visible;
+  }
+
+  /* Bare file paths in agent prose, linkified by rehypeAutolinkFilePaths.
+     Styled as a chip rather than a link so it reads as an app action. */
+  .md-file-chip {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 0 3px;
+    border: 0;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+    color: var(--color-accent);
+    cursor: pointer;
+    text-align: left;
+    word-break: break-all;
+  }
+  .md-file-chip:hover {
+    background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+    text-decoration: underline;
+  }
+  .md-file-chip:focus-visible {
+    outline: 1px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+
   .md-code-dev-caption {
     font-size: 10px;
     color: #8b949e;

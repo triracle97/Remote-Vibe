@@ -1,9 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, copyFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  symlinkSync,
+  rmSync,
+  copyFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FsApi } from '../fs-api.js';
+import { FsApi, hashContent } from '../fs-api.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const FIXTURE_PNG = join(dirname(__filename), '..', '..', 'test', 'fixtures', 'tiny.png');
@@ -110,6 +120,7 @@ describe('FsApi.readFile', () => {
       content: 'hello world',
       bytesRead: 11,
       truncated: false,
+      hash: hashContent('hello world'),
     });
   });
 
@@ -163,5 +174,161 @@ describe('FsApi.readFile', () => {
     const api = new FsApi({ allowedDirs: [root] });
     const r = await api.readFile(join(root, 'latin1.bin'), 1024);
     expect(r.kind).toBe('binary');
+  });
+});
+
+describe('FsApi.writeFile', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'mrt-fsw-'));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('overwrites an existing file and reports bytes + new hash', async () => {
+    const p = join(root, 'a.txt');
+    writeFileSync(p, 'old');
+    const api = new FsApi({ allowedDirs: [root] });
+
+    const res = await api.writeFile(p, 'new content');
+    expect(res.bytesWritten).toBe(11);
+    expect(res.hash).toBe(hashContent('new content'));
+    expect(readFileSync(p, 'utf8')).toBe('new content');
+  });
+
+  it('leaves no .tmp turds behind', async () => {
+    const p = join(root, 'a.txt');
+    writeFileSync(p, 'old');
+    const api = new FsApi({ allowedDirs: [root] });
+    await api.writeFile(p, 'new');
+    expect(readdirSync(root)).toEqual(['a.txt']);
+  });
+
+  it('preserves the original file mode (an executable script stays executable)', async () => {
+    const p = join(root, 'run.sh');
+    writeFileSync(p, '#!/bin/sh\necho old\n', { mode: 0o755 });
+    const api = new FsApi({ allowedDirs: [root] });
+    await api.writeFile(p, '#!/bin/sh\necho new\n');
+    expect(statSync(p).mode & 0o777).toBe(0o755);
+  });
+
+  it('refuses paths outside the allowlist', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'mrt-other-w-'));
+    const outside = join(other, 'x.txt');
+    writeFileSync(outside, 'secret');
+    const api = new FsApi({ allowedDirs: [root] });
+    await expect(api.writeFile(outside, 'pwned')).rejects.toMatchObject({
+      code: 'path_outside_allowlist',
+    });
+    expect(readFileSync(outside, 'utf8')).toBe('secret');
+    rmSync(other, { recursive: true, force: true });
+  });
+
+  it('refuses denylisted basenames even inside the allowlist', async () => {
+    const p = join(root, 'id_rsa');
+    writeFileSync(p, 'pretend-key');
+    const api = new FsApi({ allowedDirs: [root] });
+    await expect(api.writeFile(p, 'pwned')).rejects.toMatchObject({ code: 'path_denied' });
+    expect(readFileSync(p, 'utf8')).toBe('pretend-key');
+  });
+
+  it('refuses denylisted segment-runs', async () => {
+    mkdirSync(join(root, '.docker'));
+    const p = join(root, '.docker', 'config.json');
+    writeFileSync(p, '{}');
+    const api = new FsApi({ allowedDirs: [root] });
+    await expect(api.writeFile(p, '{"pwned":1}')).rejects.toMatchObject({ code: 'path_denied' });
+    expect(readFileSync(p, 'utf8')).toBe('{}');
+  });
+
+  it('refuses a symlink that escapes the allowlist', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'mrt-other-l-'));
+    const target = join(other, 'target.txt');
+    writeFileSync(target, 'secret');
+    const link = join(root, 'link.txt');
+    symlinkSync(target, link);
+
+    const api = new FsApi({ allowedDirs: [root] });
+    await expect(api.writeFile(link, 'pwned')).rejects.toMatchObject({
+      code: 'path_outside_allowlist',
+    });
+    expect(readFileSync(target, 'utf8')).toBe('secret');
+    rmSync(other, { recursive: true, force: true });
+  });
+
+  it('cannot create a new file', async () => {
+    const api = new FsApi({ allowedDirs: [root] });
+    await expect(api.writeFile(join(root, 'nope.txt'), 'x')).rejects.toMatchObject({
+      code: 'path_outside_allowlist',
+    });
+  });
+
+  it('refuses to write to a directory', async () => {
+    mkdirSync(join(root, 'sub'));
+    const api = new FsApi({ allowedDirs: [root] });
+    await expect(api.writeFile(join(root, 'sub'), 'x')).rejects.toMatchObject({
+      code: 'path_outside_allowlist',
+    });
+  });
+
+  it('enforces the write cap before touching disk', async () => {
+    const p = join(root, 'a.txt');
+    writeFileSync(p, 'old');
+    const api = new FsApi({ allowedDirs: [root], writeMaxBytes: 4 });
+    await expect(api.writeFile(p, 'much too long')).rejects.toMatchObject({
+      code: 'file_too_large',
+    });
+    expect(readFileSync(p, 'utf8')).toBe('old');
+  });
+
+  it('counts the cap in bytes, not characters', async () => {
+    const p = join(root, 'a.txt');
+    writeFileSync(p, 'old');
+    // 3 chars, 9 UTF-8 bytes.
+    const api = new FsApi({ allowedDirs: [root], writeMaxBytes: 8 });
+    await expect(api.writeFile(p, '日本語')).rejects.toMatchObject({ code: 'file_too_large' });
+  });
+
+  it('rejects a stale baseHash with file_conflict and leaves the file alone', async () => {
+    const p = join(root, 'a.txt');
+    writeFileSync(p, 'v1');
+    const api = new FsApi({ allowedDirs: [root] });
+    const loaded = await api.readFile(p);
+    // Someone else (the agent) writes in between.
+    writeFileSync(p, 'v2-from-agent');
+
+    await expect(
+      api.writeFile(p, 'v2-from-browser', (loaded as { hash: string }).hash),
+    ).rejects.toMatchObject({ code: 'file_conflict' });
+    expect(readFileSync(p, 'utf8')).toBe('v2-from-agent');
+  });
+
+  it('accepts a current baseHash', async () => {
+    const p = join(root, 'a.txt');
+    writeFileSync(p, 'v1');
+    const api = new FsApi({ allowedDirs: [root] });
+    const loaded = await api.readFile(p);
+    await api.writeFile(p, 'v2', (loaded as { hash: string }).hash);
+    expect(readFileSync(p, 'utf8')).toBe('v2');
+  });
+
+  it('force-writes when baseHash is omitted', async () => {
+    const p = join(root, 'a.txt');
+    writeFileSync(p, 'v1');
+    const api = new FsApi({ allowedDirs: [root] });
+    writeFileSync(p, 'v2-from-agent');
+    await api.writeFile(p, 'v3-forced');
+    expect(readFileSync(p, 'utf8')).toBe('v3-forced');
+  });
+
+  it('round-trips: the hash readFile returns is the one writeFile accepts', async () => {
+    const p = join(root, 'a.txt');
+    writeFileSync(p, 'hello');
+    const api = new FsApi({ allowedDirs: [root] });
+    const first = await api.readFile(p);
+    const written = await api.writeFile(p, 'goodbye', (first as { hash: string }).hash);
+    const second = await api.readFile(p);
+    expect((second as { hash: string }).hash).toBe(written.hash);
   });
 });

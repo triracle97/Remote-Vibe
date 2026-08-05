@@ -29,11 +29,17 @@ function newResumeCorrelationId(): string {
 export type SessionEvent = (ServerLifecycleMsg | ServerStreamMsg) & {
   /**
    * Web-store-only flag. Set on stream_delta events whose contents have been
-   * superseded by a consolidated `assistant` event with text payload.
-   * MessageBubble early-returns null for these. NEVER carried on the wire —
-   * the store sets/clears it locally; replay re-derives it from order.
+   * superseded by a consolidated `assistant` event with text payload. The
+   * transcript projection skips them. NEVER carried on the wire — the store
+   * sets/clears it locally; replay re-derives it from order.
    */
   superseded?: true;
+  /**
+   * Web-store-only arrival timestamp (ms). Set on live events so the
+   * transcript can compute tool-call durations; absent on replayed history,
+   * which the projection treats as "no duration known".
+   */
+  receivedAt?: number;
 };
 
 function applySupersessionWalk(events: SessionEvent[]): SessionEvent[] {
@@ -77,6 +83,15 @@ interface SessionsStore {
   order: string[];
   activeId: string | null;
   transcriptOnly: Record<string, boolean>;
+  /**
+   * Names heard for sessions this store has no view for yet.
+   *
+   * Renaming happens on the board, which keeps its own card list; this store
+   * only holds sessions the user has actually opened. Without somewhere to park
+   * the name, a board rename was dropped on the floor and the session page
+   * still showed the old name (or an id stub) when you finally opened it.
+   */
+  pendingNames: Record<string, string>;
 
   applyServerMsg(m: ServerMsg): void;
   setActive(id: string): void;
@@ -98,6 +113,14 @@ interface SessionsStore {
    * `session_renamed` reply, rejects on `error` with the same correlationId.
    */
   renameSession(sessionId: string, name: string): Promise<void>;
+  /**
+   * Stop the turn in flight, leaving the session alive.
+   *
+   * Distinct from `stop_session`, which ends the session. Fire-and-forget: the
+   * transcript's own `result` event is the confirmation, and a session that has
+   * already finished its turn simply has nothing to interrupt.
+   */
+  interruptSession(sessionId: string): void;
 }
 
 export const useSessionsStore = create<SessionsStore>((set, get) => ({
@@ -105,6 +128,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
   order: [],
   activeId: null,
   transcriptOnly: {},
+  pendingNames: {},
 
   applyServerMsg(m) {
     if (m.type === 'system' && m.event === 'init') return;
@@ -121,6 +145,17 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         lastSeq: m.seq,
         alive: true,
         ...(resolvedAccount !== undefined ? { account: resolvedAccount } : {}),
+        // Carry the name across. `session_created` has no `name` on the wire,
+        // and opening a session replays this event from the bridge's buffer —
+        // so rebuilding the view from scratch used to wipe a name that had
+        // already arrived via `session_list` or `session_renamed`, and the
+        // header fell back to a session-id stub while the board still showed
+        // the real name.
+        ...(existing?.name !== undefined
+          ? { name: existing.name }
+          : get().pendingNames[m.sessionId] !== undefined
+            ? { name: get().pendingNames[m.sessionId]! }
+            : {}),
       };
       const isTranscriptOnly = Boolean(get().transcriptOnly[m.sessionId]);
       set((s) => ({
@@ -159,7 +194,13 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     ) {
       const exists = get().sessions[m.sessionId];
       if (!exists) return;
-      let nextEvents: SessionEvent[] = [...exists.events, m as SessionEvent];
+      // Stamp arrival time so the transcript can time tool calls. The wire
+      // carries no timestamps, so this is only available for events seen live;
+      // replayed history simply shows no duration rather than a wrong one.
+      let nextEvents: SessionEvent[] = [
+        ...exists.events,
+        { ...m, receivedAt: Date.now() } as SessionEvent,
+      ];
       // Only the `assistant` append can introduce a new supersession boundary —
       // skip the walk on every other event type for performance.
       if (m.type === 'assistant') {
@@ -179,16 +220,25 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       const order: string[] = [];
       for (const summary of m.sessions) {
         const existing = get().sessions[summary.sessionId];
-        sessions[summary.sessionId] = existing ?? {
-          sessionId: summary.sessionId,
-          agent: summary.agent,
-          projectPath: summary.projectPath,
-          createdAt: summary.createdAt,
-          events: [],
-          lastSeq: 0,
-          alive: true,
-          ...(summary.account !== undefined ? { account: summary.account } : {}),
-        };
+        // The bridge now joins `name` from its registry. Take it whenever it
+        // is present — on a fresh page load there is no `existing` to keep it
+        // alive, and `session_renamed` only fires on change, so before this
+        // the name was silently lost on every reload.
+        sessions[summary.sessionId] = existing
+          ? summary.name !== undefined
+            ? { ...existing, name: summary.name }
+            : existing
+          : {
+              sessionId: summary.sessionId,
+              agent: summary.agent,
+              projectPath: summary.projectPath,
+              createdAt: summary.createdAt,
+              events: [],
+              lastSeq: 0,
+              alive: true,
+              ...(summary.account !== undefined ? { account: summary.account } : {}),
+              ...(summary.name !== undefined ? { name: summary.name } : {}),
+            };
         order.push(summary.sessionId);
       }
       set({ sessions, order });
@@ -238,6 +288,10 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         set((s) => ({
           sessions: { ...s.sessions, [m.sessionId]: { ...existing, name: m.name } },
         }));
+      } else {
+        // Not opened in this tab yet — park it so opening the session later
+        // shows the new name instead of a stale one.
+        set((s) => ({ pendingNames: { ...s.pendingNames, [m.sessionId]: m.name } }));
       }
       // Resolve the pending promise only when correlationId matches an in-flight rename.
       // Bridge auto-name broadcasts use correlationId: '' and will NOT match any entry.
@@ -350,6 +404,10 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       correlationId,
     });
     return promise;
+  },
+
+  interruptSession(sessionId) {
+    getBridgeClient().send({ type: 'interrupt_session', sessionId });
   },
 
   async renameSession(sessionId: string, name: string): Promise<void> {

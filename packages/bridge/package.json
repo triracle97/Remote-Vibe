@@ -12,9 +12,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "ignore": "^7.0.5",
     "node-pty": "^1.0.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

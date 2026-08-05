@@ -449,6 +449,142 @@ describe('SessionManager', () => {
       expect(drivers[0]!.resumed).toBe(true);
     });
 
+    it('brings a finished session back out of the Done column on resume', async () => {
+      const { mgr, registry } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-done',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-done.jsonl',
+        claudeSessionId: 'claude-uuid-1',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+        // Exactly what markEnded() leaves behind.
+        status: 'ended',
+        endedAt: 1234,
+        phase: 'done',
+        phasePinned: false,
+      } as never);
+
+      await mgr.resume('web-done');
+
+      const entry = registry.get('web-done')!;
+      expect(entry.status).toBe('live');
+      expect(entry.endedAt).toBeNull();
+      // Phase inference only ever moves a card forward, and `done` is the top
+      // rank — so without this reset the card is stuck in Done for good.
+      expect(entry.phase).toBe('planning');
+    });
+
+    it('broadcasts the phase rewind so an open board updates', async () => {
+      const { mgr, registry } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-done-2',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-done-2.jsonl',
+        claudeSessionId: 'claude-uuid-1',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+        status: 'ended',
+        endedAt: 1234,
+        phase: 'done',
+        phasePinned: false,
+      } as never);
+
+      const sink: import('../types.js').ServerMsg[] = [];
+      mgr.on('broadcast', (m) => sink.push(m));
+      await mgr.resume('web-done-2');
+
+      const moved = sink.find((m) => m.type === 'session_phase_changed');
+      expect(moved).toMatchObject({ sessionId: 'web-done-2', phase: 'planning', phasePinned: false });
+    });
+
+    it('leaves a pinned card where the user put it', async () => {
+      const { mgr, registry } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-pinned',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-pinned.jsonl',
+        claudeSessionId: 'claude-uuid-1',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+        status: 'ended',
+        endedAt: 1234,
+        phase: 'done',
+        // Pinned means the column belongs to the user.
+        phasePinned: true,
+      } as never);
+
+      await mgr.resume('web-pinned');
+
+      const entry = registry.get('web-pinned')!;
+      expect(entry.status).toBe('live');
+      expect(entry.phase).toBe('done');
+    });
+
+    it('does not rewind a session resumed mid-flight', async () => {
+      const { mgr, registry } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-mid',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-mid.jsonl',
+        claudeSessionId: 'claude-uuid-1',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+        status: 'ended',
+        endedAt: 1234,
+        phase: 'implementing',
+        phasePinned: false,
+      } as never);
+
+      await mgr.resume('web-mid');
+
+      // Only the terminal state rewinds; real progress is not thrown away.
+      expect(registry.get('web-mid')!.phase).toBe('implementing');
+      expect(registry.get('web-mid')!.status).toBe('live');
+    });
+
+    it('leaves the entry looking ended when the resume itself fails', async () => {
+      const { mgr, registry } = makeMgrWithRegistry();
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-gone',
+        agent: 'claude',
+        // Path does not exist, so resume rejects before any spawn.
+        projectPath: join(tmp, 'missing-proj'),
+        transcriptPath: '.bridge/transcripts/web-gone.jsonl',
+        claudeSessionId: 'claude-uuid-1',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+        status: 'ended',
+        endedAt: 1234,
+        phase: 'done',
+        phasePinned: false,
+      } as never);
+
+      await expect(mgr.resume('web-gone')).rejects.toBeTruthy();
+
+      const entry = registry.get('web-gone')!;
+      expect(entry.status).toBe('ended');
+      expect(entry.phase).toBe('done');
+    });
+
     it('resume(webSessionId) for Codex instantiates driver seeded with codexSessionId; no spawn-per-turn yet', async () => {
       const { mgr, registry, drivers, spawned } = makeMgrWithRegistry();
       mkdirSync(join(tmp, 'proj'), { recursive: true });
@@ -915,14 +1051,26 @@ describe('SessionManager', () => {
         },
         'default',
       );
-      expect(registry.get(webSessionId)?.additionalDirs).toEqual([
-        '/Volumes/WDSSD/Code/storybook-solid-js',
-        '/Volumes/WDSSD/Code/customer-management',
-      ]);
-      expect(spawned[0]!.additionalDirs).toEqual([
-        '/Volumes/WDSSD/Code/storybook-solid-js',
-        '/Volumes/WDSSD/Code/customer-management',
-      ]);
+      // DEFAULT_WORKSPACE_DIRS is the workspace root; a resumed session gets it
+      // because its original --add-dir set was never recorded.
+      expect(registry.get(webSessionId)?.additionalDirs).toEqual(['/Volumes/WDSSD/Code']);
+      expect(spawned[0]!.additionalDirs).toEqual(['/Volumes/WDSSD/Code']);
+    });
+
+    it('resumeFromHistoryEntry does not repeat the project path as an extra dir', async () => {
+      const { mgr, registry } = await makeMgrP6({
+        allowedDirs: ['/Volumes/WDSSD/Code'],
+        stat: async () => ({ isDirectory: () => true }),
+      });
+      const webSessionId = await mgr.resumeFromHistoryEntry(
+        {
+          agent: 'codex',
+          sessionId: 'codex-native-2',
+          projectPath: '/Volumes/WDSSD/Code',
+        },
+        'default',
+      );
+      expect(registry.get(webSessionId)?.additionalDirs).toEqual([]);
     });
 
     it('resume forwards stored additionalDirs into the resumed driver', async () => {
@@ -1010,7 +1158,7 @@ describe('SessionManager', () => {
         mgr.renameSession(sess.webSessionId, 'x'.repeat(201)),
       ).rejects.toMatchObject({ code: 'session_name_invalid' });
       await expect(
-        mgr.renameSession(sess.webSessionId, 'foo bar'),
+        mgr.renameSession(sess.webSessionId, 'foo\x00bar'),
       ).rejects.toMatchObject({ code: 'session_name_invalid' });
     });
 
@@ -1089,5 +1237,78 @@ describe('SessionManager', () => {
         mgr.spawnSession({ agent: 'claude', dirs: [a, '/etc'] }),
       ).rejects.toMatchObject({ code: 'path_outside_allowlist' });
     });
+  });
+});
+
+describe('SessionManager.interrupt', () => {
+  class InterruptibleDriver extends EventEmitter implements AgentDriver {
+    interrupts = 0;
+    kills = 0;
+    sendUserText(): void {}
+    interrupt(): void {
+      this.interrupts += 1;
+    }
+    kill(): void {
+      this.kills += 1;
+      this.emit('exit', 0);
+    }
+  }
+
+  class PlainDriver extends EventEmitter implements AgentDriver {
+    kills = 0;
+    sendUserText(): void {}
+    kill(): void {
+      this.kills += 1;
+      this.emit('exit', 0);
+    }
+  }
+
+  it('interrupts the turn without killing the session', async () => {
+    const driver = new InterruptibleDriver();
+    const tmpDir = mkdtempSync(join(tmpdir(), 'mrt-int-'));
+    const mgr = new SessionManager({
+      allowedDirs: [tmpDir],
+      bufferCap: 100,
+      realpath: async (p) => p,
+      driverFactory: () => driver,
+    });
+    const s = await mgr.spawnSession({ agent: 'claude', dirs: [tmpDir] });
+
+    expect(mgr.interrupt(s.sessionId)).toBe(true);
+    expect(driver.interrupts).toBe(1);
+    // The whole point: the session survives so the next turn can be sent.
+    expect(driver.kills).toBe(0);
+    expect(mgr.isAlive(s.sessionId)).toBe(true);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reports rather than escalating when the driver cannot interrupt', async () => {
+    const driver = new PlainDriver();
+    const tmpDir = mkdtempSync(join(tmpdir(), 'mrt-int2-'));
+    const mgr = new SessionManager({
+      allowedDirs: [tmpDir],
+      bufferCap: 100,
+      realpath: async (p) => p,
+      driverFactory: () => driver,
+    });
+    const s = await mgr.spawnSession({ agent: 'claude', dirs: [tmpDir] });
+
+    expect(mgr.interrupt(s.sessionId)).toBe(false);
+    // Falling back to a kill would end a session the user only wanted paused.
+    expect(driver.kills).toBe(0);
+    expect(mgr.isAlive(s.sessionId)).toBe(true);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('throws for an unknown or dead session', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'mrt-int3-'));
+    const mgr = new SessionManager({
+      allowedDirs: [tmpDir],
+      bufferCap: 100,
+      realpath: async (p) => p,
+      driverFactory: () => new InterruptibleDriver(),
+    });
+    expect(() => mgr.interrupt('nope')).toThrow(/session_dead/);
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 });

@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AppShell } from './shell/AppShell';
+import { BoardPage } from './pages/Board';
 import { Home } from './pages/Home';
 import { Session } from './pages/Session';
 import { Sessions } from './pages/Sessions';
@@ -12,6 +13,7 @@ export function App(): JSX.Element {
     <Routes>
       <Route element={<AppShell />}>
         <Route path="/" element={<Home />} />
+        <Route path="/board" element={<BoardPage />} />
         <Route path="/sessions" element={<Sessions />} />
         <Route path="/projects" element={<Projects />} />
         <Route path="/settings" element={<Settings />} />

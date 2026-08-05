@@ -5,6 +5,7 @@ import { useFileExplorerStore, type DirEntry } from '../../store/file-explorer';
 import type { BridgeClient } from '../../services/bridge-client';
 import { FilePreview } from './FilePreview';
 import { BottomSheet } from '../../shell/BottomSheet';
+import { useIsDesktop } from '../../shell/useIsDesktop';
 
 interface FileExplorerProps {
   client: BridgeClient;
@@ -16,20 +17,6 @@ function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function useIsDesktop(): boolean {
-  const [isDesktop, setIsDesktop] = useState(() =>
-    typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches,
-  );
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mql = window.matchMedia('(min-width: 768px)');
-    const onChange = (e: MediaQueryListEvent): void => setIsDesktop(e.matches);
-    mql.addEventListener('change', onChange);
-    return () => mql.removeEventListener('change', onChange);
-  }, []);
-  return isDesktop;
 }
 
 interface DirRowsProps {
@@ -145,12 +132,17 @@ export function FileExplorer({ client, rootPath, onClose }: FileExplorerProps): 
         </button>
       </div>
       {/* Tree */}
-      <div className="fe-tree flex-1 overflow-y-auto py-1">
+      <div className="fe-tree flex-1 min-h-0 overflow-y-auto py-1">
         <DirRows client={client} path={rootPath} depth={0} />
       </div>
-      {/* Preview */}
-      <div className="fe-preview border-t border-[var(--color-border)] flex-1 min-h-0 overflow-auto">
-        <FilePreview file={selectedFile} />
+      {/* Preview / editor. `overflow-hidden`, not `auto`: Monaco needs a
+          fixed-height box to lay itself out inside and scrolls internally. */}
+      <div
+        className={`fe-preview border-t border-[var(--color-border)] min-h-0 overflow-hidden ${
+          selectedFile?.state === 'text' ? 'flex-[2]' : 'flex-1'
+        }`}
+      >
+        <FilePreview file={selectedFile} client={client} />
       </div>
     </div>
   );

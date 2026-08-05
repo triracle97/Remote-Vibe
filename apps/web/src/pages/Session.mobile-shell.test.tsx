@@ -5,6 +5,7 @@ import { Session } from './Session';
 import { useSessionsStore } from '../store/sessions';
 import type { SessionView } from '../store/sessions';
 import type { BridgeClient } from '../services/bridge-client';
+import { NAV_TABS } from '../shell/NavRail';
 
 vi.mock('../features/project-picker/useNewSession', () => ({
   useNewSession: () => ({ open: vi.fn(), pickerNode: null }),
@@ -248,5 +249,53 @@ describe('Session mobile shell (BottomSheet)', () => {
     lastButton.focus();
     fireEvent.keyDown(sheet, { key: 'Tab' });
     expect(document.activeElement).toBe(firstButton);
+  });
+
+  it('offers every top-level route from inside a session', async () => {
+    // The rail is hidden on a phone here — a bottom bar under the composer
+    // would fight the keyboard — so this sheet is the only way out of a
+    // session on mobile. Every route in NAV_TABS has to be reachable from it.
+    renderSession();
+    fireEvent.click(screen.getByLabelText('Open sessions and history'));
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('dialog').find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeDefined();
+    });
+    const sheet = screen
+      .getAllByRole('dialog')
+      .find((d) => d.getAttribute('aria-label') === 'Sessions and history')!;
+
+    const routeNav = within(sheet).getByRole('navigation', { name: 'Go to' });
+    const labels = within(routeNav)
+      .getAllByRole('button')
+      .map((b) => b.textContent);
+    for (const { label } of NAV_TABS) {
+      expect(labels).toContain(label);
+    }
+  });
+
+  it('navigates and closes the sheet when a route is picked', async () => {
+    renderSession();
+    fireEvent.click(screen.getByLabelText('Open sessions and history'));
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('dialog').find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeDefined();
+    });
+    const sheet = screen
+      .getAllByRole('dialog')
+      .find((d) => d.getAttribute('aria-label') === 'Sessions and history')!;
+    const routeNav = within(sheet).getByRole('navigation', { name: 'Go to' });
+
+    fireEvent.click(within(routeNav).getByText('Board'));
+
+    await waitFor(() => {
+      expect(
+        screen.queryAllByRole('dialog').find((d) => d.getAttribute('aria-label') === 'Sessions and history'),
+      ).toBeUndefined();
+    });
   });
 });

@@ -3,6 +3,7 @@ import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, Outlet } from 'react-router-dom';
 import { Settings } from './Settings';
 import { useThemeStore } from '../shell/themeStore';
+import { SHORTCUTS } from '../shell/shortcuts';
 
 afterEach(() => cleanup());
 
@@ -57,5 +58,28 @@ describe('Settings page', () => {
   it('renders Accounts heading', () => {
     renderPage();
     expect(screen.getByRole('heading', { name: /accounts/i })).toBeDefined();
+  });
+});
+
+describe('Settings — keyboard shortcuts', () => {
+  it('documents every shortcut on the page, not only behind the ? modal', () => {
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('Keyboard shortcuts')).toBeTruthy();
+    for (const s of SHORTCUTS) {
+      expect(screen.getByText(s.description)).toBeTruthy();
+    }
+  });
+
+  it('tells you the ? key exists', () => {
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText(/anywhere outside a text box/i)).toBeTruthy();
   });
 });

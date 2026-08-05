@@ -39,7 +39,12 @@ export class ImageStore {
 
   validate(images: RawImage[] | undefined, agent: AgentKind): ValidateResult {
     if (!images || images.length === 0) return { ok: true };
-    if (agent !== 'claude') return { ok: false, error: 'images_not_supported_for_agent' };
+    // Both CLIs take images: Claude as content blocks on stdin, Codex as
+    // `codex exec -i <FILE>`. The per-agent rejection that used to live here
+    // predated `--image` and was simply out of date.
+    if (agent !== 'claude' && agent !== 'codex') {
+      return { ok: false, error: 'images_not_supported_for_agent' };
+    }
     if (images.length > MAX_IMAGES) return { ok: false, error: 'too_many_images' };
     for (const img of images) {
       if (!MIME_TO_EXT[img.mime]) return { ok: false, error: 'image_invalid_mime' };
@@ -50,24 +55,39 @@ export class ImageStore {
     return { ok: true };
   }
 
-  async writeAuditCopy(sessionId: string, images: RawImage[]): Promise<void> {
-    if (images.length === 0) return;
+  /**
+   * Write the images to disk and return their absolute paths.
+   *
+   * Serves two purposes at once, which is why one write covers both: it is the
+   * audit trail of what was actually sent, and — for Codex, which takes images
+   * as `-i <FILE>` rather than inline on stdin — it is the input itself. A
+   * second temp copy just for the CLI would double the disk write and give two
+   * answers to "what did the agent see".
+   *
+   * Never throws: a failed write degrades to fewer paths, and the caller sends
+   * what it has rather than losing the message.
+   */
+  async writeAuditCopy(sessionId: string, images: RawImage[]): Promise<string[]> {
+    if (images.length === 0) return [];
     const dir = join(this.dataDir, 'images', sessionId);
     try {
       await mkdir(dir, { recursive: true, mode: 0o700 });
     } catch (err) {
       console.warn(`[image-store] mkdir(${dir}) failed: ${(err as Error).message}`);
-      return;
+      return [];
     }
+    const written: string[] = [];
     for (const img of images) {
       const ext = MIME_TO_EXT[img.mime] ?? 'bin';
       const path = join(dir, `${randomUUID()}.${ext}`);
       try {
         await writeFile(path, Buffer.from(img.base64, 'base64'), { mode: 0o600 });
+        written.push(path);
       } catch (err) {
         console.warn(`[image-store] write(${path}) failed: ${(err as Error).message}`);
       }
     }
+    return written;
   }
 
   async cleanup(sessionId: string): Promise<void> {

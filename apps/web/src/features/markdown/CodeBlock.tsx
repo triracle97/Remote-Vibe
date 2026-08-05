@@ -66,6 +66,30 @@ function isInline(className: string | undefined, source: string): boolean {
   return !source.includes('\n');
 }
 
+const WRAP_STORAGE_KEY = 'mrt.code.wrap';
+
+/**
+ * Whether code blocks soft-wrap. Persisted because it is a reading preference,
+ * not per-block state — someone on a phone wants wrapping everywhere, someone
+ * reading diffs on a desktop wants it off everywhere. Ported from the wrap
+ * toggle in nimbalyst's transcript `MarkdownRenderer.tsx`.
+ */
+function readWrapPref(): boolean {
+  try {
+    return localStorage.getItem(WRAP_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeWrapPref(on: boolean): void {
+  try {
+    localStorage.setItem(WRAP_STORAGE_KEY, on ? '1' : '0');
+  } catch {
+    // Private mode — the toggle still works for this block.
+  }
+}
+
 function CodeFenceWrapper({
   lang,
   source,
@@ -73,9 +97,10 @@ function CodeFenceWrapper({
 }: {
   lang: string | null;
   source: string;
-  body: ReactNode;
+  body: (wrap: boolean) => ReactNode;
 }): JSX.Element {
   const [copied, setCopied] = useState<'idle' | 'ok' | 'fail'>('idle');
+  const [wrap, setWrap] = useState(readWrapPref);
   const canCopy =
     typeof navigator !== 'undefined' &&
     typeof navigator.clipboard !== 'undefined' &&
@@ -95,9 +120,26 @@ function CodeFenceWrapper({
       });
   };
 
+  const toggleWrap = (): void => {
+    setWrap((w) => {
+      writeWrapPref(!w);
+      return !w;
+    });
+  };
+
   return (
-    <div className="md-code-block">
+    <div className={`md-code-block${wrap ? ' md-code-wrap' : ''}`}>
       {lang && <div className="md-code-lang">{lang}</div>}
+      <button
+        type="button"
+        className="md-code-wrap-toggle"
+        onClick={toggleWrap}
+        aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}
+        aria-pressed={wrap}
+        title={wrap ? 'Line wrapping on' : 'Line wrapping off'}
+      >
+        ↩
+      </button>
       {canCopy && (
         <button
           type="button"
@@ -108,7 +150,7 @@ function CodeFenceWrapper({
           {copied === 'idle' ? '📋' : copied === 'ok' ? '✓' : '✗'}
         </button>
       )}
-      {body}
+      {body(wrap)}
     </div>
   );
 }
@@ -126,6 +168,16 @@ const PRISM_CODE_STYLE: React.CSSProperties = {
   fontFamily: 'inherit',
   fontSize: 'inherit',
   background: 'transparent',
+};
+
+/**
+ * Prism sets `white-space: pre` inline, which beats a stylesheet rule — so the
+ * wrap toggle has to override it inline too.
+ */
+const PRISM_WRAP_STYLE: React.CSSProperties = {
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+  overflowWrap: 'anywhere',
 };
 
 export function CodeBlock({ className, children }: CodeBlockProps): JSX.Element {
@@ -146,17 +198,20 @@ export function CodeBlock({ className, children }: CodeBlockProps): JSX.Element 
       <CodeFenceWrapper
         lang={lang}
         source={source}
-        body={
+        body={(wrap) => (
           <SyntaxHighlighter
             language={lang}
             style={vscDarkPlus}
             PreTag="pre"
-            customStyle={PRISM_STYLE}
-            codeTagProps={{ style: PRISM_CODE_STYLE }}
+            customStyle={wrap ? { ...PRISM_STYLE, ...PRISM_WRAP_STYLE } : PRISM_STYLE}
+            codeTagProps={{
+              style: wrap ? { ...PRISM_CODE_STYLE, ...PRISM_WRAP_STYLE } : PRISM_CODE_STYLE,
+            }}
+            wrapLongLines={wrap}
           >
             {source.replace(/\n$/, '')}
           </SyntaxHighlighter>
-        }
+        )}
       />
     );
   }
@@ -166,11 +221,11 @@ export function CodeBlock({ className, children }: CodeBlockProps): JSX.Element 
     <CodeFenceWrapper
       lang={null}
       source={source}
-      body={
+      body={() => (
         <pre>
           <code>{children}</code>
         </pre>
-      }
+      )}
     />
   );
 }

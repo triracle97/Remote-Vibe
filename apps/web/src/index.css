@@ -74,6 +74,27 @@
   --color-success: #40c057;
   --color-warn:    #fcc419;
   --color-danger:  #fa5252;
+
+  /* Board phase columns. Chosen to read as a progression:
+     grey (not started) → blue (thinking) → amber (working) → violet
+     (checking) → green (finished). Both themes use the same hues; the
+     surrounding surfaces carry the light/dark difference. */
+  --color-phase-backlog:      #6b7280;
+  --color-phase-investigating:#22d3ee;
+  --color-phase-planning:     #60a5fa;
+  --color-phase-implementing: #eab308;
+  --color-phase-verifying:    #a78bfa;
+  --color-phase-done:         #4ade80;
+
+  /* Card live state. Deliberately distinct from the phase hues so a running
+     card in the Planning column doesn't read as an Implementing card. */
+  --color-state-running: #60a5fa;
+  --color-state-waiting: #f97316;
+  --color-state-unread:  #38bdf8;
+
+  /* Diff rendering (transcript). */
+  --color-diff-add: #40c057;
+  --color-diff-del: #fa5252;
 }
 
 [data-theme="dark"] {

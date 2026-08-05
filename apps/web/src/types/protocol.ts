@@ -1,8 +1,82 @@
 export type AgentKind = 'claude' | 'codex';
 
+/**
+ * Reasoning effort. Mirror of `packages/bridge/src/models.ts`; the values are
+ * exactly what `claude --effort` documents.
+ */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export const EFFORT_LEVELS: ReadonlyArray<{ value: EffortLevel; label: string }> = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'xHigh' },
+  { value: 'max', label: 'Max' },
+] as const;
+
+/**
+ * Claude offers aliases only: an alias always resolves to the latest model on
+ * its line, so this list never goes stale as new versions ship.
+ */
+export const CLAUDE_MODELS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'opus', label: 'Opus' },
+  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'haiku', label: 'Haiku' },
+  { value: 'fable', label: 'Fable' },
+] as const;
+
+export const CODEX_MODELS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
+  { value: 'gpt-5', label: 'GPT-5' },
+] as const;
+
+export function modelsFor(agent: AgentKind): ReadonlyArray<{ value: string; label: string }> {
+  return agent === 'claude' ? CLAUDE_MODELS : CODEX_MODELS;
+}
+
+/** Human label for a model id, falling back to the id itself. */
+export function modelLabel(agent: AgentKind, value: string): string {
+  return modelsFor(agent).find((m) => m.value === value)?.label ?? value;
+}
+
+/**
+ * Where a session sits in the work it is doing. Board columns, in order.
+ * Auto-inference only moves forward; a manual drag can go either way and
+ * pins the phase so inference stops.
+ *
+ * Mirror of `packages/bridge/src/types.ts`.
+ */
+export type SessionPhase =
+  | 'backlog'
+  | 'investigating'
+  | 'planning'
+  | 'implementing'
+  | 'verifying'
+  | 'done';
+
+export const SESSION_PHASE_COLUMNS: ReadonlyArray<{
+  value: SessionPhase;
+  label: string;
+  /** CSS custom property holding this column's accent colour. */
+  token: string;
+}> = [
+  { value: 'backlog', label: 'Backlog', token: '--color-phase-backlog' },
+  { value: 'investigating', label: 'Investigating', token: '--color-phase-investigating' },
+  { value: 'planning', label: 'Planning', token: '--color-phase-planning' },
+  { value: 'implementing', label: 'Implementing', token: '--color-phase-implementing' },
+  { value: 'verifying', label: 'Verifying', token: '--color-phase-verifying' },
+  { value: 'done', label: 'Done', token: '--color-phase-done' },
+] as const;
+
+export type SessionLifecycleStatus = 'live' | 'ended';
+
 export interface ClientStartMsg {
   type: 'start';
   agent: AgentKind;
+  /** Phase 8: named CLAUDE_CONFIG_DIR profile (claude only). */
+  claudeConfig?: string;
+  model?: string;
+  effort?: EffortLevel;
   /** Phase 1-5: single working dir. Still supported for backward compat. */
   projectPath?: string;
   /** Phase 6: multiple working dirs (first = primary cwd). If both `dirs` and `projectPath` present, `dirs` wins. */
@@ -23,6 +97,16 @@ export interface ClientInputMsg {
 
 export interface ClientStopMsg {
   type: 'stop_session';
+  sessionId: string;
+  correlationId?: string;
+}
+
+/**
+ * Stop the turn in flight but keep the session. `stop_session` ends it; this is
+ * the Esc key, not the power switch.
+ */
+export interface ClientInterruptMsg {
+  type: 'interrupt_session';
   sessionId: string;
   correlationId?: string;
 }
@@ -63,16 +147,31 @@ export interface ClientReadFileMsg {
   correlationId?: string;
 }
 
+export interface ClientWriteFileMsg {
+  type: 'write_file';
+  path: string;
+  content: string;
+  /**
+   * Hash the client got from `file_result`. Present = optimistic-concurrency
+   * check; the write is refused with `file_conflict` if the file changed since.
+   * Absent = force overwrite (used after the user confirms a conflict).
+   */
+  baseHash?: string;
+  correlationId?: string;
+}
+
 export type ClientMsg =
   | ClientStartMsg
   | ClientInputMsg
   | ClientStopMsg
+  | ClientInterruptMsg
   | ClientListSessionsMsg
   | ClientGetHistoryMsg
   | ClientListAccountsMsg
   | ClientListPromptsMsg
   | ClientListDirsMsg
   | ClientReadFileMsg
+  | ClientWriteFileMsg
   | ClientListHistoryMsg
   | ClientResumeSessionMsg
   | ClientListProfilesMsg
@@ -85,20 +184,109 @@ export type ClientMsg =
   | ClientTermStartMsg
   | ClientTermInputMsg
   | ClientTermResizeMsg
-  | ClientTermKillMsg;
+  | ClientTermKillMsg
+  | ClientListAllSessionsMsg
+  | ClientSetSessionModelMsg
+  | ClientSetSessionPhaseMsg
+  | ClientSetSessionTagsMsg
+  | ClientArchiveSessionMsg
+  | ClientDeleteSessionMsg
+  | ClientListJobsMsg
+  | ClientCreateJobMsg
+  | ClientUpdateJobMsg
+  | ClientDeleteJobMsg
+  | ClientStartJobMsg
+  | ClientGetRateLimitsMsg;
+
+/** Running totals for one session. Persisted by the bridge. */
+export interface SessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  /** USD, as reported by the CLI. */
+  costUsd: number;
+  turns: number;
+  /**
+   * How full the context window is right now, in tokens: the input side of the
+   * most recent turn. A *level*, not a running total — every other field here
+   * accumulates. Older bridges do not send it, hence optional.
+   */
+  contextTokens?: number;
+}
+
+export const EMPTY_SESSION_USAGE: SessionUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreationTokens: 0,
+  costUsd: 0,
+  turns: 0,
+  contextTokens: 0,
+};
+
+/**
+ * A quota window reported by the CLI's `rate_limit_event` and relayed by the
+ * bridge. `utilization` is a fraction 0..1, not a percentage.
+ */
+export interface RateLimitWindow {
+  limitType: string;
+  utilization: number;
+  /** Unix seconds, or null when not reported. */
+  resetsAt: number | null;
+  status: string | null;
+  isUsingOverage: boolean;
+  observedAt: number;
+}
+
+export interface ServerSessionUsageMsg {
+  type: 'session_usage';
+  sessionId: string;
+  usage: SessionUsage;
+}
+
+export interface ServerRateLimitsMsg {
+  type: 'rate_limits';
+  windows: RateLimitWindow[];
+  correlationId?: string;
+}
+
+export interface ClientGetRateLimitsMsg {
+  type: 'get_rate_limits';
+  correlationId?: string;
+}
+
+/** Token accounting for one turn, straight off the CLI's `result` line. */
+export interface TurnUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+}
 
 export type AgentEvent =
   | { kind: 'assistant_text'; text: string }
   | { kind: 'stream_delta'; delta: string }
+  /** Extended-thinking block. Rendered collapsed. */
+  | { kind: 'thinking'; text: string }
   | { kind: 'tool_use'; toolUseId: string; toolName: string; input: unknown }
-  | { kind: 'tool_result'; toolUseId: string; output: unknown }
-  | { kind: 'result'; cost?: number; durationMs?: number; error?: string };
+  | { kind: 'tool_result'; toolUseId: string; output: unknown; isError?: boolean }
+  | {
+      kind: 'result';
+      cost?: number;
+      durationMs?: number;
+      error?: string;
+      usage?: TurnUsage;
+      model?: string;
+    };
 
 export interface ServerInitMsg {
   type: 'system';
   event: 'init';
   /** Optional capability flags. Absence ≡ all caps false. */
   capabilities?: { terminal: boolean };
+  /** Directories the bridge will spawn inside (`BRIDGE_ALLOWED_DIRS`). */
+  allowedDirs?: string[];
 }
 
 export interface ServerLifecycleMsg {
@@ -130,6 +318,11 @@ export interface ServerSessionListMsg {
     projectPath: string;
     createdAt: number;
     account?: string;
+    /**
+     * Joined from the bridge registry. Without it the session name is lost on
+     * every page reload, since `session_renamed` only fires on change.
+     */
+    name?: string | null;
   }>;
   correlationId?: string;
 }
@@ -144,7 +337,11 @@ export interface ServerHistoryMsg {
 
 export interface ServerAccountListMsg {
   type: 'account_list';
-  accounts: Array<{ name: string; agent: 'codex'; isDefault: boolean }>;
+  /**
+   * Codex accounts (CODEX_HOME) and Claude profiles (CLAUDE_CONFIG_DIR),
+   * distinguished by `agent`. The directory itself is never sent.
+   */
+  accounts: Array<{ name: string; agent: AgentKind; isDefault: boolean }>;
   correlationId?: string;
 }
 
@@ -173,6 +370,8 @@ export interface ServerFileResultText {
   content: string;
   bytesRead: number;
   truncated: boolean;
+  /** SHA-256 of `content`; hand it back on `write_file` to detect conflicts. */
+  hash: string;
   correlationId?: string;
 }
 
@@ -198,12 +397,25 @@ export type ServerFileResultMsg =
   | ServerFileResultBinary
   | ServerFileResultTooLarge;
 
+export interface ServerFileWrittenMsg {
+  type: 'file_written';
+  path: string;
+  bytesWritten: number;
+  /** Hash of what is now on disk — becomes the client's next `baseHash`. */
+  hash: string;
+  correlationId?: string;
+}
+
 export type ServerErrorCode =
   | 'not_authorized'
   | 'origin_mismatch'
   | 'path_outside_allowlist'
   | 'path_denied'
+  | 'file_too_large'
+  | 'file_conflict'
+  | 'file_write_failed'
   | 'session_dead'
+  | 'interrupt_not_supported'
   | 'agent_not_installed'
   | 'unknown_account'
   | 'codex_session_id_missing'
@@ -225,6 +437,12 @@ export type ServerErrorCode =
   | 'profile_dirs_disallowed'
   | 'profile_not_found'
   | 'session_name_invalid'
+  | 'session_not_found'
+  | 'session_phase_invalid'
+  | 'session_tags_invalid'
+  | 'job_invalid'
+  | 'job_not_found'
+  | 'job_already_started'
   | 'file_search_failed'
   | 'slash_commands_failed'
   | 'terminal_not_found'
@@ -249,6 +467,7 @@ export type ServerMsg =
   | ServerPromptsResultMsg
   | ServerDirsResultMsg
   | ServerFileResultMsg
+  | ServerFileWrittenMsg
   | ServerErrorMsg
   | ServerHistoryListMsg
   | ServerSessionResumedMsg
@@ -261,7 +480,19 @@ export type ServerMsg =
   | ServerSessionRenamedMsg
   | ServerTermStartedMsg
   | ServerTermOutputMsg
-  | ServerTermExitMsg;
+  | ServerTermExitMsg
+  | ServerAllSessionsMsg
+  | ServerSessionModelChangedMsg
+  | ServerSessionPhaseChangedMsg
+  | ServerSessionTagsChangedMsg
+  | ServerSessionArchivedMsg
+  | ServerSessionDeletedMsg
+  | ServerJobListMsg
+  | ServerJobUpsertedMsg
+  | ServerJobDeletedMsg
+  | ServerJobStartedMsg
+  | ServerSessionUsageMsg
+  | ServerRateLimitsMsg;
 
 // Phase 5 — history viewer + session resume
 
@@ -446,6 +677,226 @@ export interface ServerSessionRenamedMsg {
   sessionId: string;
   name: string;
   correlationId: string;
+}
+
+// Phase 8 — board. Unlike `session_list` (live sessions only), these span the
+// bridge's whole registry, so sessions survive a bridge restart in the UI.
+
+/** One board card: a registry entry enriched with live state. */
+export interface BoardSession {
+  sessionId: string;
+  agent: AgentKind;
+  projectPath: string;
+  additionalDirs: string[];
+  createdAt: number;
+  lastActiveAt: number;
+  endedAt: number | null;
+  name: string | null;
+  /** True once renamed by hand; automatic naming leaves it alone. */
+  namePinned: boolean;
+  status: SessionLifecycleStatus;
+  /** True iff a driver is attached in the bridge right now. */
+  alive: boolean;
+  phase: SessionPhase;
+  phasePinned: boolean;
+  tags: string[];
+  archived: boolean;
+  account: string | null;
+  claudeConfigDir: string | null;
+  headroom: boolean;
+  /** True when the CLI session id is known, so resume can work. */
+  resumable: boolean;
+  /** Running token/cost totals for this session. */
+  usage: SessionUsage;
+  /** Resolved model/effort, or null meaning the CLI's own default. */
+  model: string | null;
+  effort: EffortLevel | null;
+  /** The session that spawned this one via `spawn_session`, else null. */
+  parentSessionId?: string | null;
+  /** Parent's display name, resolved by the bridge. */
+  parentName?: string | null;
+}
+
+export interface ClientListAllSessionsMsg {
+  type: 'list_all_sessions';
+  includeArchived?: boolean;
+  correlationId?: string;
+}
+
+export interface ServerAllSessionsMsg {
+  type: 'all_sessions';
+  sessions: BoardSession[];
+  correlationId?: string;
+}
+
+export interface ClientSetSessionModelMsg {
+  type: 'set_session_model';
+  sessionId: string;
+  model?: string | null;
+  effort?: EffortLevel | null;
+  correlationId?: string;
+}
+
+export interface ServerSessionModelChangedMsg {
+  type: 'session_model_changed';
+  sessionId: string;
+  model: string | null;
+  effort: EffortLevel | null;
+}
+
+export interface ClientSetSessionPhaseMsg {
+  type: 'set_session_phase';
+  sessionId: string;
+  phase: SessionPhase;
+  correlationId?: string;
+}
+
+export interface ServerSessionPhaseChangedMsg {
+  type: 'session_phase_changed';
+  sessionId: string;
+  phase: SessionPhase;
+  phasePinned: boolean;
+  correlationId?: string;
+}
+
+export interface ClientSetSessionTagsMsg {
+  type: 'set_session_tags';
+  sessionId: string;
+  tags: string[];
+  correlationId?: string;
+}
+
+export interface ServerSessionTagsChangedMsg {
+  type: 'session_tags_changed';
+  sessionId: string;
+  tags: string[];
+  correlationId?: string;
+}
+
+export interface ClientArchiveSessionMsg {
+  type: 'archive_session';
+  sessionId: string;
+  archived: boolean;
+  correlationId?: string;
+}
+
+export interface ServerSessionArchivedMsg {
+  type: 'session_archived';
+  sessionId: string;
+  archived: boolean;
+  correlationId?: string;
+}
+
+export interface ClientDeleteSessionMsg {
+  type: 'delete_session';
+  sessionId: string;
+  correlationId?: string;
+}
+
+// Jobs — the Backlog column. Work written down before an agent runs; starting
+// one spawns a session seeded with its text and carries the tags across.
+
+export interface JobSummary {
+  id: string;
+  title: string;
+  notes: string;
+  tags: string[];
+  projectPath: string;
+  additionalDirs: string[];
+  agent: AgentKind;
+  account: string | null;
+  claudeConfig: string | null;
+  /** Model/effort the launched session runs with; null = CLI default. */
+  model: string | null;
+  effort: EffortLevel | null;
+  createdAt: number;
+  updatedAt: number;
+  /** Non-null once started; such a job leaves the Backlog. */
+  startedSessionId: string | null;
+  startedAt: number | null;
+  archived: boolean;
+}
+
+export interface ClientListJobsMsg {
+  type: 'list_jobs';
+  includeArchived?: boolean;
+  includeStarted?: boolean;
+  correlationId?: string;
+}
+
+export interface ServerJobListMsg {
+  type: 'job_list';
+  jobs: JobSummary[];
+  correlationId?: string;
+}
+
+export interface ClientCreateJobMsg {
+  type: 'create_job';
+  title: string;
+  notes?: string;
+  tags?: string[];
+  projectPath: string;
+  additionalDirs?: string[];
+  agent: AgentKind;
+  account?: string | null;
+  claudeConfig?: string | null;
+  model?: string | null;
+  effort?: EffortLevel | null;
+  correlationId?: string;
+}
+
+export interface ClientUpdateJobMsg {
+  type: 'update_job';
+  jobId: string;
+  title?: string;
+  notes?: string;
+  tags?: string[];
+  projectPath?: string;
+  additionalDirs?: string[];
+  agent?: AgentKind;
+  account?: string | null;
+  claudeConfig?: string | null;
+  model?: string | null;
+  effort?: EffortLevel | null;
+  archived?: boolean;
+  correlationId?: string;
+}
+
+export interface ServerJobUpsertedMsg {
+  type: 'job_upserted';
+  job: JobSummary;
+  correlationId?: string;
+}
+
+export interface ClientDeleteJobMsg {
+  type: 'delete_job';
+  jobId: string;
+  correlationId?: string;
+}
+
+export interface ServerJobDeletedMsg {
+  type: 'job_deleted';
+  jobId: string;
+  correlationId?: string;
+}
+
+export interface ClientStartJobMsg {
+  type: 'start_job';
+  jobId: string;
+  correlationId?: string;
+}
+
+export interface ServerJobStartedMsg {
+  type: 'job_started';
+  jobId: string;
+  sessionId: string;
+  correlationId?: string;
+}
+
+export interface ServerSessionDeletedMsg {
+  type: 'session_deleted';
+  sessionId: string;
+  correlationId?: string;
 }
 
 // Phase 7 — terminal mode
