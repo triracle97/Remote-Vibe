@@ -359,6 +359,13 @@ describe('SessionManager', () => {
       account?: string;
       resumeArgs?: string[];
       codexResumeSeed?: string;
+      // Recorded so a resume can be checked against the shape the original
+      // spawn was given — dropping any of these silently changes what the
+      // session is.
+      claudeConfigDir?: string;
+      model?: string;
+      effort?: string;
+      headroom?: { bin: string; port: number };
     }
 
     class TrackedDriver extends EventEmitter implements AgentDriver {
@@ -396,6 +403,10 @@ describe('SessionManager', () => {
           ...(args.account ? { account: args.account.name } : {}),
           ...(args.resumeArgs ? { resumeArgs: args.resumeArgs } : {}),
           ...(args.codexResumeSeed ? { codexResumeSeed: args.codexResumeSeed } : {}),
+          ...(args.claudeConfigDir ? { claudeConfigDir: args.claudeConfigDir } : {}),
+          ...(args.model ? { model: args.model } : {}),
+          ...(args.effort ? { effort: args.effort } : {}),
+          ...(args.headroom ? { headroom: args.headroom } : {}),
         };
         spawned.push(arg);
         const d = new TrackedDriver(arg);
@@ -447,6 +458,58 @@ describe('SessionManager', () => {
       expect(spawned[0]!.projectPath).toBe(join(tmp, 'proj'));
       expect(spawned[0]!.resumeArgs).toEqual(['--resume', 'claude-uuid-1']);
       expect(drivers[0]!.resumed).toBe(true);
+    });
+
+    it('resumes with the config dir the session was created under', async () => {
+      // The bug this pins: `--resume <id>` is resolved inside the CLI's config
+      // dir. Resuming without the entry's claudeConfigDir searched the default
+      // ~/.claude for an id that only existed in ~/.claude1, so every resume
+      // was rejected and old sessions could not be re-entered after a restart.
+      const { mgr, registry, spawned } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-cfg',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-cfg.jsonl',
+        claudeSessionId: 'claude-uuid-1',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+        claudeConfigDir: '/Users/me/.claude1',
+        model: 'opus',
+        effort: 'high',
+      } as never);
+
+      await mgr.resume('web-cfg');
+
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.claudeConfigDir).toBe('/Users/me/.claude1');
+      // And the rest of the original spawn shape, for the same reason.
+      expect(spawned[0]!.model).toBe('opus');
+      expect(spawned[0]!.effort).toBe('high');
+      expect(spawned[0]!.resumeArgs).toEqual(['--resume', 'claude-uuid-1']);
+    });
+
+    it('leaves the config dir alone when the session never had one', async () => {
+      const { mgr, registry, spawned } = makeMgrWithRegistry();
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-nocfg',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-nocfg.jsonl',
+        claudeSessionId: 'claude-uuid-2',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+      });
+
+      await mgr.resume('web-nocfg');
+
+      expect(spawned[0]!.claudeConfigDir).toBeUndefined();
     });
 
     it('brings a finished session back out of the Done column on resume', async () => {

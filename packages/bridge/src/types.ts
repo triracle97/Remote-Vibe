@@ -110,6 +110,21 @@ export interface ClientListAccountsMsg {
   correlationId?: string;
 }
 
+/** Add or repoint a named CLAUDE_CONFIG_DIR profile. */
+export interface ClientSaveClaudeConfigMsg {
+  type: 'save_claude_config';
+  name: string;
+  /** Absolute path; a leading `~` is expanded by the bridge. */
+  configDir: string;
+  correlationId?: string;
+}
+
+export interface ClientDeleteClaudeConfigMsg {
+  type: 'delete_claude_config';
+  name: string;
+  correlationId?: string;
+}
+
 export interface ClientListPromptsMsg {
   type: 'list_prompts';
   query?: string;
@@ -150,6 +165,8 @@ export type ClientMsg =
   | ClientListSessionsMsg
   | ClientGetHistoryMsg
   | ClientListAccountsMsg
+  | ClientSaveClaudeConfigMsg
+  | ClientDeleteClaudeConfigMsg
   | ClientListPromptsMsg
   | ClientListDirsMsg
   | ClientReadFileMsg
@@ -669,6 +686,8 @@ export type ServerErrorCode =
   | 'file_write_failed'
   | 'session_dead'
   | 'interrupt_not_supported'
+  | 'claude_config_invalid'
+  | 'claude_config_not_found'
   | 'agent_not_installed'
   | 'unknown_account'
   | 'codex_session_id_missing'

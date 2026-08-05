@@ -1,4 +1,12 @@
-import { useMemo, useState, type JSX } from 'react';
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+} from 'react';
 import { ChevronDown, ChevronRight, Brain } from 'lucide-react';
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer';
 import { ToolCallCard } from './ToolCallCard';
@@ -18,6 +26,13 @@ import type { SessionEvent } from '../../store/sessions';
  * sessions run to thousands of messages; here the bridge caps its buffer at
  * 1000 events, and adding a virtualizer would cost a dependency plus the
  * scroll-anchoring bugs that come with it.
+ *
+ * Instead, opening a session renders only its tail and keeps the rest one click
+ * away. A thousand buffered events can be hundreds of markdown blocks, diffs,
+ * and mermaid diagrams — parsing all of them to show the last screenful is the
+ * cost this avoids. The window only ever *grows*: it collapses once when a
+ * session is opened, and messages arriving after that are always rendered, so
+ * you never watch something appear and then vanish.
  */
 
 export interface TranscriptSettings {
@@ -32,6 +47,17 @@ export const DEFAULT_TRANSCRIPT_SETTINGS: TranscriptSettings = {
   expandTools: false,
 };
 
+export interface TranscriptViewHandle {
+  /**
+   * Render the whole history.
+   *
+   * Needed before jumping to a message the window has collapsed away — search
+   * and the outline both index the full transcript, so their targets can sit
+   * above the visible tail.
+   */
+  revealAll(): void;
+}
+
 interface Props {
   events: readonly SessionEvent[];
   projectPath?: string;
@@ -41,16 +67,32 @@ interface Props {
   footer?: React.ReactNode;
   /** Highlighted when transcript search is active. */
   searchQuery?: string;
+  /**
+   * Collapses the window back to the tail when it changes. The session id in
+   * practice — switching sessions should not inherit however far the previous
+   * one had been expanded.
+   */
+  sessionKey?: string;
+  /** How many messages an opened session starts with. */
+  initialWindow?: number;
 }
 
-export function TranscriptView({
-  events,
-  projectPath = '',
-  settings = DEFAULT_TRANSCRIPT_SETTINGS,
-  onOpenFile,
-  footer,
-  searchQuery = '',
-}: Props): JSX.Element {
+/** How many more to reveal per click of "show earlier". */
+const REVEAL_STEP = 50;
+
+export const TranscriptView = forwardRef<TranscriptViewHandle, Props>(function TranscriptView(
+  {
+    events,
+    projectPath = '',
+    settings = DEFAULT_TRANSCRIPT_SETTINGS,
+    onOpenFile,
+    footer,
+    searchQuery = '',
+    sessionKey,
+    initialWindow = 20,
+  },
+  ref,
+): JSX.Element {
   const messages = useMemo(() => projectEvents(events), [events]);
 
   const visible = useMemo(
@@ -63,9 +105,54 @@ export function TranscriptView({
     [messages, settings.showToolCalls, settings.showThinking],
   );
 
+  // Index of the first rendered message. Only ever moves toward 0 — see the
+  // note above about messages never disappearing once shown.
+  const [floor, setFloor] = useState(0);
+  // A freshly-opened session has no events yet; history arrives a moment later.
+  // Collapsing has to wait for that, or it would compute a window over nothing
+  // and then render the whole backlog when it lands.
+  const collapsePending = useRef(true);
+  const lastKey = useRef(sessionKey);
+
+  useEffect(() => {
+    // A new session re-arms the collapse; an expanded view should not carry
+    // over from whatever was open before.
+    if (lastKey.current !== sessionKey) {
+      lastKey.current = sessionKey;
+      collapsePending.current = true;
+    }
+    if (!collapsePending.current || visible.length === 0) return;
+    collapsePending.current = false;
+    setFloor(Math.max(0, visible.length - initialWindow));
+  }, [sessionKey, visible.length, initialWindow]);
+
+  useImperativeHandle(ref, () => ({ revealAll: () => setFloor(0) }), []);
+
+  const shown = floor > 0 ? visible.slice(floor) : visible;
+
   return (
     <div className="flex flex-col" data-testid="transcript">
-      {visible.map((m) => (
+      {floor > 0 && (
+        <div className="flex items-center justify-center gap-2 py-3">
+          <button
+            type="button"
+            onClick={() => setFloor((f) => Math.max(0, f - REVEAL_STEP))}
+            data-testid="transcript-show-earlier"
+            className="px-3 py-1.5 min-h-[36px] rounded-lg border border-[var(--color-border)] text-xs text-[var(--color-text-mute)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-2)]"
+          >
+            Show {Math.min(REVEAL_STEP, floor)} earlier
+          </button>
+          <button
+            type="button"
+            onClick={() => setFloor(0)}
+            data-testid="transcript-show-all"
+            className="px-3 py-1.5 min-h-[36px] rounded-lg text-xs text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+          >
+            all {floor}
+          </button>
+        </div>
+      )}
+      {shown.map((m) => (
         // Real wrapper, not `display: contents` — that has no box, so
         // scrollIntoView would silently do nothing. Carries the id so the
         // sidebar and search bar can scroll to a message without every leaf
@@ -83,7 +170,7 @@ export function TranscriptView({
       {footer}
     </div>
   );
-}
+});
 
 function Message({
   message,

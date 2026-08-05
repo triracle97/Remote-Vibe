@@ -1,10 +1,17 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Paperclip, History } from 'lucide-react';
 import { useHasKeyboard } from '../../shell/useHasKeyboard';
 import { isMac } from '../../shell/shortcuts';
 import { PromptHistoryDropdown } from '../prompt-history/PromptHistoryDropdown';
 import { ImageThumbnails } from '../image-attach/ImageThumbnails';
 import { imageFilesFromClipboard } from '../image-attach/clipboardImages';
+import {
+  absolutePathsFromDataTransfer,
+  fileNamesFromDataTransfer,
+  resolveUniqueByBasename,
+} from './clipboardPaths';
+import { useFileSearchStore } from './fileSearchStore';
+import { hasBridgeClient } from '../../services/bridge-client-singleton';
 import type { PendingImage, UseImagePaste } from '../image-attach/useImagePaste';
 import type { AgentKind } from '../../types/protocol';
 import { SlashAutocomplete, type SlashAutocompleteHandle } from './SlashAutocomplete';
@@ -224,22 +231,120 @@ export function InputBox({
    * carries image files, so pasting into the rename box or the file editor
    * behaves exactly as before.
    */
+  /**
+   * Append text at the end of the composer and put the cursor after it.
+   *
+   * Used for pasted file paths, which arrive from a document-level listener
+   * that has no reliable cursor position — the textarea may not even have been
+   * focused when the paste happened.
+   */
+  const appendToComposer = useCallback((insertText: string) => {
+    setText((prev) => {
+      const sep = prev.length === 0 || /\s$/.test(prev) ? '' : ' ';
+      return `${prev}${sep}${insertText} `;
+    });
+    // Focus and caret placement are deferred out of the event handler. Calling
+    // `focus()` inline dispatches a focus event while React is still processing
+    // this one, which re-enters the renderer ("Should not already be working").
+    // A task boundary also lets the new value commit first, so the caret lands
+    // at the end instead of snapping to 0.
+    setTimeout(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = ta.value.length;
+    }, 0);
+  }, []);
+
+  /**
+   * Turn pasted or dropped files into absolute paths in the composer.
+   *
+   * Two sources, because the platform gives two different things (see
+   * `clipboardPaths.ts`). A `file://` URI is exact and used as-is. A bare
+   * filename is not — it is looked up in the session's own file index, and only
+   * an unambiguous hit is inserted, because silently pasting the wrong
+   * `config.ts` is worse than pasting the name and letting the user fix it.
+   */
+  const insertPaths = useCallback(
+    (paths: readonly string[], names: readonly string[]): boolean => {
+      if (paths.length > 0) {
+        appendToComposer(paths.join(' '));
+        return true;
+      }
+      if (names.length === 0) return false;
+
+      // Resolve against the index asynchronously; insert the name immediately
+      // so the paste never feels dropped, then upgrade it in place if the
+      // lookup finds exactly one match.
+      appendToComposer(names.join(' '));
+      // No socket (component tests, or a paste before the app finished
+      // connecting) means no index to consult — the filename stands.
+      if (!hasBridgeClient()) return true;
+      for (const name of names) {
+        const search = useFileSearchStore.getState();
+        search.search(sessionId, name);
+        // One shot, after the round trip. A miss simply leaves the filename.
+        const timer = setTimeout(() => {
+          const hits = useFileSearchStore.getState().bySession[sessionId]?.hits ?? [];
+          const full = resolveUniqueByBasename(name, hits);
+          if (!full) return;
+          setText((prev) => (prev.includes(full) ? prev : prev.replace(name, full)));
+        }, 400);
+        void timer;
+      }
+      return true;
+    },
+    [appendToComposer, sessionId],
+  );
+
+  /**
+   * A file dropped anywhere on the chat surface, not just the composer.
+   *
+   * `Chat` owns the drop zone and extracts the strings there — a `DataTransfer`
+   * is only readable inside its own handler, so it cannot be forwarded — then
+   * announces them. This mirrors how the file-drawer shortcut is delivered.
+   */
   useEffect(() => {
-    if (!imagesEnabled) return;
+    const onDropped = (e: Event): void => {
+      const detail = (e as CustomEvent<{ paths: string[]; names: string[] }>).detail;
+      if (!detail) return;
+      insertPaths(detail.paths ?? [], detail.names ?? []);
+    };
+    window.addEventListener('mrt:dropped-files', onDropped);
+    return () => window.removeEventListener('mrt:dropped-files', onDropped);
+  }, [insertPaths]);
+
+  useEffect(() => {
     const onPaste = (e: ClipboardEvent): void => {
       // `DataTransferItem`s are only valid for the synchronous lifetime of the
-      // event, so the files have to come out before any await.
-      const files = imageFilesFromClipboard(e.clipboardData);
-      if (files.length === 0) return;
-      e.preventDefault();
-      void (async () => {
-        for (const f of files) await addImageFromFile(f);
-      })();
-      taRef.current?.focus();
+      // event, so anything read off them has to come out before any await.
+      const files = imagesEnabled ? imageFilesFromClipboard(e.clipboardData) : [];
+      if (files.length > 0) {
+        e.preventDefault();
+        void (async () => {
+          for (const f of files) await addImageFromFile(f);
+        })();
+        taRef.current?.focus();
+        return;
+      }
+      // A `file://` URI is unambiguous — claim it wherever it came from.
+      const paths = absolutePathsFromDataTransfer(e.clipboardData);
+      if (paths.length > 0) {
+        e.preventDefault();
+        insertPaths(paths, []);
+        return;
+      }
+      // Otherwise only claim it when a real file rode along. A text paste —
+      // including one into the rename box or the file editor — falls through
+      // untouched.
+      const names = Array.from(e.clipboardData?.items ?? []).some((i) => i.kind === 'file')
+        ? fileNamesFromDataTransfer(e.clipboardData)
+        : [];
+      if (names.length > 0 && insertPaths([], names)) e.preventDefault();
     };
     document.addEventListener('paste', onPaste);
     return () => document.removeEventListener('paste', onPaste);
-  }, [imagesEnabled, addImageFromFile]);
+  }, [imagesEnabled, addImageFromFile, insertPaths]);
 
   const onAttachClick = (): void => {
     if (!imagesEnabled) return;

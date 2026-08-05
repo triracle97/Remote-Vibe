@@ -36,6 +36,8 @@ export interface AttachWsOpts {
   claudeConfigs?: Map<string, ClaudeConfigProfile>;
   promptStore?: PromptStore;
   fsApi: FsApi;
+  /** Enables editing the named Claude profiles from the UI. */
+  claudeConfigStore?: import('./claude-config-store.js').ClaudeConfigStore;
   imageStore: ImageStore;
   historyScanner: HistoryScanner;
   profileStore: ProfileStore;
@@ -160,6 +162,7 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
         opts.claudeConfigs ?? new Map(),
         opts.promptStore,
         opts.fsApi,
+        opts.claudeConfigStore,
         opts.imageStore,
         opts.historyScanner,
         opts.profileStore,
@@ -191,6 +194,7 @@ async function handleMessage(
   claudeConfigs: Map<string, ClaudeConfigProfile>,
   promptStore: PromptStore | undefined,
   fsApi: FsApi,
+  claudeConfigStore: import('./claude-config-store.js').ClaudeConfigStore | undefined,
   imageStore: ImageStore,
   historyScanner: HistoryScanner,
   profileStore: ProfileStore,
@@ -347,15 +351,58 @@ async function handleMessage(
               isDefault: a.isDefault,
             })),
             // Claude profiles ride the same channel so the picker has one
-            // source. `configDir` is intentionally NOT sent — it is a local
-            // filesystem path and the client only needs the name.
+            // source. `configDir` is included so the settings UI can show and
+            // edit where each profile points — a local path, but one this
+            // token already grants far broader access to than reading it.
             ...[...claudeConfigs.values()].map((c) => ({
               name: c.name,
               agent: 'claude' as const,
               isDefault: c.isDefault,
+              configDir: c.configDir,
             })),
           ],
           ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+        });
+        return;
+      }
+      case 'save_claude_config':
+      case 'delete_claude_config': {
+        if (!claudeConfigStore) {
+          sendError(send, 'unsupported_message', 'Claude profiles are not configurable', msg.correlationId);
+          return;
+        }
+        try {
+          if (msg.type === 'save_claude_config') {
+            await claudeConfigStore.save(msg.name, msg.configDir);
+          } else {
+            await claudeConfigStore.remove(msg.name);
+          }
+        } catch (err) {
+          const e = err as { code?: string };
+          if (e.code === 'claude_config_invalid' || e.code === 'claude_config_not_found') {
+            sendError(send, e.code, (err as Error).message, msg.correlationId);
+            return;
+          }
+          sendError(send, 'unsupported_message', (err as Error).message, msg.correlationId);
+          return;
+        }
+        // Everyone's picker has to agree about what exists, so the new list
+        // goes to every client rather than just the one that edited it.
+        broadcastAll({
+          type: 'account_list',
+          accounts: [
+            ...[...accounts.values()].map((a) => ({
+              name: a.name,
+              agent: 'codex' as const,
+              isDefault: a.isDefault,
+            })),
+            ...[...claudeConfigs.values()].map((c) => ({
+              name: c.name,
+              agent: 'claude' as const,
+              isDefault: c.isDefault,
+              configDir: c.configDir,
+            })),
+          ],
         });
         return;
       }

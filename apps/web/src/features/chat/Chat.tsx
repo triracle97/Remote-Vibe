@@ -7,12 +7,21 @@ import { InputBox } from './InputBox';
 import { ResumePrompt } from './ResumePrompt';
 import { SessionHeader } from './SessionHeader';
 import { useImagePaste } from '../image-attach/useImagePaste';
-import { TranscriptView, DEFAULT_TRANSCRIPT_SETTINGS } from '../transcript/TranscriptView';
+import {
+  TranscriptView,
+  DEFAULT_TRANSCRIPT_SETTINGS,
+  type TranscriptViewHandle,
+} from '../transcript/TranscriptView';
 import { TranscriptSearchBar } from '../transcript/TranscriptSearchBar';
 import { TranscriptSidebar } from '../transcript/TranscriptSidebar';
 import { projectEvents } from '../transcript/projection';
 import { runningWork } from '../transcript/runningWork';
 import { isTurnRunning } from '../transcript/turnState';
+import { imageFilesFromClipboard } from '../image-attach/clipboardImages';
+import {
+  absolutePathsFromDataTransfer,
+  fileNamesFromDataTransfer,
+} from './clipboardPaths';
 import { RunningWorkBadge } from '../transcript/RunningWorkBadge';
 import { SessionUsageBadge } from '../usage/SessionUsageBadge';
 import { SpawnedSessionsBadge } from '../board/SpawnedSessionsBadge';
@@ -123,11 +132,25 @@ export function Chat({
     [session.projectPath, onToggleDrawer, drawerOpen],
   );
 
+  const transcriptRef = useRef<TranscriptViewHandle>(null);
+
   const jumpTo = useCallback((messageId: string) => {
-    const el = scrollRef.current?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
-    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     // Jumping means the user has left the tail; stop yanking them back down.
     pinnedToBottomRef.current = false;
+    const find = (): Element | null | undefined =>
+      scrollRef.current?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+
+    const el = find();
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      return;
+    }
+    // Search and the outline index the whole transcript, so a target can sit
+    // above the collapsed window. Render the rest, then jump once it exists.
+    transcriptRef.current?.revealAll();
+    requestAnimationFrame(() => {
+      find()?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    });
   }, []);
 
   const onChatScroll = (): void => {
@@ -157,12 +180,23 @@ export function Chat({
   const onDragLeave = (e: DragEvent<HTMLDivElement>): void => {
     if (e.currentTarget === e.target) setDragOver(false);
   };
-  const onDrop = async (e: DragEvent<HTMLDivElement>): Promise<void> => {
+  const onDrop = (e: DragEvent<HTMLDivElement>): void => {
     e.preventDefault();
     setDragOver(false);
-    if (!imagesEnabled) return;
-    const files = Array.from(e.dataTransfer.files ?? []);
-    for (const f of files) await imagePaste.addImageFromFile(f);
+    const dt = e.dataTransfer;
+    const images = imagesEnabled ? imageFilesFromClipboard(dt) : [];
+    if (images.length > 0) {
+      void (async () => {
+        for (const f of images) await imagePaste.addImageFromFile(f);
+      })();
+      return;
+    }
+    // Not an image — treat it as "paste this file's path". The strings have to
+    // come out here: a DataTransfer is only readable inside its own handler.
+    const paths = absolutePathsFromDataTransfer(dt, { allowBareText: true });
+    const names = fileNamesFromDataTransfer(dt);
+    if (paths.length === 0 && names.length === 0) return;
+    window.dispatchEvent(new CustomEvent('mrt:dropped-files', { detail: { paths, names } }));
   };
 
   return (
@@ -214,6 +248,8 @@ export function Chat({
           onScroll={onChatScroll}
         >
           <TranscriptView
+            ref={transcriptRef}
+            sessionKey={session.sessionId}
             events={session.events}
             projectPath={session.projectPath}
             settings={DEFAULT_TRANSCRIPT_SETTINGS}

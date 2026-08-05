@@ -1,11 +1,16 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, fireEvent, waitFor, renderHook, act } from '@testing-library/react';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { render, fireEvent, waitFor, renderHook, act, cleanup } from '@testing-library/react';
 import { InputBox } from './InputBox';
 import { useImagePaste, type UseImagePaste } from '../image-attach/useImagePaste';
 
 // Tiny harness: drive the real `useImagePaste` hook from a renderHook so the
 // InputBox sees a live image list (matches Chat.tsx's wiring), and expose its
 // current value via a ref-like getter.
+// vitest runs with globals: false, so RTL's auto-cleanup never registers.
+// Without this every rendered InputBox stays mounted with its document paste
+// listener, and one dispatch drives setState in all of them at once.
+afterEach(cleanup);
+
 function makeImagePaste(): { paste: UseImagePaste; getCurrent: () => UseImagePaste } {
   const { result } = renderHook(() => useImagePaste());
   // Each render of InputBox must receive a stable-ish reference; just hand
@@ -353,5 +358,115 @@ describe('InputBox — paste an image', () => {
 
     await new Promise((r) => setTimeout(r, 20));
     expect(harness.getCurrent().images).toHaveLength(0);
+  });
+});
+
+/** Fire a paste at the document carrying a drag/clipboard payload. */
+function pastePayload(payload: {
+  uriList?: string;
+  plain?: string;
+  files?: Array<{ name: string; type?: string }>;
+}): void {
+  const data: Record<string, string> = {};
+  if (payload.uriList !== undefined) data['text/uri-list'] = payload.uriList;
+  if (payload.plain !== undefined) data['text/plain'] = payload.plain;
+  const files = (payload.files ?? []).map((f) => ({ name: f.name, type: f.type ?? '' }));
+  const event = new Event('paste', { bubbles: true, cancelable: true }) as Event & {
+    clipboardData: unknown;
+  };
+  event.clipboardData = {
+    getData: (t: string) => data[t] ?? '',
+    items: files.map((f) => ({ kind: 'file', type: f.type, getAsFile: () => f })),
+    files,
+  };
+  // The handler sets state synchronously from a native listener, so the
+  // dispatch has to be inside act() — otherwise React re-enters and throws
+  // "Should not already be working".
+  act(() => {
+    document.dispatchEvent(event);
+  });
+}
+
+describe('InputBox — paste a file path', () => {
+  it('inserts the absolute path when the clipboard carries a file URI', async () => {
+    const props = defaultProps();
+    const { container } = render(<InputBox {...props} />);
+
+    pastePayload({ uriList: 'file:///Users/me/repo/notes.md' });
+
+    await waitFor(() => {
+      expect(container.querySelector('textarea')!.value).toContain('/Users/me/repo/notes.md');
+    });
+  });
+
+  it('appends to existing text rather than replacing it', async () => {
+    const props = defaultProps();
+    const { container } = render(<InputBox {...props} />);
+    const ta = container.querySelector('textarea')!;
+    fireEvent.change(ta, { target: { value: 'look at' } });
+
+    pastePayload({ uriList: 'file:///Users/me/a.txt' });
+
+    await waitFor(() => {
+      expect(ta.value).toContain('/Users/me/a.txt');
+    });
+    expect(ta.value).toContain('look at');
+  });
+
+  it('inserts several paths at once', async () => {
+    const props = defaultProps();
+    const { container } = render(<InputBox {...props} />);
+
+    pastePayload({ uriList: 'file:///Users/me/a.txt\nfile:///Users/me/b.txt' });
+
+    await waitFor(() => {
+      const value = container.querySelector('textarea')!.value;
+      expect(value).toContain('/Users/me/a.txt');
+      expect(value).toContain('/Users/me/b.txt');
+    });
+  });
+
+  it('falls back to the filename when the clipboard has no path', async () => {
+    // The ⌘C-in-Finder case: the browser strips the path, so the name goes in
+    // immediately and is upgraded later if the index resolves it.
+    const props = defaultProps();
+    const { container } = render(<InputBox {...props} />);
+
+    pastePayload({ files: [{ name: 'notes.md' }] });
+
+    await waitFor(() => {
+      expect(container.querySelector('textarea')!.value).toContain('notes.md');
+    });
+  });
+
+  it('leaves a plain text paste to the browser', () => {
+    const props = defaultProps();
+    const { container } = render(<InputBox {...props} />);
+    const ta = container.querySelector('textarea')!;
+
+    pastePayload({ plain: 'just some prose' });
+
+    // Not claimed, so the textarea is untouched and the browser inserts it.
+    expect(ta.value).toBe('');
+  });
+
+  it('still prefers attaching an image over pasting its path', () => {
+    const harness = makeImagePaste();
+    const props = { ...defaultProps(), imagePaste: harness.paste };
+    const { container } = render(<InputBox {...props} />);
+
+    const png = new File([new Uint8Array(8)], 'shot.png', { type: 'image/png' });
+    const event = new Event('paste', { bubbles: true, cancelable: true }) as Event & {
+      clipboardData: unknown;
+    };
+    event.clipboardData = {
+      getData: () => '',
+      items: [{ kind: 'file', type: 'image/png', getAsFile: () => png }],
+      files: [png],
+    };
+    document.dispatchEvent(event);
+
+    // The path never lands in the composer — the image is the payload.
+    expect(container.querySelector('textarea')!.value).toBe('');
   });
 });

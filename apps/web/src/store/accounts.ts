@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getBridgeClient } from '../services/bridge-client-singleton';
 import type { AgentKind } from '../types/protocol';
 
 export interface AccountSummary {
@@ -7,11 +8,16 @@ export interface AccountSummary {
   isDefault: boolean;
 }
 
-/** A named CLAUDE_CONFIG_DIR. The directory itself never crosses the wire. */
+/** A named CLAUDE_CONFIG_DIR profile. */
 export interface ClaudeConfigSummary {
   name: string;
   agent: 'claude';
   isDefault: boolean;
+  /**
+   * Where the profile points. Sent so Settings can show and edit it; older
+   * bridges omit it, hence optional.
+   */
+  configDir?: string;
 }
 
 /** Wire shape: the bridge sends both kinds on one `account_list`. */
@@ -31,6 +37,14 @@ interface AccountsStore {
   applyAccountList(entries: AccountListEntry[]): void;
   setSelectedAccount(name: string): void;
   setSelectedClaudeConfig(name: string): void;
+  /**
+   * Add or repoint a Claude profile. Fire-and-forget: the bridge broadcasts a
+   * fresh `account_list` to every client on success, which is what updates this
+   * store — an optimistic local write would disagree with the picker on the
+   * next tab over.
+   */
+  saveClaudeConfig(name: string, configDir: string): void;
+  deleteClaudeConfig(name: string): void;
 }
 
 /** Keep the current pick if it still exists, else fall back to the default. */
@@ -63,6 +77,14 @@ export const useAccountsStore = create<AccountsStore>((set, get) => ({
     if (!get().accounts.some((a) => a.name === name)) return;
     set({ selectedAccount: name });
   },
+  saveClaudeConfig(name, configDir) {
+    getBridgeClient().send({ type: 'save_claude_config', name, configDir });
+  },
+
+  deleteClaudeConfig(name) {
+    getBridgeClient().send({ type: 'delete_claude_config', name });
+  },
+
   setSelectedClaudeConfig(name) {
     if (!get().claudeConfigs.some((a) => a.name === name)) return;
     set({ selectedClaudeConfig: name });

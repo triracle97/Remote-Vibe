@@ -813,7 +813,7 @@ export class SessionManager extends EventEmitter {
     if (entry.agent === 'claude') {
       await this.spawnClaudeWithResume(entry, cliId);
     } else {
-      this.instantiateCodexWithResumeSeed(entry, cliId);
+      await this.instantiateCodexWithResumeSeed(entry, cliId);
     }
     // Only after the spawn succeeds — a failed resume must leave the entry
     // looking ended, not falsely alive.
@@ -986,11 +986,28 @@ export class SessionManager extends EventEmitter {
       // Spread account only if defined to satisfy exactOptionalPropertyTypes.
       const account = entry.account ? this.resolveAccount('claude', entry.account) : undefined;
       const additionalDirs = entry.additionalDirs ?? [];
+      // Everything the original spawn was given has to be reconstructed here,
+      // not just the resume flag. `--resume <id>` is looked up inside the
+      // CLI's *config dir*, so resuming without the entry's `claudeConfigDir`
+      // searches the default `~/.claude` for an id that only exists in the
+      // profile the session was created under — and the CLI rejects it every
+      // time. Model, effort and headroom matter for the same reason the
+      // original spawn records them: a resumed session that quietly drops them
+      // is not the session the board claims it is.
+      const headroom = await this.resolveHeadroom('claude');
+      const mcpConfigPath = this.writeMcpConfig
+        ? ((await this.writeMcpConfig(entry.webSessionId)) ?? undefined)
+        : undefined;
       driver = this.driverFactory({
         agent: 'claude',
         projectPath: entry.projectPath,
         ...(account ? { account } : {}),
         ...(additionalDirs.length > 0 ? { additionalDirs } : {}),
+        ...(entry.claudeConfigDir ? { claudeConfigDir: entry.claudeConfigDir } : {}),
+        ...(headroom ? { headroom } : {}),
+        ...(entry.model !== null ? { model: entry.model } : {}),
+        ...(entry.effort !== null ? { effort: entry.effort } : {}),
+        ...(mcpConfigPath ? { mcpConfigPath } : {}),
         resumeArgs: ['--resume', claudeSessionId],
       });
     } catch (err) {
@@ -1085,7 +1102,10 @@ export class SessionManager extends EventEmitter {
     return patterns.some((p) => p.test(stderr));
   }
 
-  private instantiateCodexWithResumeSeed(entry: RegistryEntry, codexSessionId: string): void {
+  private async instantiateCodexWithResumeSeed(
+    entry: RegistryEntry,
+    codexSessionId: string,
+  ): Promise<void> {
     // Codex is spawn-per-turn. We instantiate the driver with the seed but
     // don't spawn — the resume rejection (if any) surfaces via the existing
     // turn-error path on the user's first send_text after resume. The driver
@@ -1095,11 +1115,18 @@ export class SessionManager extends EventEmitter {
       ? this.resolveAccount('codex', entry.account) ?? undefined
       : this.resolveAccount('codex', undefined);
     const additionalDirs = entry.additionalDirs ?? [];
+    // Same reconstruction as the Claude path: a resumed session must launch
+    // with the settings it was created with, or it silently becomes a
+    // different session than the one on the board.
+    const headroom = await this.resolveHeadroom('codex');
     const driver = this.driverFactory({
       agent: 'codex',
       projectPath: entry.projectPath,
       ...(account ? { account } : {}),
       ...(additionalDirs.length > 0 ? { additionalDirs } : {}),
+      ...(headroom ? { headroom } : {}),
+      ...(entry.model !== null ? { model: entry.model } : {}),
+      ...(entry.effort !== null ? { effort: entry.effort } : {}),
       codexResumeSeed: codexSessionId,
     });
     this.attachSession(entry.webSessionId, driver, entry);

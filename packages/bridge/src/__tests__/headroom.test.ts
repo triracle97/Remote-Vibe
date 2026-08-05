@@ -414,3 +414,56 @@ describe('CodexProcess under headroom', () => {
     }
   });
 });
+
+describe('resume rebuilds the original spawn shape', () => {
+  it('wraps a resumed Claude session in headroom too', async () => {
+    // A resumed session that loses headroom silently stops routing through the
+    // proxy — the card still claims `headroom: true` from when it was created.
+    const { mkdtempSync, mkdirSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { SessionRegistry } = await import('../session-registry.js');
+    const { SessionManager } = await import('../session.js');
+
+    const tmp = mkdtempSync(join(tmpdir(), 'mrt-resume-hr-'));
+    mkdirSync(join(tmp, 'proj'), { recursive: true });
+    const registry = new SessionRegistry(join(tmp, 'sessions.json'));
+    await registry.load();
+    await registry.add({
+      webSessionId: 'web-hr',
+      agent: 'claude',
+      projectPath: join(tmp, 'proj'),
+      transcriptPath: 'x.jsonl',
+      claudeSessionId: 'uuid-1',
+      codexSessionId: null,
+      createdAt: 0,
+      account: null,
+    } as never);
+
+    const seen: Array<{ headroom?: { bin: string; port: number } }> = [];
+    const mgr = new SessionManager({
+      allowedDirs: [tmp],
+      bufferCap: 100,
+      registry,
+      realpath: async (p: string) => p,
+      claudeResumeSettleMs: 1,
+      driverFactory: (args) => {
+        seen.push({ ...(args.headroom ? { headroom: args.headroom } : {}) });
+        const d = new EventEmitter() as EventEmitter & {
+          sendUserText: () => void;
+          kill: () => void;
+        };
+        d.sendUserText = () => {};
+        d.kill = () => {};
+        return d as never;
+      },
+      resolveHeadroom: async () => ({ bin: 'headroom', port: 8787 }),
+    } as never);
+
+    await mgr.resume('web-hr');
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.headroom).toEqual({ bin: 'headroom', port: 8787 });
+    rmSync(tmp, { recursive: true, force: true });
+  });
+});

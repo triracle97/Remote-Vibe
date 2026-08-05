@@ -15,6 +15,7 @@ import { loadEnvFile } from './env-file.js';
 import { resolveTailscaleIPv4 } from './tailscale.js';
 import { createHttpHandler } from './http-server.js';
 import { McpConfigWriter } from './mcp-config.js';
+import { ClaudeConfigStore } from './claude-config-store.js';
 import { handleMcpRequest, type McpDeps } from './mcp-server.js';
 import { attachWebSocket } from './websocket.js';
 import { SessionManager, type AgentDriver, type DriverFactoryArgs } from './session.js';
@@ -300,6 +301,12 @@ async function main(): Promise<void> {
       registry.all().filter((e) => e.parentSessionId === parentSessionId).length,
   };
 
+  const claudeConfigStore = new ClaudeConfigStore({
+    dataDir: cfg.dataDir,
+    profiles: claudeConfigs,
+    ...(process.env.HOME ? { home: process.env.HOME } : {}),
+  });
+
   const handler = createHttpHandler({
     token: cfg.token,
     staticDir,
@@ -337,6 +344,7 @@ async function main(): Promise<void> {
     claudeConfigs,
     promptStore,
     fsApi,
+    claudeConfigStore,
     imageStore,
     historyScanner,
     profileStore,
