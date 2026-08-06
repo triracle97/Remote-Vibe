@@ -75,9 +75,17 @@ export function Session(): JSX.Element {
   }, [client, id, connStatus, transcriptOnly]);
 
   const fallbackStartedRef = useRef<string | null>(null);
+  const [fallbackFailed, setFallbackFailed] = useState(false);
   useEffect(() => {
     if (!id || !transcriptOnly || fallbackStartedRef.current === id) return;
     fallbackStartedRef.current = id;
+    setFallbackFailed(false);
+    // A dead session's transcript is frozen, and this replay feeds the store's
+    // live append path, which does not dedupe by seq. Re-entering the session —
+    // which the board invites, since every dead card there is clickable —
+    // would therefore stack a second copy of the whole history on top of the
+    // first. If this tab already replayed it, there is nothing left to fetch.
+    if ((useSessionsStore.getState().sessions[id]?.events.length ?? 0) > 0) return;
     let cancelled = false;
     (async () => {
       try {
@@ -87,6 +95,7 @@ export function Session(): JSX.Element {
         }
       } catch (err) {
         console.warn('[transcript fallback]', err);
+        if (!cancelled) setFallbackFailed(true);
       }
     })();
     return () => {
@@ -231,9 +240,25 @@ export function Session(): JSX.Element {
         </div>
       </BottomSheet>
 
+      {/* Most board cards are dead sessions, and a session that never produced
+          an event never got a transcript file written for it. Saying so beats
+          a spinner that never resolves. */}
       {!session && transcriptOnly && (
-        <main className="flex-1 flex items-center justify-center text-[var(--color-text-dim)]">
-          Loading transcript…
+        <main className="flex-1 flex items-center justify-center p-4 text-[var(--color-text-dim)]">
+          {fallbackFailed ? (
+            <div className="flex flex-col gap-3 items-center text-center">
+              <p>No transcript on disk for this session.</p>
+              <button
+                type="button"
+                onClick={() => navigate('/board')}
+                className="px-4 py-2 min-h-[44px] bg-[var(--color-accent)] text-white rounded-lg"
+              >
+                Back to board
+              </button>
+            </div>
+          ) : (
+            'Loading transcript…'
+          )}
         </main>
       )}
       {drawerOpen && session && (
