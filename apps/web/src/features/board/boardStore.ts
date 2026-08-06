@@ -130,7 +130,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
             get().refresh();
             return;
           }
-          patch(set, get, m.sessionId, (c) => ({ ...c, alive: true, status: 'live' }));
+          patch(set, get, m.sessionId, (c) => ({
+            ...c,
+            alive: true,
+            status: 'live',
+            turnRunning: false,
+          }));
           return;
         }
         if (m.event === 'session_ended') {
@@ -138,20 +143,29 @@ export const useBoardStore = create<BoardState>((set, get) => ({
             ...c,
             alive: false,
             status: 'ended',
+            turnRunning: false,
             endedAt: Date.now(),
           }));
         }
         return;
       }
+      case 'user': {
+        // Opens a turn: the agent is working until a `result` closes it. Same
+        // rule the bridge seeds `turnRunning` with, so the card does not flip
+        // on the first message after a page load.
+        patch(set, get, m.sessionId, (c) => touch(c, true));
+        return;
+      }
+      case 'result': {
+        // Closes the turn — the agent is done and the human is up.
+        patch(set, get, m.sessionId, (c) => touch(c, false));
+        return;
+      }
       case 'assistant':
       case 'stream_delta':
-      case 'tool_result':
-      case 'result':
-      case 'user': {
+      case 'tool_result': {
         // Any traffic is activity. Keeps board ordering fresh without a poll.
-        patch(set, get, m.sessionId, (c) =>
-          c.alive ? { ...c, lastActiveAt: Date.now() } : { ...c, lastActiveAt: Date.now(), alive: true, status: 'live' },
-        );
+        patch(set, get, m.sessionId, (c) => touch(c, c.turnRunning));
         return;
       }
       case 'error': {
@@ -283,6 +297,18 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
 type SetFn = (partial: Partial<BoardState>) => void;
 type GetFn = () => BoardState;
+
+/**
+ * Stamp activity on a card and set where the turn stands.
+ *
+ * Traffic on a card the store thinks is dead revives it: the registry snapshot
+ * can be older than the session it describes (spawned by an agent, resumed in
+ * another tab), and an event is proof of a live driver.
+ */
+function touch(c: BoardSession, turnRunning: boolean | undefined): BoardSession {
+  const base = c.alive ? c : { ...c, alive: true, status: 'live' as const };
+  return { ...base, lastActiveAt: Date.now(), turnRunning: turnRunning === true };
+}
 
 /** Apply `fn` to one card, no-op when the card is unknown. */
 function patch(

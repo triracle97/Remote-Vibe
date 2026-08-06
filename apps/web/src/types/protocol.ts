@@ -716,6 +716,12 @@ export interface BoardSession {
   status: SessionLifecycleStatus;
   /** True iff a driver is attached in the bridge right now. */
   alive: boolean;
+  /**
+   * True iff a turn is open — a `user` message with no `result` after it.
+   * `alive` stays true while the agent sits idle waiting on the human, so the
+   * board needs this to tell "still working" from "your turn".
+   */
+  turnRunning?: boolean;
   phase: SessionPhase;
   phasePinned: boolean;
   tags: string[];

@@ -281,6 +281,55 @@ describe('cardState', () => {
   });
 });
 
+describe('turnRunning tracking', () => {
+  const stateOf = (): boolean | undefined => useBoardStore.getState().cards['s1']?.turnRunning;
+
+  beforeEach(() => {
+    useBoardStore.setState({
+      cards: { s1: card({ sessionId: 's1', alive: true, status: 'live', turnRunning: false }) },
+      loaded: true,
+    });
+  });
+
+  it('opens a turn on user input and closes it on result', () => {
+    const store = useBoardStore.getState();
+    store.applyServerMsg({ type: 'user', sessionId: 's1', seq: 2, payload: { text: 'go' } });
+    expect(stateOf()).toBe(true);
+
+    store.applyServerMsg({ type: 'assistant', sessionId: 's1', seq: 3, payload: { text: 'ok' } });
+    expect(stateOf()).toBe(true);
+
+    store.applyServerMsg({ type: 'result', sessionId: 's1', seq: 4, payload: {} });
+    expect(stateOf()).toBe(false);
+  });
+
+  it('closes the turn when the session ends', () => {
+    const store = useBoardStore.getState();
+    store.applyServerMsg({ type: 'user', sessionId: 's1', seq: 2, payload: { text: 'go' } });
+    store.applyServerMsg({
+      type: 'system',
+      event: 'session_ended',
+      sessionId: 's1',
+      seq: 5,
+      exitCode: 0,
+    });
+    expect(stateOf()).toBe(false);
+    expect(useBoardStore.getState().cards['s1']!.alive).toBe(false);
+  });
+
+  it('leaves mid-turn traffic on a dead-looking card as running, and revives it', () => {
+    useBoardStore.setState({
+      cards: { s1: card({ sessionId: 's1', alive: false, status: 'ended' }) },
+    });
+    useBoardStore
+      .getState()
+      .applyServerMsg({ type: 'user', sessionId: 's1', seq: 2, payload: { text: 'go' } });
+    const c = useBoardStore.getState().cards['s1']!;
+    expect(c.alive).toBe(true);
+    expect(c.turnRunning).toBe(true);
+  });
+});
+
 describe('timeAgo', () => {
   it('compresses to a scannable unit', () => {
     const now = 1_000_000_000;

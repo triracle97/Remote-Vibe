@@ -26,7 +26,10 @@ export function SessionCard({
   onDragEnd,
   dragging,
 }: Props): JSX.Element {
-  const state = cardVisualState(card, { processing: card.alive });
+  // `alive` is not "busy" — a session sits alive and idle for most of its life,
+  // which is exactly the state worth spotting on a board: the agent has
+  // finished and is waiting on you.
+  const state = cardVisualState(card, { processing: card.turnRunning === true });
   const title = card.name ?? projectLabel(card.projectPath);
 
   return (

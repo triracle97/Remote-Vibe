@@ -337,6 +337,29 @@ describe('SessionManager board surface', () => {
     expect(card.status).toBe('live');
   });
 
+  it('reports turnRunning only while a turn is open', async () => {
+    const info = await mgr.spawnSession({ agent: 'claude', dirs: [dir] });
+    const cardNow = (): boolean =>
+      mgr.listBoardSessions().find((s) => s.sessionId === info.sessionId)!.turnRunning;
+
+    // Alive but idle since spawn — the human is up, not the agent.
+    expect(cardNow()).toBe(false);
+
+    mgr.sendInput(info.sessionId, 'do the thing');
+    expect(cardNow()).toBe(true);
+
+    drivers[0]!.emit('event', { kind: 'assistant_text', text: 'working' } satisfies AgentEvent);
+    expect(cardNow()).toBe(true);
+
+    drivers[0]!.emit('event', { kind: 'result', durationMs: 10 } satisfies AgentEvent);
+    expect(cardNow()).toBe(false);
+  });
+
+  it('never reports turnRunning for a session with no driver', async () => {
+    await registry.add(makeEntry({ webSessionId: 'dead1' }));
+    expect(mgr.listBoardSessions()[0]!.turnRunning).toBe(false);
+  });
+
   it('pins the phase on a manual move so inference stops fighting the user', async () => {
     await registry.add(makeEntry({ webSessionId: 's', phase: 'planning' }));
     await mgr.setSessionPhase('s', 'backlog');
@@ -523,7 +546,10 @@ describe('SessionManager board surface', () => {
       registry,
       realpath: async (p) => p,
       claudeConfigs: new Map([
-        ['alt', { name: 'alt', configDir: '/Users/test/.claude1', isDefault: false }],
+        [
+          'alt',
+          { name: 'alt', configDir: '/Users/test/.claude1', isDefault: false, inheritEnv: false },
+        ],
       ]),
       resolveHeadroom: async () => ({ bin: 'headroom', port: 8787 }),
       driverFactory: () => new FakeDriver(),
@@ -545,13 +571,43 @@ describe('SessionManager board surface', () => {
       registry,
       realpath: async (p) => p,
       claudeConfigs: new Map([
-        ['default', { name: 'default', configDir: '/Users/test/.claude', isDefault: true }],
+        [
+          'default',
+          { name: 'default', configDir: '/Users/test/.claude', isDefault: true, inheritEnv: true },
+        ],
       ]),
       driverFactory: () => new FakeDriver(),
     });
     await expect(
       m.spawnSession({ agent: 'claude', dirs: [dir], claudeConfig: 'typo' }),
     ).rejects.toThrow(/Unknown Claude config profile/);
+  });
+
+  it('spawns the unpinned default with no CLAUDE_CONFIG_DIR at all', async () => {
+    // Exporting ~/.claude explicitly makes Claude Code look in the
+    // `Claude Code-credentials-<sha256(dir)>` keychain slot rather than the
+    // plain one a terminal login writes, which is what made every default
+    // session report "you need to log in".
+    const spawnArgs: Array<{ claudeConfigDir?: string }> = [];
+    const m = new SessionManager({
+      allowedDirs: [dir],
+      bufferCap: 100,
+      registry,
+      realpath: async (p) => p,
+      claudeConfigs: new Map([
+        [
+          'default',
+          { name: 'default', configDir: '/Users/test/.claude', isDefault: true, inheritEnv: true },
+        ],
+      ]),
+      driverFactory: (args) => {
+        spawnArgs.push({ ...(args.claudeConfigDir ? { claudeConfigDir: args.claudeConfigDir } : {}) });
+        return new FakeDriver();
+      },
+    });
+    const info = await m.spawnSession({ agent: 'claude', dirs: [dir], claudeConfig: 'default' });
+    expect(spawnArgs[0]!.claudeConfigDir).toBeUndefined();
+    expect(registry.get(info.sessionId)!.claudeConfigDir).toBeNull();
   });
 });
 

@@ -148,6 +148,28 @@ describe('Board renders', () => {
     expect(screen.getByTestId('board-card')).toBeTruthy();
   });
 
+  it('badges a live card that finished its turn as waiting, not running', () => {
+    useBoardStore.setState({
+      cards: {
+        s1: session({ alive: true, status: 'live', phase: 'implementing', turnRunning: false }),
+      },
+    });
+    renderBoard();
+    const badge = screen.getByText('needs input');
+    expect(badge.getAttribute('style')).toContain('--color-state-waiting');
+  });
+
+  it('badges a card mid-turn as running', () => {
+    useBoardStore.setState({
+      cards: {
+        s1: session({ alive: true, status: 'live', phase: 'implementing', turnRunning: true }),
+      },
+    });
+    renderBoard();
+    const badge = screen.getByText('running');
+    expect(badge.getAttribute('style')).toContain('--color-state-running');
+  });
+
   it('offers an add-a-job affordance when Backlog is empty', () => {
     renderBoard();
     expect(screen.getByText('+ Add a job')).toBeTruthy();

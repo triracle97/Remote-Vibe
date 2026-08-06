@@ -1640,7 +1640,8 @@ export class SessionManager extends EventEmitter {
     const out: BoardSession[] = [];
     for (const entry of this.registry.all()) {
       if (entry.archived && !opts.includeArchived) continue;
-      const alive = this.sessions.get(entry.webSessionId)?.alive === true;
+      const live = this.sessions.get(entry.webSessionId);
+      const alive = live?.alive === true;
       out.push({
         sessionId: entry.webSessionId,
         agent: entry.agent,
@@ -1655,6 +1656,7 @@ export class SessionManager extends EventEmitter {
         // it (e.g. crash between write and attach). Trust the in-memory map.
         status: alive ? 'live' : 'ended',
         alive,
+        turnRunning: alive ? isTurnOpen(live!.buffer) : false,
         phase: entry.phase,
         phasePinned: entry.phasePinned,
         model: entry.model,
@@ -1934,6 +1936,28 @@ export class SessionManager extends EventEmitter {
  */
 const VERIFY_COMMAND_RE =
   /\b(test|tests|vitest|jest|pytest|typecheck|tsc|lint|eslint|build|playwright|cargo\s+test|go\s+test)\b/;
+
+/**
+ * Whether a turn is open on a session's buffer — a `user` message that no
+ * `result` has closed yet.
+ *
+ * Deliberately the same walk as the web client's `isTurnRunning`: the board
+ * hydrates from here and then tracks the same events live, and the two must
+ * agree or a card would flip state on the first message after a page load.
+ * A buffer trimmed past the opening `user` reads as closed, which errs towards
+ * "waiting on you" rather than a spinner that never stops.
+ */
+export function isTurnOpen(
+  buffer: ReadonlyArray<ServerLifecycleMsg | ServerStreamMsg>,
+): boolean {
+  for (let i = buffer.length - 1; i >= 0; i--) {
+    const e = buffer[i]!;
+    if (e.type === 'result') return false;
+    if (e.type === 'system' && e.event === 'session_ended') return false;
+    if (e.type === 'user') return true;
+  }
+  return false;
+}
 
 function bashCommandOf(input: unknown): string | null {
   if (typeof input !== 'object' || input === null) return null;
