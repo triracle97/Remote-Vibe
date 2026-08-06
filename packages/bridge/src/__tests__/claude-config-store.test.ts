@@ -17,7 +17,10 @@ describe('ClaudeConfigStore', () => {
   beforeEach(() => {
     dataDir = mkdtempSync(join(tmpdir(), 'mrt-ccfg-'));
     profiles = new Map([
-      ['default', { name: 'default', configDir: '/Users/me/.claude', isDefault: true }],
+      [
+        'default',
+        { name: 'default', configDir: '/Users/me/.claude', isDefault: true, inheritEnv: true },
+      ],
     ]);
     store = new ClaudeConfigStore({ dataDir, profiles, home: '/Users/me' });
   });
@@ -32,6 +35,7 @@ describe('ClaudeConfigStore', () => {
       name: 'alt',
       configDir: '/Users/me/.claude1',
       isDefault: false,
+      inheritEnv: false,
     });
     expect(readFile().claude_config_dirs).toEqual([
       { name: 'alt', configDir: '/Users/me/.claude1' },
@@ -63,6 +67,9 @@ describe('ClaudeConfigStore', () => {
     const entries = readFile().claude_config_dirs as Array<{ name: string; configDir: string }>;
     expect(entries).toContainEqual({ name: 'default', configDir: '/Users/me/.claude9' });
     expect(profiles.get('default')!.isDefault).toBe(true);
+    // Pinned on purpose, so spawns export it instead of inheriting whatever
+    // CLAUDE_CONFIG_DIR the bridge happens to have.
+    expect(profiles.get('default')!.inheritEnv).toBe(false);
   });
 
   it('preserves the Codex accounts sharing the file', async () => {

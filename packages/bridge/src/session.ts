@@ -386,7 +386,28 @@ export class SessionManager extends EventEmitter {
         `Unknown Claude config profile '${requested}'. Configured: [${names}]`,
       );
     }
+    // The unpinned default exports nothing: Claude Code keys its macOS keychain
+    // item off CLAUDE_CONFIG_DIR, so handing it `~/.claude` explicitly reads a
+    // different slot from a plain terminal `claude` and the session comes up
+    // logged out. See ClaudeConfigProfile.inheritEnv.
+    if (found.inheritEnv) return undefined;
     return found.configDir;
+  }
+
+  /**
+   * The config dir to spawn a *recorded* session with.
+   *
+   * Sessions created before the default profile stopped exporting
+   * CLAUDE_CONFIG_DIR persisted the default's own directory. Resuming those
+   * with the variable set would send them back to the empty keychain slot, so
+   * drop it when it names exactly where the inherited default points — the
+   * directory the CLI resolves `--resume` against is unchanged either way.
+   */
+  private spawnConfigDir(recorded: string | null | undefined): string | undefined {
+    if (!recorded) return undefined;
+    const fallback = this.claudeConfigs.get('default');
+    if (fallback?.inheritEnv && fallback.configDir === recorded) return undefined;
+    return recorded;
   }
 
   /**
@@ -995,6 +1016,7 @@ export class SessionManager extends EventEmitter {
       // original spawn records them: a resumed session that quietly drops them
       // is not the session the board claims it is.
       const headroom = await this.resolveHeadroom('claude');
+      const claudeConfigDir = this.spawnConfigDir(entry.claudeConfigDir);
       const mcpConfigPath = this.writeMcpConfig
         ? ((await this.writeMcpConfig(entry.webSessionId)) ?? undefined)
         : undefined;
@@ -1003,7 +1025,7 @@ export class SessionManager extends EventEmitter {
         projectPath: entry.projectPath,
         ...(account ? { account } : {}),
         ...(additionalDirs.length > 0 ? { additionalDirs } : {}),
-        ...(entry.claudeConfigDir ? { claudeConfigDir: entry.claudeConfigDir } : {}),
+        ...(claudeConfigDir ? { claudeConfigDir } : {}),
         ...(headroom ? { headroom } : {}),
         ...(entry.model !== null ? { model: entry.model } : {}),
         ...(entry.effort !== null ? { effort: entry.effort } : {}),
@@ -1362,7 +1384,10 @@ export class SessionManager extends EventEmitter {
         firstPrompt: prompt,
         firstReply: reply,
         projectPath: s.projectPath,
-        claudeConfigDir: this.registry.get(s.sessionId)?.claudeConfigDir ?? undefined,
+        // Same normalization as a resume: the titler is another `claude`
+        // spawn, so a recorded ~/.claude would send it to the keychain slot
+        // nobody logged into and every title would come back empty.
+        claudeConfigDir: this.spawnConfigDir(this.registry.get(s.sessionId)?.claudeConfigDir),
       });
     } catch (err) {
       console.warn('[titler] unexpected failure:', err);

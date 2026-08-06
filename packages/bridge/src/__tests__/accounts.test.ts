@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadCodexAccounts } from '../accounts.js';
+import { loadClaudeConfigProfiles, loadCodexAccounts } from '../accounts.js';
 
 describe('loadCodexAccounts', () => {
   let dataDir: string;
@@ -83,5 +83,62 @@ describe('loadCodexAccounts', () => {
     expect(accounts.size).toBe(1);
     expect(accounts.has('default')).toBe(true);
     rmSync(home, { recursive: true, force: true });
+  });
+});
+
+describe('loadClaudeConfigProfiles', () => {
+  let dataDir: string;
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'mrt-claudecfg-'));
+  });
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('marks the unpinned default as inheriting the environment', () => {
+    // Claude Code keys its keychain item off CLAUDE_CONFIG_DIR, so exporting
+    // ~/.claude explicitly reads a different slot from a plain terminal
+    // `claude` — and the session comes up asking for a login even though the
+    // machine is logged in. The unpinned default must export nothing.
+    const profiles = loadClaudeConfigProfiles({ dataDir, env: { HOME: '/Users/me' } });
+    const def = profiles.get('default')!;
+    expect(def.configDir).toBe('/Users/me/.claude');
+    expect(def.isDefault).toBe(true);
+    expect(def.inheritEnv).toBe(true);
+  });
+
+  it('exports the default when BRIDGE_CLAUDE_CONFIG_DIR pins it', () => {
+    const profiles = loadClaudeConfigProfiles({
+      dataDir,
+      env: { HOME: '/Users/me' },
+      defaultConfigDir: '/Users/me/.claude1',
+    });
+    expect(profiles.get('default')!.configDir).toBe('/Users/me/.claude1');
+    expect(profiles.get('default')!.inheritEnv).toBe(false);
+  });
+
+  it('exports named profiles and an explicit default from accounts.json', () => {
+    writeFileSync(
+      join(dataDir, 'accounts.json'),
+      JSON.stringify({
+        claude_config_dirs: [
+          { name: 'default', configDir: '/Users/me/.claude-pinned' },
+          { name: 'alt', configDir: '/Users/me/.claude1' },
+        ],
+      }),
+    );
+    const profiles = loadClaudeConfigProfiles({ dataDir, env: { HOME: '/Users/me' } });
+    expect(profiles.get('default')).toEqual({
+      name: 'default',
+      configDir: '/Users/me/.claude-pinned',
+      isDefault: true,
+      inheritEnv: false,
+    });
+    expect(profiles.get('alt')).toEqual({
+      name: 'alt',
+      configDir: '/Users/me/.claude1',
+      isDefault: false,
+      inheritEnv: false,
+    });
   });
 });

@@ -115,6 +115,9 @@ export class ClaudeConfigStore {
       // `isDefault` marks which entry the picker preselects, and stays with
       // whatever is named `default` regardless of who wrote it.
       isDefault: name === DEFAULT_NAME,
+      // Anything saved here was pointed somewhere on purpose, so it is exported
+      // as CLAUDE_CONFIG_DIR rather than inherited — including `default`.
+      inheritEnv: false,
     });
     await this.persist();
   }

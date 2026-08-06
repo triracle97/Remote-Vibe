@@ -22,6 +22,20 @@ export interface ClaudeConfigProfile {
   /** Absolute path exported as CLAUDE_CONFIG_DIR. */
   configDir: string;
   isDefault: boolean;
+  /**
+   * True for the synthesized `default` that nobody pinned: spawns inherit the
+   * bridge's own environment instead of exporting `configDir`.
+   *
+   * This is not cosmetic. Claude Code derives its macOS keychain item from
+   * CLAUDE_CONFIG_DIR — `Claude Code-credentials-<sha256(dir)[0..8]>` when the
+   * variable is set, plain `Claude Code-credentials` when it is not. Exporting
+   * `~/.claude` explicitly therefore reads a *different* keychain slot from a
+   * plain `claude` in a terminal, and a session started that way reports
+   * itself logged out even though the machine is logged in. `configDir` is
+   * still the right path for anything reading the profile's files (history,
+   * slash commands); only the spawn environment leaves it unset.
+   */
+  inheritEnv: boolean;
 }
 
 interface RawAccountsFile {
@@ -89,7 +103,11 @@ export function loadCodexAccounts(opts: {
  * The `default` entry is always synthesized and always present, so the picker
  * has something to fall back to. `defaultConfigDir` (from
  * BRIDGE_CLAUDE_CONFIG_DIR) overrides what `default` points at; without it the
- * CLI's own default `~/.claude` is used.
+ * CLI's own default `~/.claude` is used — and, because nobody asked for a
+ * specific directory in that case, it is marked `inheritEnv` so spawns export
+ * no CLAUDE_CONFIG_DIR at all. Pinning it, either through the env var or an
+ * explicit `default` entry in `accounts.json`, is a deliberate choice and does
+ * get exported.
  *
  * Unlike `loadCodexAccounts`, a non-existent directory is kept rather than
  * dropped — Claude creates its config dir on first run, so a fresh `~/.claude1`
@@ -105,7 +123,15 @@ export function loadClaudeConfigProfiles(opts: {
     opts.env.CLAUDE_CONFIG_DIR ??
     (opts.env.HOME ? join(opts.env.HOME, '.claude') : '/');
   const out = new Map<string, ClaudeConfigProfile>([
-    ['default', { name: 'default', configDir: fallbackDir, isDefault: true }],
+    [
+      'default',
+      {
+        name: 'default',
+        configDir: fallbackDir,
+        isDefault: true,
+        inheritEnv: opts.defaultConfigDir === undefined,
+      },
+    ],
   ]);
 
   const path = join(opts.dataDir, 'accounts.json');
@@ -126,11 +152,22 @@ export function loadClaudeConfigProfiles(opts: {
       continue;
     }
     if (entry.name === 'default') {
-      // An explicit `default` entry wins over the synthesized one.
-      out.set('default', { name: 'default', configDir: entry.configDir, isDefault: true });
+      // An explicit `default` entry wins over the synthesized one — and, being
+      // explicit, is exported rather than inherited.
+      out.set('default', {
+        name: 'default',
+        configDir: entry.configDir,
+        isDefault: true,
+        inheritEnv: false,
+      });
       continue;
     }
-    out.set(entry.name, { name: entry.name, configDir: entry.configDir, isDefault: false });
+    out.set(entry.name, {
+      name: entry.name,
+      configDir: entry.configDir,
+      isDefault: false,
+      inheritEnv: false,
+    });
   }
 
   return out;

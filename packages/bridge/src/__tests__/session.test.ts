@@ -390,6 +390,7 @@ describe('SessionManager', () => {
     function makeMgrWithRegistry(opts: {
       allowedDirs?: string[];
       claudeResumeSettleMs?: number;
+      claudeConfigs?: Map<string, import('../accounts.js').ClaudeConfigProfile>;
       onSpawn?: (driver: TrackedDriver, args: SpawnArg) => void;
     } = {}) {
       const allowedDirs = opts.allowedDirs ?? [tmp];
@@ -431,6 +432,7 @@ describe('SessionManager', () => {
         realpath: async (p) => p,
         registry,
         accounts: accounts as unknown as Map<string, import('../accounts.js').CodexAccount>,
+        ...(opts.claudeConfigs ? { claudeConfigs: opts.claudeConfigs } : {}),
         // Pluggable stat: use the real fs stat for these tests since we mkdir
         // real directories under tmp.
         claudeResumeSettleMs: opts.claudeResumeSettleMs ?? 50,
@@ -490,6 +492,44 @@ describe('SessionManager', () => {
       expect(spawned[0]!.model).toBe('opus');
       expect(spawned[0]!.effort).toBe('high');
       expect(spawned[0]!.resumeArgs).toEqual(['--resume', 'claude-uuid-1']);
+    });
+
+    it('drops a recorded config dir that is just the inherited default', async () => {
+      // Sessions created before the default profile stopped exporting
+      // CLAUDE_CONFIG_DIR persisted ~/.claude. Re-exporting it on resume sends
+      // the CLI back to the `Claude Code-credentials-<hash>` keychain slot it
+      // was never logged into, so those sessions came up asking for a login.
+      const { mgr, registry, spawned } = makeMgrWithRegistry({
+        claudeConfigs: new Map([
+          [
+            'default',
+            {
+              name: 'default',
+              configDir: '/Users/me/.claude',
+              isDefault: true,
+              inheritEnv: true,
+            },
+          ],
+        ]),
+      });
+      mkdirSync(join(tmp, 'proj'), { recursive: true });
+      await registry.load();
+      await registry.add({
+        webSessionId: 'web-legacy',
+        agent: 'claude',
+        projectPath: join(tmp, 'proj'),
+        transcriptPath: '.bridge/transcripts/web-legacy.jsonl',
+        claudeSessionId: 'claude-uuid-3',
+        codexSessionId: null,
+        createdAt: 0,
+        account: null,
+        claudeConfigDir: '/Users/me/.claude',
+      } as never);
+
+      await mgr.resume('web-legacy');
+
+      expect(spawned[0]!.claudeConfigDir).toBeUndefined();
+      expect(spawned[0]!.resumeArgs).toEqual(['--resume', 'claude-uuid-3']);
     });
 
     it('leaves the config dir alone when the session never had one', async () => {
