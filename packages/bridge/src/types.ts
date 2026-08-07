@@ -179,6 +179,7 @@ export type ClientMsg =
   | ClientSetDefaultProfileMsg
   | ClientListSlashCommandsMsg
   | ClientSearchFilesMsg
+  | ClientGetClipboardPathsMsg
   | ClientRenameSessionMsg
   | ClientTermStartMsg
   | ClientTermInputMsg
@@ -260,8 +261,15 @@ export function turnContextTokens(usage: TurnUsage | undefined): number {
 export interface RateLimitWindow {
   /** e.g. `five_hour`, `seven_day`, `seven_day_opus`. */
   limitType: string;
-  /** Fraction 0..1, NOT a percentage. */
-  utilization: number;
+  /**
+   * Fraction 0..1, NOT a percentage — and null when the CLI did not say.
+   *
+   * The number only appears once the window crosses its warning threshold; a
+   * healthy window reports `status: allowed` and no figure at all. Null
+   * therefore means "known to be below the warning threshold", which is not
+   * the same as zero and must not be rendered as one.
+   */
+  utilization: number | null;
   /** Unix seconds when the window resets, or null if not reported. */
   resetsAt: number | null;
   /** e.g. `allowed`, `allowed_warning`, `rejected`. */
@@ -759,6 +767,7 @@ export type ServerMsg =
   | ServerProfileDefaultSetMsg
   | ServerSlashCommandsListMsg
   | ServerFileSearchResultsMsg
+  | ServerClipboardPathsMsg
   | ServerSessionRenamedMsg
   | ServerTermStartedMsg
   | ServerTermOutputMsg
@@ -908,6 +917,21 @@ export interface ClientSearchFilesMsg {
   correlationId: string;
 }
 
+/**
+ * "The browser saw a paste of these filenames — does your clipboard know where
+ * they live?"
+ *
+ * `names` is both the question and the safety gate: the bridge answers only
+ * with paths whose basename is in this list, so a bridge whose clipboard has
+ * nothing to do with the browser's (a phone over Tailscale) answers with
+ * nothing. See `clipboard.ts`.
+ */
+export interface ClientGetClipboardPathsMsg {
+  type: 'get_clipboard_paths';
+  names: string[];
+  correlationId: string;
+}
+
 export interface ClientRenameSessionMsg {
   type: 'rename_session';
   sessionId: string;
@@ -951,6 +975,13 @@ export interface ServerFileSearchResultsMsg {
   type: 'file_search_results';
   hits: SearchHit[];
   truncated: boolean;
+  correlationId: string;
+}
+
+/** Absolute paths for the requested names; empty when none matched. */
+export interface ServerClipboardPathsMsg {
+  type: 'clipboard_paths';
+  paths: string[];
   correlationId: string;
 }
 

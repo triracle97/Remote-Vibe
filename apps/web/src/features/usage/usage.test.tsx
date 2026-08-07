@@ -67,11 +67,30 @@ describe('usage selectors', () => {
     expect(worstWindow({})).toBeNull();
   });
 
+  it('prefers a window with a real number over one that reported none', () => {
+    // A healthy window carries no utilization at all, so it must not outrank
+    // — nor be outranked into invisibility by — one that does.
+    const worst = worstWindow({
+      five_hour: win({ limitType: 'five_hour', utilization: null, status: 'allowed' }),
+      seven_day: win({ utilization: 0.4 }),
+    });
+    expect(worst?.limitType).toBe('seven_day');
+  });
+
+  it('still picks a window when none of them reported a number', () => {
+    const worst = worstWindow({
+      five_hour: win({ limitType: 'five_hour', utilization: null, status: 'allowed' }),
+    });
+    expect(worst?.limitType).toBe('five_hour');
+  });
+
   it('bands utilization', () => {
     expect(utilizationTone(0.1)).toBe('ok');
     expect(utilizationTone(0.6)).toBe('warn');
     expect(utilizationTone(0.85)).toBe('danger');
     expect(utilizationTone(1)).toBe('danger');
+    // Below the CLI's warning threshold — healthy, not empty.
+    expect(utilizationTone(null)).toBe('ok');
   });
 
   it('gives limit types readable names', () => {
@@ -154,6 +173,30 @@ describe('UsageIndicator', () => {
     expect(popover.textContent).toContain('5-hour');
     expect(popover.textContent).toContain('7-day');
     expect(popover.textContent).toContain('78%');
+  });
+
+  it('shows a healthy window that reported no number', () => {
+    // The common case on an account well inside its limits: the ring has no
+    // percentage to draw, but hiding it entirely reads as "usage unavailable".
+    useUsageStore.setState({
+      windows: {
+        five_hour: win({
+          limitType: 'five_hour',
+          utilization: null,
+          status: 'allowed',
+          resetsAt: null,
+        }),
+      },
+    });
+    render(<UsageIndicator />);
+    expect(screen.getByTestId('usage-indicator').getAttribute('aria-label')).toBe(
+      'Plan usage below warning threshold',
+    );
+    fireEvent.click(screen.getByTestId('usage-indicator'));
+    const popover = screen.getByTestId('usage-popover');
+    expect(popover.textContent).toContain('5-hour');
+    expect(popover.textContent).toContain('OK');
+    expect(popover.textContent).not.toContain('0%');
   });
 
   it('flags overage', () => {

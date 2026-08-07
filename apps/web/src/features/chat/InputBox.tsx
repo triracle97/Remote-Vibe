@@ -7,9 +7,12 @@ import { ImageThumbnails } from '../image-attach/ImageThumbnails';
 import { imageFilesFromClipboard } from '../image-attach/clipboardImages';
 import {
   absolutePathsFromDataTransfer,
+  bareNameFromText,
+  basename,
   fileNamesFromDataTransfer,
   resolveUniqueByBasename,
 } from './clipboardPaths';
+import { requestClipboardPaths } from './clipboardBridge';
 import { useFileSearchStore } from './fileSearchStore';
 import { hasBridgeClient } from '../../services/bridge-client-singleton';
 import type { PendingImage, UseImagePaste } from '../image-attach/useImagePaste';
@@ -257,13 +260,72 @@ export function InputBox({
   }, []);
 
   /**
+   * Swap a bare filename already sitting in the composer for its full path.
+   *
+   * The *last* occurrence, because the name was appended at the end — an
+   * earlier mention of `types.ts` in the prompt is prose, not the paste.
+   */
+  const upgradeNameInComposer = useCallback((name: string, full: string) => {
+    setText((prev) => {
+      if (prev.includes(full)) return prev;
+      const i = prev.lastIndexOf(name);
+      return i < 0 ? prev : `${prev.slice(0, i)}${full}${prev.slice(i + name.length)}`;
+    });
+  }, []);
+
+  /**
+   * Ask the bridge host's pasteboard where these names live, and rewrite the
+   * ones it can account for. Returns the names it could not.
+   *
+   * This is the exact answer when the browser and the bridge share a Mac, which
+   * is the case a Finder ⌘C is usually in. It resolves what the file index
+   * cannot: directories, files outside the session's dirs, and names that
+   * appear more than once in the tree.
+   */
+  const upgradeFromHostClipboard = useCallback(
+    async (names: readonly string[]): Promise<string[]> => {
+      const unresolved = new Set(names);
+      for (const full of await requestClipboardPaths(names)) {
+        const name = basename(full);
+        if (!unresolved.delete(name)) continue;
+        upgradeNameInComposer(name, full);
+      }
+      return [...unresolved];
+    },
+    [upgradeNameInComposer],
+  );
+
+  /**
+   * Last resort: look the name up in the session's own file index.
+   *
+   * A guess rather than an answer, so only an unambiguous hit counts —
+   * silently pasting the wrong `config.ts` is worse than pasting the name and
+   * letting the user fix it.
+   */
+  const upgradeFromFileIndex = useCallback(
+    (names: readonly string[]) => {
+      if (!hasBridgeClient()) return;
+      for (const name of names) {
+        useFileSearchStore.getState().search(sessionId, name);
+        // One shot, after the round trip. A miss simply leaves the filename.
+        setTimeout(() => {
+          const hits = useFileSearchStore.getState().bySession[sessionId]?.hits ?? [];
+          const full = resolveUniqueByBasename(name, hits);
+          if (full) upgradeNameInComposer(name, full);
+        }, 400);
+      }
+    },
+    [sessionId, upgradeNameInComposer],
+  );
+
+  /**
    * Turn pasted or dropped files into absolute paths in the composer.
    *
    * Two sources, because the platform gives two different things (see
    * `clipboardPaths.ts`). A `file://` URI is exact and used as-is. A bare
-   * filename is not — it is looked up in the session's own file index, and only
-   * an unambiguous hit is inserted, because silently pasting the wrong
-   * `config.ts` is worse than pasting the name and letting the user fix it.
+   * filename is not: the name goes in immediately so the paste never feels
+   * dropped, then the host clipboard — and failing that the file index —
+   * upgrades it in place.
    */
   const insertPaths = useCallback(
     (paths: readonly string[], names: readonly string[]): boolean => {
@@ -273,28 +335,11 @@ export function InputBox({
       }
       if (names.length === 0) return false;
 
-      // Resolve against the index asynchronously; insert the name immediately
-      // so the paste never feels dropped, then upgrade it in place if the
-      // lookup finds exactly one match.
       appendToComposer(names.join(' '));
-      // No socket (component tests, or a paste before the app finished
-      // connecting) means no index to consult — the filename stands.
-      if (!hasBridgeClient()) return true;
-      for (const name of names) {
-        const search = useFileSearchStore.getState();
-        search.search(sessionId, name);
-        // One shot, after the round trip. A miss simply leaves the filename.
-        const timer = setTimeout(() => {
-          const hits = useFileSearchStore.getState().bySession[sessionId]?.hits ?? [];
-          const full = resolveUniqueByBasename(name, hits);
-          if (!full) return;
-          setText((prev) => (prev.includes(full) ? prev : prev.replace(name, full)));
-        }, 400);
-        void timer;
-      }
+      void upgradeFromHostClipboard(names).then(upgradeFromFileIndex);
       return true;
     },
-    [appendToComposer, sessionId],
+    [appendToComposer, upgradeFromHostClipboard, upgradeFromFileIndex],
   );
 
   /**
@@ -337,14 +382,27 @@ export function InputBox({
       // Otherwise only claim it when a real file rode along. A text paste —
       // including one into the rename box or the file editor — falls through
       // untouched.
-      const names = Array.from(e.clipboardData?.items ?? []).some((i) => i.kind === 'file')
-        ? fileNamesFromDataTransfer(e.clipboardData)
-        : [];
-      if (names.length > 0 && insertPaths([], names)) e.preventDefault();
+      const hasFileItem = Array.from(e.clipboardData?.items ?? []).some(
+        (i) => i.kind === 'file',
+      );
+      const names = hasFileItem ? fileNamesFromDataTransfer(e.clipboardData) : [];
+      if (names.length > 0 && insertPaths([], names)) {
+        e.preventDefault();
+        return;
+      }
+      // A folder copied in Finder can arrive as nothing but its name in
+      // `text/plain` — a directory is not a `File`, so no file item rides
+      // along and there is nothing to distinguish this from someone pasting a
+      // word. So the paste is left alone to land normally, and only the host
+      // clipboard, which either does or does not hold a file by that name,
+      // decides whether to rewrite it afterwards.
+      if (hasFileItem || e.target !== taRef.current) return;
+      const bare = bareNameFromText(e.clipboardData?.getData('text/plain') ?? '');
+      if (bare) void upgradeFromHostClipboard([bare]);
     };
     document.addEventListener('paste', onPaste);
     return () => document.removeEventListener('paste', onPaste);
-  }, [imagesEnabled, addImageFromFile, insertPaths]);
+  }, [imagesEnabled, addImageFromFile, insertPaths, upgradeFromHostClipboard]);
 
   const onAttachClick = (): void => {
     if (!imagesEnabled) return;

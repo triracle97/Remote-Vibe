@@ -90,17 +90,31 @@ export function contextTokens(u: SessionUsage): number {
 /**
  * Worst window drives the summary indicator — the one closest to its limit is
  * the one that will actually stop you.
+ *
+ * A window with a null utilization is below its warning threshold, so it loses
+ * to any window that named a number. It still wins over nothing: when every
+ * window is healthy the indicator shows one of them rather than vanishing.
  */
 export function worstWindow(
   windows: Record<string, RateLimitWindow>,
 ): RateLimitWindow | null {
   const all = Object.values(windows);
   if (all.length === 0) return null;
-  return all.reduce((a, b) => (b.utilization > a.utilization ? b : a));
+  return all.reduce((a, b) => {
+    if (b.utilization === null) return a;
+    if (a.utilization === null) return b;
+    return b.utilization > a.utilization ? b : a;
+  });
 }
 
-/** Green under 60%, amber to 85%, red above. Mirrors nimbalyst's banding. */
-export function utilizationTone(utilization: number): 'ok' | 'warn' | 'danger' {
+/**
+ * Green under 60%, amber to 85%, red above. Mirrors nimbalyst's banding.
+ *
+ * Null — the CLI reported no figure — is green: it only withholds the number
+ * while the window is under its own warning threshold.
+ */
+export function utilizationTone(utilization: number | null): 'ok' | 'warn' | 'danger' {
+  if (utilization === null) return 'ok';
   if (utilization >= 0.85) return 'danger';
   if (utilization >= 0.6) return 'warn';
   return 'ok';

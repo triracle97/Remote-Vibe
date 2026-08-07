@@ -16,6 +16,12 @@ import type { RateLimitWindow } from '../../types/protocol';
  * same numbers as `rate_limit_event` mid-stream — so this needs no credential
  * and no extra request. The trade-off is that it only knows what it has seen:
  * before the first turn of a run there is nothing to show, and the ring hides.
+ *
+ * A window can also arrive *without* a percentage: the CLI withholds
+ * `utilization` until the window passes its own warning threshold, so a healthy
+ * account reports which window is live and when it resets and nothing more.
+ * That still beats an empty toolbar, so it renders as a full ring reading OK —
+ * never as a 0%, which would claim a number nobody gave us.
  */
 
 const RADIUS = 11;
@@ -54,17 +60,21 @@ export function UsageIndicator(): JSX.Element | null {
   if (worst === null) return null;
 
   const tone = utilizationTone(worst.utilization);
-  const pct = Math.round(worst.utilization * 100);
-  const offset = CIRCUMFERENCE * (1 - Math.min(1, Math.max(0, worst.utilization)));
+  const util = worst.utilization;
+  const pct = util === null ? null : Math.round(util * 100);
+  // No figure means "below the warning threshold", so the ring completes rather
+  // than sitting empty — an empty ring is how 0% looks.
+  const offset = util === null ? 0 : CIRCUMFERENCE * (1 - Math.min(1, Math.max(0, util)));
+  const level = pct === null ? 'below warning threshold' : `${pct}%`;
 
   return (
     <div ref={rootRef} className="relative">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        aria-label={`Plan usage ${pct}%`}
+        aria-label={`Plan usage ${level}`}
         aria-expanded={open}
-        title={`${formatLimitType(worst.limitType)}: ${pct}% — ${formatResetsIn(worst.resetsAt)}`}
+        title={`${formatLimitType(worst.limitType)}: ${level} — ${formatResetsIn(worst.resetsAt)}`}
         data-testid="usage-indicator"
         className="relative w-9 h-9 flex items-center justify-center rounded-md hover:bg-[var(--color-surface-2)] transition-colors"
       >
@@ -89,11 +99,15 @@ export function UsageIndicator(): JSX.Element | null {
             strokeDashoffset={offset}
             // Start the arc at 12 o'clock rather than 3.
             transform="rotate(-90 14 14)"
-            style={{ transition: 'stroke-dashoffset 0.3s ease' }}
+            style={{
+              transition: 'stroke-dashoffset 0.3s ease',
+              // Dimmed when it is a "nothing to report" ring, not a measurement.
+              ...(util === null ? { opacity: 0.4 } : {}),
+            }}
           />
         </svg>
         <span className="absolute text-[9px] font-semibold tabular-nums text-[var(--color-text-mute)]">
-          {pct}
+          {pct ?? 'OK'}
         </span>
       </button>
 
@@ -109,7 +123,11 @@ function UsagePopover({
   windows: Record<string, RateLimitWindow>;
   onClose: () => void;
 }): JSX.Element {
-  const list = Object.values(windows).sort((a, b) => b.utilization - a.utilization);
+  // Windows the CLI put a number on come first, worst first; the healthy ones
+  // it stayed quiet about trail them.
+  const list = Object.values(windows).sort(
+    (a, b) => (b.utilization ?? -1) - (a.utilization ?? -1),
+  );
   return (
     <div
       role="dialog"
@@ -139,7 +157,7 @@ function UsagePopover({
       <ul className="flex flex-col gap-2.5">
         {list.map((w) => {
           const tone = utilizationTone(w.utilization);
-          const pct = Math.round(w.utilization * 100);
+          const pct = w.utilization === null ? null : Math.round(w.utilization * 100);
           return (
             <li key={w.limitType}>
               <div className="flex items-baseline gap-2 text-xs">
@@ -148,19 +166,22 @@ function UsagePopover({
                   className="ml-auto font-semibold tabular-nums"
                   style={{ color: `var(${TONE_VAR[tone]})` }}
                 >
-                  {pct}%
+                  {pct === null ? 'OK' : `${pct}%`}
                 </span>
               </div>
-              <div className="mt-1 h-1.5 rounded-full bg-[var(--color-surface-2)] overflow-hidden">
-                <div
-                  className="h-full rounded-full"
-                  style={{
-                    width: `${Math.min(100, pct)}%`,
-                    background: `var(${TONE_VAR[tone]})`,
-                    transition: 'width 0.3s ease',
-                  }}
-                />
-              </div>
+              {/* No bar without a number — a zero-width one would read as 0%. */}
+              {pct !== null && (
+                <div className="mt-1 h-1.5 rounded-full bg-[var(--color-surface-2)] overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${Math.min(100, pct)}%`,
+                      background: `var(${TONE_VAR[tone]})`,
+                      transition: 'width 0.3s ease',
+                    }}
+                  />
+                </div>
+              )}
               <div className="mt-0.5 flex gap-2 text-[10px] text-[var(--color-text-dim)]">
                 <span>{formatResetsIn(w.resetsAt)}</span>
                 {w.isUsingOverage && (
@@ -173,7 +194,9 @@ function UsagePopover({
       </ul>
 
       <p className="mt-2.5 text-[10px] text-[var(--color-text-dim)] leading-snug">
-        Reported by the agent CLI during a turn. Updates as you work.
+        Reported by the agent CLI during a turn. Updates as you work.{' '}
+        <strong className="text-[var(--color-text-mute)]">OK</strong> means the CLI
+        gave no percentage — it only names one once a window nears its limit.
       </p>
     </div>
   );

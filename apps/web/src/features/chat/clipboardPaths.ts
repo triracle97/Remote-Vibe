@@ -14,7 +14,9 @@
  * 2. **Only the file itself is there.** A plain ⌘C in Finder usually lands
  *    here: `clipboardData.files` has the file, but every path component has
  *    been stripped. All that survives is the basename, which the caller has to
- *    resolve against the session's own file index.
+ *    resolve elsewhere — first by asking the bridge host what its own
+ *    pasteboard says (`clipboardBridge.ts`, exact), then by looking the name up
+ *    in the session's file index (a guess, so only an unambiguous hit counts).
  *
  * Nothing here reads file contents; both paths are pure string work on metadata
  * the event already carries.
@@ -145,7 +147,26 @@ export function resolveUniqueByBasename(
   return matches.length === 1 ? matches[0]!.fullPath : null;
 }
 
-function basename(p: string): string {
+export function basename(p: string): string {
   const i = p.lastIndexOf('/');
   return i >= 0 ? p.slice(i + 1) : p;
+}
+
+/**
+ * A pasted string that could be nothing but a file's name.
+ *
+ * The last and least helpful thing a platform can do with a copied item is hand
+ * over its name as plain text and no file at all — which is what a ⌘C on a
+ * *folder* produces in some browsers, since a directory is not a `File`. There
+ * is no way to tell that apart from someone pasting a word, so this only
+ * decides "could be a name"; the host clipboard has to confirm it before
+ * anything is rewritten.
+ *
+ * Rejects anything with a separator (already a path, or prose) or a line break.
+ */
+export function bareNameFromText(text: string): string | null {
+  const t = text.trim();
+  if (t.length === 0 || t.length > 255) return null;
+  if (t.includes('/') || t.includes('\n') || t.includes('\r')) return null;
+  return t;
 }

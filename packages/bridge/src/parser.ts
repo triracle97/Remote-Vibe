@@ -154,10 +154,15 @@ export function parseClaudeLine(line: string): ClaudeParseResult[] {
     case 'rate_limit_event': {
       // The CLI volunteers quota state mid-stream. Note `utilization` is a
       // fraction (0.78 == 78%), not a percentage.
+      //
+      // It is also optional: the CLI only puts a number on the payload once
+      // the window passes its warning threshold (`status: allowed_warning`).
+      // Under that, all it says is which window it is, that it is `allowed`,
+      // and when it resets — which is still worth surfacing, so the window is
+      // kept with a null utilization rather than dropped.
       const info = raw.rate_limit_info;
       if (!info || typeof info.rateLimitType !== 'string') return [];
       const utilization = typeof info.utilization === 'number' ? info.utilization : null;
-      if (utilization === null) return [];
       return [
         {
           kind: 'rate_limit',

@@ -1,7 +1,20 @@
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { render, fireEvent, waitFor, renderHook, act, cleanup } from '@testing-library/react';
 import { InputBox } from './InputBox';
 import { useImagePaste, type UseImagePaste } from '../image-attach/useImagePaste';
+
+// What the bridge host's pasteboard would answer. Real by default (empty), so
+// every test that is not about it keeps the pre-existing filename behaviour.
+const hostClipboard = vi.hoisted(() => ({ paths: [] as string[] }));
+vi.mock('./clipboardBridge', () => ({
+  requestClipboardPaths: (names: readonly string[]): Promise<string[]> =>
+    Promise.resolve(
+      hostClipboard.paths.filter((p) => names.includes(p.slice(p.lastIndexOf('/') + 1))),
+    ),
+}));
+beforeEach(() => {
+  hostClipboard.paths = [];
+});
 
 // Tiny harness: drive the real `useImagePaste` hook from a renderHook so the
 // InputBox sees a live image list (matches Chat.tsx's wiring), and expose its
@@ -361,12 +374,23 @@ describe('InputBox — paste an image', () => {
   });
 });
 
+/** As `pastePayload`, but aimed at one element so the handler sees a target. */
+function pastePayloadOn(
+  target: EventTarget,
+  payload: { uriList?: string; plain?: string; files?: Array<{ name: string; type?: string }> },
+): void {
+  pastePayload(payload, target);
+}
+
 /** Fire a paste at the document carrying a drag/clipboard payload. */
-function pastePayload(payload: {
-  uriList?: string;
-  plain?: string;
-  files?: Array<{ name: string; type?: string }>;
-}): void {
+function pastePayload(
+  payload: {
+    uriList?: string;
+    plain?: string;
+    files?: Array<{ name: string; type?: string }>;
+  },
+  target?: EventTarget,
+): void {
   const data: Record<string, string> = {};
   if (payload.uriList !== undefined) data['text/uri-list'] = payload.uriList;
   if (payload.plain !== undefined) data['text/plain'] = payload.plain;
@@ -383,7 +407,7 @@ function pastePayload(payload: {
   // dispatch has to be inside act() — otherwise React re-enters and throws
   // "Should not already be working".
   act(() => {
-    document.dispatchEvent(event);
+    (target ?? document).dispatchEvent(event);
   });
 }
 
@@ -426,9 +450,9 @@ describe('InputBox — paste a file path', () => {
     });
   });
 
-  it('falls back to the filename when the clipboard has no path', async () => {
-    // The ⌘C-in-Finder case: the browser strips the path, so the name goes in
-    // immediately and is upgraded later if the index resolves it.
+  it('falls back to the filename when neither the clipboard nor the host has a path', async () => {
+    // The ⌘C-in-Finder case with the browser on a different machine from the
+    // bridge: the name goes in immediately and stands.
     const props = defaultProps();
     const { container } = render(<InputBox {...props} />);
 
@@ -437,6 +461,56 @@ describe('InputBox — paste a file path', () => {
     await waitFor(() => {
       expect(container.querySelector('textarea')!.value).toContain('notes.md');
     });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(container.querySelector('textarea')!.value).not.toContain('/');
+  });
+
+  it('upgrades the filename to the path the bridge host has on its clipboard', async () => {
+    // The ⌘C-in-Finder case the browser cannot answer: the file lives outside
+    // the session's dirs, so no index lookup would find it — but the Mac the
+    // bridge runs on still holds the file:// URL.
+    hostClipboard.paths = ['/Users/me/elsewhere/notes.md'];
+    const props = defaultProps();
+    const { container } = render(<InputBox {...props} />);
+
+    pastePayload({ files: [{ name: 'notes.md' }] });
+
+    await waitFor(() => {
+      expect(container.querySelector('textarea')!.value).toContain(
+        '/Users/me/elsewhere/notes.md',
+      );
+    });
+  });
+
+  it('resolves a copied directory, which carries no file at all', async () => {
+    // A folder is not a `File`, so some browsers pass on nothing but its name
+    // as plain text. The default paste is left alone and rewritten after the
+    // host clipboard confirms a folder by that name was what got copied.
+    hostClipboard.paths = ['/Users/me/code/project'];
+    const props = defaultProps();
+    const { container } = render(<InputBox {...props} />);
+    const ta = container.querySelector('textarea')!;
+    // Stand in for the browser's own insertion, which jsdom does not perform.
+    fireEvent.change(ta, { target: { value: 'project' } });
+
+    pastePayloadOn(ta, { plain: 'project' });
+
+    await waitFor(() => {
+      expect(ta.value).toContain('/Users/me/code/project');
+    });
+  });
+
+  it('leaves a pasted word alone when the host clipboard holds no such file', async () => {
+    hostClipboard.paths = ['/Users/me/code/something-else'];
+    const props = defaultProps();
+    const { container } = render(<InputBox {...props} />);
+    const ta = container.querySelector('textarea')!;
+    fireEvent.change(ta, { target: { value: 'project' } });
+
+    pastePayloadOn(ta, { plain: 'project' });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(ta.value).toBe('project');
   });
 
   it('leaves a plain text paste to the browser', () => {

@@ -37,15 +37,33 @@ describe('parseClaudeLine — rate_limit_event', () => {
     expect(e.window.isUsingOverage).toBe(false);
   });
 
-  it('ignores a payload with no usable numbers', () => {
+  it('keeps an under-threshold window that reports no utilization', () => {
+    // Captured from a profile below the warning threshold. The CLI names the
+    // window and when it resets but omits `utilization` entirely — dropping
+    // the event left the indicator with nothing to show for the whole run.
+    const line = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'allowed',
+        resetsAt: 1786085400,
+        rateLimitType: 'five_hour',
+        overageStatus: 'rejected',
+        overageDisabledReason: 'org_level_disabled',
+        isUsingOverage: false,
+      },
+    });
+    const e = parseClaudeLine(line)[0] as Extract<AgentEvent, { kind: 'rate_limit' }>;
+    expect(e.kind).toBe('rate_limit');
+    expect(e.window.limitType).toBe('five_hour');
+    expect(e.window.utilization).toBeNull();
+    expect(e.window.resetsAt).toBe(1786085400);
+    expect(e.window.status).toBe('allowed');
+  });
+
+  it('ignores a payload that names no window', () => {
     expect(parseClaudeLine(JSON.stringify({ type: 'rate_limit_event' }))).toEqual([]);
     expect(
       parseClaudeLine(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: {} })),
-    ).toEqual([]);
-    expect(
-      parseClaudeLine(
-        JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { rateLimitType: 'x' } }),
-      ),
     ).toEqual([]);
   });
 

@@ -18,6 +18,7 @@ import type { SlashCommandsScanner } from './slash-commands.js';
 import type { FileSearch } from './file-search.js';
 import type { TerminalManager } from './terminal-manager.js';
 import { PathOutsideAllowlistError } from './path-allowlist.js';
+import { matchClipboardPathsByName, readClipboardFilePaths } from './clipboard.js';
 import { JobNotFoundError, jobLaunchPrompt, type JobStore } from './job-store.js';
 import type {
   ClientMsg,
@@ -835,6 +836,19 @@ async function handleMessage(
             correlationId: msg.correlationId,
           });
         }
+        break;
+      }
+      case 'get_clipboard_paths': {
+        // Names the browser actually saw; anything else on the host's
+        // clipboard stays there. A malformed list is treated as no list.
+        const names = Array.isArray(msg.names)
+          ? msg.names.filter((n): n is string => typeof n === 'string' && n.length > 0)
+          : [];
+        const paths =
+          names.length === 0
+            ? []
+            : matchClipboardPathsByName(names, await readClipboardFilePaths());
+        send({ type: 'clipboard_paths', paths, correlationId: msg.correlationId });
         break;
       }
       case 'rename_session': {

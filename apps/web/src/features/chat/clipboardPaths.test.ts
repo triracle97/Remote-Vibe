@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   absolutePathsFromDataTransfer,
+  bareNameFromText,
   fileNamesFromDataTransfer,
   pathFromFileUri,
   resolveUniqueByBasename,
@@ -148,5 +149,20 @@ describe('resolveUniqueByBasename', () => {
   it('matches on the basename, not a path substring', () => {
     const hits = [{ fullPath: '/repo/app.ts.bak' }];
     expect(resolveUniqueByBasename('app.ts', hits)).toBeNull();
+  });
+});
+
+describe('bareNameFromText', () => {
+  it('accepts a plain name, which is all a copied folder may leave behind', () => {
+    expect(bareNameFromText('project')).toBe('project');
+    expect(bareNameFromText('  My Notes.md \n')).toBe('My Notes.md');
+  });
+
+  it('rejects anything that already carries a separator or spans lines', () => {
+    expect(bareNameFromText('/Users/me/notes.md')).toBeNull();
+    expect(bareNameFromText('src/app.ts')).toBeNull();
+    expect(bareNameFromText('two\nlines')).toBeNull();
+    expect(bareNameFromText('   ')).toBeNull();
+    expect(bareNameFromText('x'.repeat(256))).toBeNull();
   });
 });

@@ -197,6 +197,7 @@ export type ClientMsg =
   | ClientSetDefaultProfileMsg
   | ClientListSlashCommandsMsg
   | ClientSearchFilesMsg
+  | ClientGetClipboardPathsMsg
   | ClientRenameSessionMsg
   | ClientTermStartMsg
   | ClientTermInputMsg
@@ -248,7 +249,12 @@ export const EMPTY_SESSION_USAGE: SessionUsage = {
  */
 export interface RateLimitWindow {
   limitType: string;
-  utilization: number;
+  /**
+   * Fraction 0..1, or null when the CLI reported no figure — which it only
+   * does once the window passes its warning threshold. Null means "below the
+   * warning threshold", not zero.
+   */
+  utilization: number | null;
   /** Unix seconds, or null when not reported. */
   resetsAt: number | null;
   status: string | null;
@@ -496,6 +502,7 @@ export type ServerMsg =
   | ServerProfileDefaultSetMsg
   | ServerSlashCommandsListMsg
   | ServerFileSearchResultsMsg
+  | ServerClipboardPathsMsg
   | ServerSessionRenamedMsg
   | ServerTermStartedMsg
   | ServerTermOutputMsg
@@ -645,6 +652,19 @@ export interface ClientSearchFilesMsg {
   correlationId: string;
 }
 
+/**
+ * Ask the bridge host's clipboard where the pasted files live.
+ *
+ * `names` is the safety gate as much as the query — the bridge answers only
+ * with paths whose basename appears here, so a bridge on a different machine
+ * from the browser answers with nothing rather than a stale path.
+ */
+export interface ClientGetClipboardPathsMsg {
+  type: 'get_clipboard_paths';
+  names: string[];
+  correlationId: string;
+}
+
 export interface ClientRenameSessionMsg {
   type: 'rename_session';
   sessionId: string;
@@ -688,6 +708,12 @@ export interface ServerFileSearchResultsMsg {
   type: 'file_search_results';
   hits: SearchHit[];
   truncated: boolean;
+  correlationId: string;
+}
+
+export interface ServerClipboardPathsMsg {
+  type: 'clipboard_paths';
+  paths: string[];
   correlationId: string;
 }
 
