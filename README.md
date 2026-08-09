@@ -319,6 +319,7 @@ docs/superpowers/ Internal design specs and plan docs.
 - **The editor cannot create or delete files.** It edits files that already exist. Use the agent for anything else.
 - **Pasting a file's path reads the bridge host's clipboard.** The browser strips every path component off a pasted `File`, so when a paste carries no `file://` URI the composer asks the bridge to read the Mac's own pasteboard (`osascript`, no entitlement needed). The reply is restricted to paths whose basename the browser also saw, so a browser on a different machine — a phone over Tailscale — gets nothing rather than an unrelated path, and falls back to the session's file index as before.
 - **The plan-usage ring shows `OK` more often than a number.** The CLI only reports a `utilization` figure once a quota window passes its own warning threshold. Below that it names the window and its reset time and nothing else, which renders as `OK` — a percentage would be invented.
+- **Plan usage is per Claude profile.** Each `CLAUDE_CONFIG_DIR` profile is a separate login with its own quota, so windows are tracked per account. The ring shows whichever account is closest to a limit and captions it with that profile's name; the popover lists every account under its own heading. Figures only appear for accounts that have run a turn since the bridge started — the CLI volunteers them mid-stream, and nothing is polled.
 
 ## License
 

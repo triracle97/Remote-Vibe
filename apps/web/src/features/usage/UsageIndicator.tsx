@@ -2,11 +2,12 @@ import { useEffect, useRef, useState, type JSX } from 'react';
 import {
   formatLimitType,
   formatResetsIn,
+  groupByAccount,
   useUsageStore,
   utilizationTone,
   worstWindow,
+  type AccountWindows,
 } from '../../store/usage';
-import type { RateLimitWindow } from '../../types/protocol';
 
 /**
  * Circular quota ring, modelled on nimbalyst's `ClaudeUsageIndicator`.
@@ -22,6 +23,11 @@ import type { RateLimitWindow } from '../../types/protocol';
  * account reports which window is live and when it resets and nothing more.
  * That still beats an empty toolbar, so it renders as a full ring reading OK —
  * never as a 0%, which would claim a number nobody gave us.
+ *
+ * Windows belong to an *account*, not to the bridge. Running one session on
+ * `~/.claude` and another on `~/.claude1` means two plans with two separate
+ * 5-hour windows; the ring shows whichever is closest to stopping you and says
+ * whose it is, and the popover lists each plan under its own heading.
  */
 
 const RADIUS = 11;
@@ -55,6 +61,7 @@ export function UsageIndicator(): JSX.Element | null {
     };
   }, [open]);
 
+  const groups = groupByAccount(windows);
   const worst = worstWindow(windows);
   // Nothing observed yet — better to show nothing than a confident zero.
   if (worst === null) return null;
@@ -66,15 +73,19 @@ export function UsageIndicator(): JSX.Element | null {
   // than sitting empty — an empty ring is how 0% looks.
   const offset = util === null ? 0 : CIRCUMFERENCE * (1 - Math.min(1, Math.max(0, util)));
   const level = pct === null ? 'below warning threshold' : `${pct}%`;
+  // One account needs no caption — every number on screen is already its own.
+  // Two do: without it the ring is a figure with no owner.
+  const label = worst.account.label;
+  const showAccount = groups.length > 1;
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative flex flex-col items-center">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        aria-label={`Plan usage ${level}`}
+        aria-label={`Plan usage ${level} on ${label}`}
         aria-expanded={open}
-        title={`${formatLimitType(worst.limitType)}: ${level} — ${formatResetsIn(worst.resetsAt)}`}
+        title={`${label}: ${formatLimitType(worst.limitType)} ${level} — ${formatResetsIn(worst.resetsAt)}`}
         data-testid="usage-indicator"
         className="relative w-9 h-9 flex items-center justify-center rounded-md hover:bg-[var(--color-surface-2)] transition-colors"
       >
@@ -110,24 +121,27 @@ export function UsageIndicator(): JSX.Element | null {
           {pct ?? 'OK'}
         </span>
       </button>
+      {showAccount && (
+        <span
+          data-testid="usage-account"
+          className="max-w-[2.6rem] truncate text-[8px] leading-none text-[var(--color-text-dim)]"
+        >
+          {label}
+        </span>
+      )}
 
-      {open && <UsagePopover windows={windows} onClose={() => setOpen(false)} />}
+      {open && <UsagePopover groups={groups} onClose={() => setOpen(false)} />}
     </div>
   );
 }
 
 function UsagePopover({
-  windows,
+  groups,
   onClose,
 }: {
-  windows: Record<string, RateLimitWindow>;
+  groups: AccountWindows[];
   onClose: () => void;
 }): JSX.Element {
-  // Windows the CLI put a number on come first, worst first; the healthy ones
-  // it stayed quiet about trail them.
-  const list = Object.values(windows).sort(
-    (a, b) => (b.utilization ?? -1) - (a.utilization ?? -1),
-  );
   return (
     <div
       role="dialog"
@@ -154,49 +168,66 @@ function UsagePopover({
         </button>
       </div>
 
-      <ul className="flex flex-col gap-2.5">
-        {list.map((w) => {
-          const tone = utilizationTone(w.utilization);
-          const pct = w.utilization === null ? null : Math.round(w.utilization * 100);
-          return (
-            <li key={w.limitType}>
-              <div className="flex items-baseline gap-2 text-xs">
-                <span className="text-[var(--color-text)]">{formatLimitType(w.limitType)}</span>
-                <span
-                  className="ml-auto font-semibold tabular-nums"
-                  style={{ color: `var(${TONE_VAR[tone]})` }}
-                >
-                  {pct === null ? 'OK' : `${pct}%`}
-                </span>
-              </div>
-              {/* No bar without a number — a zero-width one would read as 0%. */}
-              {pct !== null && (
-                <div className="mt-1 h-1.5 rounded-full bg-[var(--color-surface-2)] overflow-hidden">
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      width: `${Math.min(100, pct)}%`,
-                      background: `var(${TONE_VAR[tone]})`,
-                      transition: 'width 0.3s ease',
-                    }}
-                  />
-                </div>
-              )}
-              <div className="mt-0.5 flex gap-2 text-[10px] text-[var(--color-text-dim)]">
-                <span>{formatResetsIn(w.resetsAt)}</span>
-                {w.isUsingOverage && (
-                  <span style={{ color: 'var(--color-warn)' }}>using overage</span>
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+      {groups.map((g) => (
+        <section key={g.account.key} className="mb-2.5 last:mb-0">
+          {/* The heading is what makes two accounts readable as two plans
+              rather than one contradictory set of numbers. */}
+          <div
+            className="mb-1.5 flex items-baseline gap-1.5"
+            title={g.account.configDir ?? undefined}
+          >
+            <span className="text-[11px] font-semibold text-[var(--color-text)]">
+              {g.account.label}
+            </span>
+            <span className="text-[10px] text-[var(--color-text-dim)] truncate">
+              {g.account.agent}
+            </span>
+          </div>
+          <ul className="flex flex-col gap-2.5">
+            {g.windows.map((w) => {
+              const tone = utilizationTone(w.utilization);
+              const pct = w.utilization === null ? null : Math.round(w.utilization * 100);
+              return (
+                <li key={w.limitType}>
+                  <div className="flex items-baseline gap-2 text-xs">
+                    <span className="text-[var(--color-text)]">{formatLimitType(w.limitType)}</span>
+                    <span
+                      className="ml-auto font-semibold tabular-nums"
+                      style={{ color: `var(${TONE_VAR[tone]})` }}
+                    >
+                      {pct === null ? 'OK' : `${pct}%`}
+                    </span>
+                  </div>
+                  {/* No bar without a number — a zero-width one would read as 0%. */}
+                  {pct !== null && (
+                    <div className="mt-1 h-1.5 rounded-full bg-[var(--color-surface-2)] overflow-hidden">
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          width: `${Math.min(100, pct)}%`,
+                          background: `var(${TONE_VAR[tone]})`,
+                          transition: 'width 0.3s ease',
+                        }}
+                      />
+                    </div>
+                  )}
+                  <div className="mt-0.5 flex gap-2 text-[10px] text-[var(--color-text-dim)]">
+                    <span>{formatResetsIn(w.resetsAt)}</span>
+                    {w.isUsingOverage && (
+                      <span style={{ color: 'var(--color-warn)' }}>using overage</span>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ))}
 
       <p className="mt-2.5 text-[10px] text-[var(--color-text-dim)] leading-snug">
-        Reported by the agent CLI during a turn. Updates as you work.{' '}
-        <strong className="text-[var(--color-text-mute)]">OK</strong> means the CLI
-        gave no percentage — it only names one once a window nears its limit.
+        Reported by the agent CLI during a turn, per account. Updates as you work.{' '}
+        <strong className="text-[var(--color-text-mute)]">OK</strong> means the CLI gave no
+        percentage — it only names one once a window nears its limit.
       </p>
     </div>
   );

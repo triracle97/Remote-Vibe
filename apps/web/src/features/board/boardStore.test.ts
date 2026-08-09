@@ -291,21 +291,36 @@ describe('turnRunning tracking', () => {
     });
   });
 
-  it('opens a turn on user input and closes it on result', () => {
+  it('follows the bridge, which is the only thing that knows', () => {
     const store = useBoardStore.getState();
-    store.applyServerMsg({ type: 'user', sessionId: 's1', seq: 2, payload: { text: 'go' } });
+    store.applyServerMsg({ type: 'session_turn', sessionId: 's1', running: true });
     expect(stateOf()).toBe(true);
 
     store.applyServerMsg({ type: 'assistant', sessionId: 's1', seq: 3, payload: { text: 'ok' } });
     expect(stateOf()).toBe(true);
 
-    store.applyServerMsg({ type: 'result', sessionId: 's1', seq: 4, payload: {} });
+    store.applyServerMsg({ type: 'session_turn', sessionId: 's1', running: false });
     expect(stateOf()).toBe(false);
+  });
+
+  it('does not guess a turn from the events it happens to see', () => {
+    // A resumed session replays its whole history down this channel, and a long
+    // turn pushes its own opening `user` out of the window a client can see.
+    // Either way, inferring from traffic gets the card wrong — so it does not.
+    const store = useBoardStore.getState();
+    store.applyServerMsg({ type: 'user', sessionId: 's1', seq: 2, payload: { text: 'go' } });
+    expect(stateOf()).toBe(false);
+
+    store.applyServerMsg({ type: 'session_turn', sessionId: 's1', running: true });
+    store.applyServerMsg({ type: 'result', sessionId: 's1', seq: 4, payload: {} });
+    // Only `session_turn` closes it — a `result` this client saw mid-replay is
+    // not evidence about the turn running now.
+    expect(stateOf()).toBe(true);
   });
 
   it('closes the turn when the session ends', () => {
     const store = useBoardStore.getState();
-    store.applyServerMsg({ type: 'user', sessionId: 's1', seq: 2, payload: { text: 'go' } });
+    store.applyServerMsg({ type: 'session_turn', sessionId: 's1', running: true });
     store.applyServerMsg({
       type: 'system',
       event: 'session_ended',
@@ -317,7 +332,7 @@ describe('turnRunning tracking', () => {
     expect(useBoardStore.getState().cards['s1']!.alive).toBe(false);
   });
 
-  it('leaves mid-turn traffic on a dead-looking card as running, and revives it', () => {
+  it('revives a dead-looking card on traffic', () => {
     useBoardStore.setState({
       cards: { s1: card({ sessionId: 's1', alive: false, status: 'ended' }) },
     });
@@ -326,7 +341,7 @@ describe('turnRunning tracking', () => {
       .applyServerMsg({ type: 'user', sessionId: 's1', seq: 2, payload: { text: 'go' } });
     const c = useBoardStore.getState().cards['s1']!;
     expect(c.alive).toBe(true);
-    expect(c.turnRunning).toBe(true);
+    expect(c.status).toBe('live');
   });
 });
 

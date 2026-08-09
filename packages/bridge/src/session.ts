@@ -25,10 +25,13 @@ import type {
   ServerSessionModelChangedMsg,
   ServerSessionTagsChangedMsg,
   ServerRateLimitsMsg,
+  ServerSessionTurnMsg,
   ServerSessionUsageMsg,
   ServerStreamMsg,
   SessionPhase,
   SessionUsage,
+  AccountRateLimitWindow,
+  RateLimitAccount,
   RateLimitWindow,
   TurnUsage,
 } from './types.js';
@@ -56,6 +59,21 @@ interface InternalSession extends SessionInfo {
   buffer: Array<ServerLifecycleMsg | ServerStreamMsg>;
   nextSeq: number;
   alive: boolean;
+  /**
+   * True between sending a prompt and the `result` that answers it.
+   *
+   * Held here rather than derived from `buffer`, which is a capped ring: a turn
+   * with more than `bufferCap` events loses its opening `user` message, and the
+   * old walk-the-buffer answer then said "not running" while the agent was
+   * still working — which is exactly what the board rendered as "needs input".
+   */
+  turnOpen: boolean;
+  /**
+   * Resolved CLAUDE_CONFIG_DIR, or null when the session inherits the
+   * environment's. Quota is per credential, so this is what says which
+   * account's plan a `rate_limit_event` from this session describes.
+   */
+  claudeConfigDir: string | null;
 }
 
 export interface AgentDriver extends EventEmitter {
@@ -245,8 +263,14 @@ export class SessionManager extends EventEmitter {
    * re-arms the capture and re-titles a session the user is still working in.
    */
   private readonly titledSessions = new Set<string>();
-  /** Latest quota window per limit type. Process-lifetime only. */
-  private readonly rateLimits = new Map<string, RateLimitWindow>();
+  /**
+   * Latest quota window per account *and* limit type. Process-lifetime only.
+   *
+   * Keyed by both because the numbers are per credential: a session on
+   * `~/.claude1` and one on `~/.claude` each have their own 5-hour window, and
+   * keying on the limit type alone let whichever spoke last overwrite the other.
+   */
+  private readonly rateLimits = new Map<string, AccountRateLimitWindow>();
   private readonly validatePathFn: (projectPath: string) => Promise<string>;
   private readonly resumeInFlight = new Map<string, Promise<void>>();
   /**
@@ -476,6 +500,10 @@ export class SessionManager extends EventEmitter {
       buffer: [],
       nextSeq: 1,
       alive: true,
+      turnOpen: false,
+      // This path never pins a profile, so the session runs on whatever
+      // CLAUDE_CONFIG_DIR the bridge itself inherited.
+      claudeConfigDir: null,
       ...(account ? { account: account.name } : {}),
     };
     this.registerInternalSession(internal);
@@ -612,6 +640,8 @@ export class SessionManager extends EventEmitter {
       buffer: [],
       nextSeq: 1,
       alive: true,
+      turnOpen: false,
+      claudeConfigDir: claudeConfigDir ?? null,
       ...(account ? { account: account.name } : {}),
     };
     this.registerInternalSession(internal);
@@ -1176,6 +1206,10 @@ export class SessionManager extends EventEmitter {
       buffer: [],
       nextSeq: 1,
       alive: true,
+      // A resumed session has no turn in flight until it is given one — the
+      // CLI is spawned fresh here, whatever the old process was doing.
+      turnOpen: false,
+      claudeConfigDir: entry.claudeConfigDir,
       ...(entry.account ? { account: entry.account } : {}),
     };
     // Insert into the session map FIRST so appendAndBroadcast (and any
@@ -1274,9 +1308,14 @@ export class SessionManager extends EventEmitter {
     // never lands in the transcript and never leaves a gap in the sequence
     // the client uses to detect dropped events.
     if (e.kind === 'rate_limit') {
-      this.noteRateLimit(e.window);
+      this.noteRateLimit(s, e.window);
       return;
     }
+
+    // Every other event kind only ever happens inside a turn, so any of them
+    // is proof one is open — including on a session whose opening prompt this
+    // process never saw, because it was resumed mid-flight or spawned with one.
+    this.setTurnOpen(s, e.kind !== 'result');
 
     // The agent can drive its own board card with inline directives. Act on
     // them and strip them here, so no client ever sees the marker and the
@@ -1411,23 +1450,85 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Latest quota window per `limitType`, newest wins.
+   * Latest quota window per account and `limitType`, newest wins.
    *
    * Process-lifetime only: these describe *now*, and a stale figure from a
    * previous run would be worse than showing nothing until the next turn.
+   * Grouped by account first so the UI can list them under one heading each.
    */
-  rateLimitWindows(): RateLimitWindow[] {
-    return [...this.rateLimits.values()].sort((a, b) => a.limitType.localeCompare(b.limitType));
+  rateLimitWindows(): AccountRateLimitWindow[] {
+    return [...this.rateLimits.values()].sort(
+      (a, b) =>
+        a.account.label.localeCompare(b.account.label) ||
+        a.limitType.localeCompare(b.limitType),
+    );
   }
 
-  private noteRateLimit(window: RateLimitWindow): void {
-    const prev = this.rateLimits.get(window.limitType);
+  /**
+   * Which credential a session's quota figures belong to.
+   *
+   * For Claude that is the named config profile — the whole point of pointing a
+   * session at `~/.claude1` is that it logs in as somebody else, with its own
+   * plan and its own windows. Codex is keyed by account name for symmetry,
+   * though its CLI does not currently report quota at all.
+   */
+  private rateLimitAccountOf(s: InternalSession): RateLimitAccount {
+    if (s.agent !== 'claude') {
+      const label = s.account ?? 'default';
+      return { key: `codex:${label}`, label, agent: s.agent, configDir: null };
+    }
+    const label = this.claudeProfileLabel(s.claudeConfigDir);
+    return {
+      key: `claude:${label}`,
+      label,
+      agent: 'claude',
+      configDir: s.claudeConfigDir ?? this.claudeConfigs.get('default')?.configDir ?? null,
+    };
+  }
+
+  /**
+   * Name the profile a resolved config dir came from.
+   *
+   * The dir is what gets recorded (the profile list can be edited at runtime),
+   * so this maps back. Null means the session inherited the environment, which
+   * is by definition the `default` profile. A dir no profile claims any more
+   * still reads better as its own tail than as a full path in a 64px rail.
+   */
+  private claudeProfileLabel(configDir: string | null): string {
+    if (configDir === null) return 'default';
+    for (const p of this.claudeConfigs.values()) {
+      if (p.configDir === configDir) return p.name;
+    }
+    return configDir.split('/').filter(Boolean).pop() ?? configDir;
+  }
+
+  private noteRateLimit(s: InternalSession, window: RateLimitWindow): void {
+    const account = this.rateLimitAccountOf(s);
+    const key = `${account.key} ${window.limitType}`;
+    const prev = this.rateLimits.get(key);
     if (prev && prev.observedAt > window.observedAt) return;
-    this.rateLimits.set(window.limitType, window);
+    this.rateLimits.set(key, { ...window, account });
     this.emit('broadcast', {
       type: 'rate_limits',
       windows: this.rateLimitWindows(),
     } satisfies ServerRateLimitsMsg);
+  }
+
+  /**
+   * Record where the turn stands and tell every client when it changes.
+   *
+   * The broadcast is what keeps a board card honest: clients used to infer this
+   * from the event stream, which cannot see a `user` message that scrolled out
+   * of the buffer — nor one sent before the client connected.
+   */
+  private setTurnOpen(s: InternalSession, running: boolean): void {
+    if (s.turnOpen === running) return;
+    s.turnOpen = running;
+    this.emit('broadcast', {
+      type: 'session_turn',
+      sessionId: s.sessionId,
+      running,
+    } satisfies ServerSessionTurnMsg);
   }
 
   /**
@@ -1550,6 +1651,8 @@ export class SessionManager extends EventEmitter {
   private onProcExit(s: InternalSession, code: number | null, reason?: string): void {
     if (!s.alive) return;
     s.alive = false;
+    // A dead session has nothing in flight, however the process went away.
+    this.setTurnOpen(s, false);
     const finalReason = reason ?? 'agent_exit';
     if (finalReason === 'agent_not_installed') {
       this.emit('broadcast', {
@@ -1656,7 +1759,7 @@ export class SessionManager extends EventEmitter {
         // it (e.g. crash between write and attach). Trust the in-memory map.
         status: alive ? 'live' : 'ended',
         alive,
-        turnRunning: alive ? isTurnOpen(live!.buffer) : false,
+        turnRunning: alive && live!.turnOpen,
         phase: entry.phase,
         phasePinned: entry.phasePinned,
         model: entry.model,
@@ -1886,6 +1989,10 @@ export class SessionManager extends EventEmitter {
       seq: s.nextSeq++,
       payload: { text, ...(images && images.length > 0 ? { imageCount: images.length } : {}) },
     });
+    // The turn is open from the moment the prompt goes out, not from the
+    // agent's first token — the gap can be seconds, and a card reading "needs
+    // input" during it is precisely the wrong answer.
+    this.setTurnOpen(s, true);
     this.promptStore?.add({ text, projectPath: s.projectPath, agent: s.agent });
     s.proc.sendUserText(text, images, imagePaths);
     // Fire-and-forget audit copy (Phase 3 §6 ordering). Errors are logged inside
@@ -1936,28 +2043,6 @@ export class SessionManager extends EventEmitter {
  */
 const VERIFY_COMMAND_RE =
   /\b(test|tests|vitest|jest|pytest|typecheck|tsc|lint|eslint|build|playwright|cargo\s+test|go\s+test)\b/;
-
-/**
- * Whether a turn is open on a session's buffer — a `user` message that no
- * `result` has closed yet.
- *
- * Deliberately the same walk as the web client's `isTurnRunning`: the board
- * hydrates from here and then tracks the same events live, and the two must
- * agree or a card would flip state on the first message after a page load.
- * A buffer trimmed past the opening `user` reads as closed, which errs towards
- * "waiting on you" rather than a spinner that never stops.
- */
-export function isTurnOpen(
-  buffer: ReadonlyArray<ServerLifecycleMsg | ServerStreamMsg>,
-): boolean {
-  for (let i = buffer.length - 1; i >= 0; i--) {
-    const e = buffer[i]!;
-    if (e.type === 'result') return false;
-    if (e.type === 'system' && e.event === 'session_ended') return false;
-    if (e.type === 'user') return true;
-  }
-  return false;
-}
 
 function bashCommandOf(input: unknown): string | null {
   if (typeof input !== 'object' || input === null) return null;

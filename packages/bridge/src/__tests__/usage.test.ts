@@ -270,17 +270,29 @@ describe('SessionManager rate limit windows', () => {
   let dir: string;
   let mgr: SessionManager;
   let driver: FakeDriver;
+  let drivers: FakeDriver[];
   let broadcasts: ServerMsg[];
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'mrt-rl-'));
     broadcasts = [];
     driver = new FakeDriver();
+    drivers = [];
     mgr = new SessionManager({
       allowedDirs: [dir],
       bufferCap: 100,
       realpath: async (p) => p,
-      driverFactory: () => driver,
+      // One driver per session, so a test can drive two profiles independently.
+      // The shared `driver` stays the first one for the single-session tests.
+      driverFactory: () => {
+        const d = drivers.length === 0 ? driver : new FakeDriver();
+        drivers.push(d);
+        return d;
+      },
+      claudeConfigs: new Map([
+        ['default', { name: 'default', configDir: '/home/me/.claude', isDefault: true, inheritEnv: true }],
+        ['claude1', { name: 'claude1', configDir: '/home/me/.claude1', isDefault: false, inheritEnv: false }],
+      ]),
     });
     mgr.on('broadcast', (m: ServerMsg) => broadcasts.push(m));
   });
@@ -288,11 +300,20 @@ describe('SessionManager rate limit windows', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  const observe = (limitType: string, utilization: number, observedAt = Date.now()): void => {
-    driver.emit('event', {
+  const observeOn = (
+    d: FakeDriver,
+    limitType: string,
+    utilization: number,
+    observedAt = Date.now(),
+  ): void => {
+    d.emit('event', {
       kind: 'rate_limit',
       window: { limitType, utilization, resetsAt: null, status: null, isUsingOverage: false, observedAt },
     } satisfies AgentEvent);
+  };
+
+  const observe = (limitType: string, utilization: number, observedAt = Date.now()): void => {
+    observeOn(driver, limitType, utilization, observedAt);
   };
 
   it('starts with nothing observed', () => {
@@ -328,7 +349,55 @@ describe('SessionManager rate limit windows', () => {
     const before = broadcasts.filter((m) => 'seq' in m).length;
     observe('seven_day', 0.78);
     // A rate limit must not consume a seq — a gap would look like a dropped
-    // event to the client's replay logic.
+    // event to the client's replay logic. It must not open a turn either: the
+    // CLI volunteers these mid-stream, but also between turns.
     expect(broadcasts.filter((m) => 'seq' in m)).toHaveLength(before);
+    expect(broadcasts.filter((m) => m.type === 'session_turn')).toHaveLength(0);
+  });
+
+  it('names the profile a window belongs to', async () => {
+    await mgr.spawnSession({ agent: 'claude', dirs: [dir], claudeConfig: 'claude1' });
+    observe('five_hour', 0.9);
+    const w = mgr.rateLimitWindows()[0]!;
+    expect(w.account).toEqual({
+      key: 'claude:claude1',
+      label: 'claude1',
+      agent: 'claude',
+      configDir: '/home/me/.claude1',
+    });
+  });
+
+  it('calls a session that inherits the environment the default profile', async () => {
+    await mgr.spawnSession({ agent: 'claude', dirs: [dir] });
+    observe('five_hour', 0.3);
+    expect(mgr.rateLimitWindows()[0]!.account.label).toBe('default');
+  });
+
+  it('keeps one plan per account, not one per limit type', async () => {
+    // The bug: both profiles report a `five_hour` window, and keying on the
+    // limit type alone let the second overwrite the first — so the ring showed
+    // one number belonging to whichever session had spoken most recently.
+    await mgr.spawnSession({ agent: 'claude', dirs: [dir] });
+    await mgr.spawnSession({ agent: 'claude', dirs: [dir], claudeConfig: 'claude1' });
+    observeOn(drivers[0]!, 'five_hour', 0.2, 1000);
+    observeOn(drivers[1]!, 'five_hour', 0.95, 2000);
+
+    const windows = mgr.rateLimitWindows();
+    expect(windows).toHaveLength(2);
+    expect(
+      windows.map((w) => [w.account.label, w.utilization]),
+    ).toEqual([
+      ['claude1', 0.95],
+      ['default', 0.2],
+    ]);
+  });
+
+  it('still lets the same account overwrite its own window', async () => {
+    await mgr.spawnSession({ agent: 'claude', dirs: [dir], claudeConfig: 'claude1' });
+    await mgr.spawnSession({ agent: 'claude', dirs: [dir], claudeConfig: 'claude1' });
+    observeOn(drivers[0]!, 'five_hour', 0.2, 1000);
+    observeOn(drivers[1]!, 'five_hour', 0.4, 2000);
+    expect(mgr.rateLimitWindows()).toHaveLength(1);
+    expect(mgr.rateLimitWindows()[0]!.utilization).toBe(0.4);
   });
 });

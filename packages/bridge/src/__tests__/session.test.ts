@@ -123,9 +123,13 @@ describe('SessionManager', () => {
     procs[0]!.emitEvent({ kind: 'stream_delta', delta: 'hi' });
     procs[0]!.emitEvent({ kind: 'assistant_text', text: 'hello' });
 
-    expect(broadcasts.length).toBe(2);
-    const a = broadcasts[0] as ServerStreamMsg;
-    const b = broadcasts[1] as ServerStreamMsg;
+    // The first event also opens the turn, which is announced out of band —
+    // it carries no content, so it takes no seq and joins no transcript.
+    expect(broadcasts[0]).toEqual({ type: 'session_turn', sessionId: s.sessionId, running: true });
+    const seqd = broadcasts.filter((m) => 'seq' in (m as object));
+    expect(seqd.length).toBe(2);
+    const a = seqd[0] as ServerStreamMsg;
+    const b = seqd[1] as ServerStreamMsg;
     expect(a.sessionId).toBe(s.sessionId);
     expect(a.seq).toBe(2);
     expect(a.type).toBe('stream_delta');

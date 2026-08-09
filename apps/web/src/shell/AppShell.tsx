@@ -47,6 +47,10 @@ export function AppShell(): JSX.Element {
       client.send({ type: 'list_accounts' });
       client.send({ type: 'list_prompts', limit: 200 });
       client.send({ type: 'get_rate_limits' });
+      // Board cards track turn state from broadcasts, and a disconnected client
+      // misses them — so re-fetch the snapshot rather than leave a card frozen
+      // in whatever state it was in when the socket dropped.
+      if (useBoardStore.getState().loaded) useBoardStore.getState().refresh();
       const { sessions } = useSessionsStore.getState();
       for (const id of Object.keys(sessions)) {
         const s = sessions[id];

@@ -262,6 +262,29 @@ export interface RateLimitWindow {
   observedAt: number;
 }
 
+/**
+ * Whose plan a window describes.
+ *
+ * Quota is per credential, and the bridge routinely drives more than one: a
+ * session on `~/.claude1` has its own 5-hour window, entirely separate from the
+ * default profile's. Windows are therefore keyed by account as well as type,
+ * and every figure the UI shows says which account it came from.
+ */
+export interface RateLimitAccount {
+  /** Stable identity, e.g. `claude:default`. */
+  key: string;
+  /** Claude profile / Codex account name, as shown in the UI. */
+  label: string;
+  agent: AgentKind;
+  /** Resolved CLAUDE_CONFIG_DIR, for the tooltip. Null for Codex. */
+  configDir: string | null;
+}
+
+/** A quota window with the credential it belongs to attached. */
+export interface AccountRateLimitWindow extends RateLimitWindow {
+  account: RateLimitAccount;
+}
+
 export interface ServerSessionUsageMsg {
   type: 'session_usage';
   sessionId: string;
@@ -270,8 +293,23 @@ export interface ServerSessionUsageMsg {
 
 export interface ServerRateLimitsMsg {
   type: 'rate_limits';
-  windows: RateLimitWindow[];
+  windows: AccountRateLimitWindow[];
   correlationId?: string;
+}
+
+/**
+ * Whether a session is mid-turn, straight from the bridge's own bookkeeping.
+ *
+ * The board used to work this out by watching for a `user` message with no
+ * `result` after it, which is wrong whenever the opening message is not in the
+ * events this client can see — a turn longer than the bridge's ring buffer, or
+ * a page loaded while the agent was already working. The card then read "needs
+ * input" while the agent was still going.
+ */
+export interface ServerSessionTurnMsg {
+  type: 'session_turn';
+  sessionId: string;
+  running: boolean;
 }
 
 export interface ClientGetRateLimitsMsg {
@@ -518,7 +556,8 @@ export type ServerMsg =
   | ServerJobDeletedMsg
   | ServerJobStartedMsg
   | ServerSessionUsageMsg
-  | ServerRateLimitsMsg;
+  | ServerRateLimitsMsg
+  | ServerSessionTurnMsg;
 
 // Phase 5 — history viewer + session resume
 

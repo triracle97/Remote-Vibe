@@ -149,23 +149,23 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         }
         return;
       }
-      case 'user': {
-        // Opens a turn: the agent is working until a `result` closes it. Same
-        // rule the bridge seeds `turnRunning` with, so the card does not flip
-        // on the first message after a page load.
-        patch(set, get, m.sessionId, (c) => touch(c, true));
+      case 'session_turn': {
+        // The only thing that moves a card between "still working" and "waiting
+        // on you". Inferring it from the event stream cannot be made correct:
+        // this client sees a window of events, and the `user` message that
+        // opened the turn may be outside it — trimmed from the bridge's ring
+        // buffer, or sent before this page loaded. It is also what the events
+        // of a resumed session's replayed history would otherwise fake.
+        patch(set, get, m.sessionId, (c) => ({ ...c, turnRunning: m.running }));
         return;
       }
-      case 'result': {
-        // Closes the turn — the agent is done and the human is up.
-        patch(set, get, m.sessionId, (c) => touch(c, false));
-        return;
-      }
+      case 'user':
+      case 'result':
       case 'assistant':
       case 'stream_delta':
       case 'tool_result': {
         // Any traffic is activity. Keeps board ordering fresh without a poll.
-        patch(set, get, m.sessionId, (c) => touch(c, c.turnRunning));
+        patch(set, get, m.sessionId, (c) => touch(c));
         return;
       }
       case 'error': {
@@ -299,15 +299,16 @@ type SetFn = (partial: Partial<BoardState>) => void;
 type GetFn = () => BoardState;
 
 /**
- * Stamp activity on a card and set where the turn stands.
+ * Stamp activity on a card.
  *
  * Traffic on a card the store thinks is dead revives it: the registry snapshot
  * can be older than the session it describes (spawned by an agent, resumed in
- * another tab), and an event is proof of a live driver.
+ * another tab), and an event is proof of a live driver. Whether a *turn* is
+ * open is deliberately not touched here — `session_turn` owns that.
  */
-function touch(c: BoardSession, turnRunning: boolean | undefined): BoardSession {
+function touch(c: BoardSession): BoardSession {
   const base = c.alive ? c : { ...c, alive: true, status: 'live' as const };
-  return { ...base, lastActiveAt: Date.now(), turnRunning: turnRunning === true };
+  return { ...base, lastActiveAt: Date.now() };
 }
 
 /** Apply `fn` to one card, no-op when the card is unknown. */

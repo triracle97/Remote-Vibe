@@ -5,12 +5,19 @@ import { SessionUsageBadge } from './SessionUsageBadge';
 import {
   formatLimitType,
   formatResetsIn,
+  groupByAccount,
   totalTokens,
   useUsageStore,
   utilizationTone,
+  windowKey,
   worstWindow,
 } from '../../store/usage';
-import type { ClientMsg, RateLimitWindow, SessionUsage } from '../../types/protocol';
+import type {
+  AccountRateLimitWindow,
+  ClientMsg,
+  RateLimitAccount,
+  SessionUsage,
+} from '../../types/protocol';
 
 afterEach(cleanup);
 
@@ -19,7 +26,11 @@ vi.mock('../../services/bridge-client-singleton', () => ({
   getBridgeClient: () => ({ send: (m: ClientMsg) => sent.push(m) }),
 }));
 
-function win(over: Partial<RateLimitWindow> = {}): RateLimitWindow {
+function acct(label = 'default'): RateLimitAccount {
+  return { key: `claude:${label}`, label, agent: 'claude', configDir: `/home/me/.${label}` };
+}
+
+function win(over: Partial<AccountRateLimitWindow> = {}): AccountRateLimitWindow {
   return {
     limitType: 'seven_day',
     utilization: 0.78,
@@ -27,8 +38,14 @@ function win(over: Partial<RateLimitWindow> = {}): RateLimitWindow {
     status: 'allowed_warning',
     isUsingOverage: false,
     observedAt: 1000,
+    account: acct(),
     ...over,
   };
+}
+
+/** The store's own keying, so a test never invents a shape the reducer won't. */
+function windowMap(...ws: AccountRateLimitWindow[]): Record<string, AccountRateLimitWindow> {
+  return Object.fromEntries(ws.map((w) => [windowKey(w), w]));
 }
 
 function usage(over: Partial<SessionUsage> = {}): SessionUsage {
@@ -56,10 +73,9 @@ describe('usage selectors', () => {
   });
 
   it('picks the window closest to its limit', () => {
-    const worst = worstWindow({
-      five_hour: win({ limitType: 'five_hour', utilization: 0.2 }),
-      seven_day: win({ utilization: 0.9 }),
-    });
+    const worst = worstWindow(
+      windowMap(win({ limitType: 'five_hour', utilization: 0.2 }), win({ utilization: 0.9 })),
+    );
     expect(worst?.limitType).toBe('seven_day');
   });
 
@@ -70,18 +86,47 @@ describe('usage selectors', () => {
   it('prefers a window with a real number over one that reported none', () => {
     // A healthy window carries no utilization at all, so it must not outrank
     // — nor be outranked into invisibility by — one that does.
-    const worst = worstWindow({
-      five_hour: win({ limitType: 'five_hour', utilization: null, status: 'allowed' }),
-      seven_day: win({ utilization: 0.4 }),
-    });
+    const worst = worstWindow(
+      windowMap(
+        win({ limitType: 'five_hour', utilization: null, status: 'allowed' }),
+        win({ utilization: 0.4 }),
+      ),
+    );
     expect(worst?.limitType).toBe('seven_day');
   });
 
   it('still picks a window when none of them reported a number', () => {
-    const worst = worstWindow({
-      five_hour: win({ limitType: 'five_hour', utilization: null, status: 'allowed' }),
-    });
+    const worst = worstWindow(
+      windowMap(win({ limitType: 'five_hour', utilization: null, status: 'allowed' })),
+    );
     expect(worst?.limitType).toBe('five_hour');
+  });
+
+  it('keeps each account on its own plan', () => {
+    // The bug this exists for: two profiles both report a `five_hour` window,
+    // and keying on the limit type alone made the second overwrite the first.
+    const windows = windowMap(
+      win({ limitType: 'five_hour', utilization: 0.2, account: acct('default') }),
+      win({ limitType: 'five_hour', utilization: 0.9, account: acct('claude1') }),
+    );
+    expect(Object.keys(windows)).toHaveLength(2);
+
+    const groups = groupByAccount(windows);
+    expect(groups.map((g) => g.account.label)).toEqual(['claude1', 'default']);
+    expect(groups[0]!.worst.utilization).toBe(0.9);
+    expect(groups[1]!.worst.utilization).toBe(0.2);
+    // The ring reports the account about to stop you, not an average.
+    expect(worstWindow(windows)?.account.label).toBe('claude1');
+  });
+
+  it('sorts an account with no figure below one that has one', () => {
+    const groups = groupByAccount(
+      windowMap(
+        win({ utilization: null, status: 'allowed', account: acct('claude1') }),
+        win({ utilization: 0.3, account: acct('default') }),
+      ),
+    );
+    expect(groups.map((g) => g.account.label)).toEqual(['default', 'claude1']);
   });
 
   it('bands utilization', () => {
@@ -120,9 +165,11 @@ describe('usage store', () => {
   });
 
   it('replaces the whole window set on each update', () => {
-    useUsageStore.setState({ windows: { old_window: win({ limitType: 'old_window' }) } });
+    useUsageStore.setState({ windows: windowMap(win({ limitType: 'old_window' })) });
     useUsageStore.getState().applyServerMsg({ type: 'rate_limits', windows: [win()] });
-    expect(Object.keys(useUsageStore.getState().windows)).toEqual(['seven_day']);
+    expect(Object.keys(useUsageStore.getState().windows)).toEqual([
+      windowKey(win()),
+    ]);
   });
 
   it('seeds totals from the board snapshot', () => {
@@ -148,24 +195,20 @@ describe('UsageIndicator', () => {
 
   it('shows the worst window as a percentage', () => {
     useUsageStore.setState({
-      windows: {
-        five_hour: win({ limitType: 'five_hour', utilization: 0.1 }),
-        seven_day: win({ utilization: 0.78 }),
-      },
+      windows: windowMap(win({ limitType: 'five_hour', utilization: 0.1 }), win({ utilization: 0.78 })),
     });
     render(<UsageIndicator />);
     expect(screen.getByTestId('usage-indicator').getAttribute('aria-label')).toBe(
-      'Plan usage 78%',
+      'Plan usage 78% on default',
     );
     expect(screen.getByText('78')).toBeTruthy();
+    // One account needs no caption — the number can only be its own.
+    expect(screen.queryByTestId('usage-account')).toBeNull();
   });
 
   it('opens a popover listing every window', () => {
     useUsageStore.setState({
-      windows: {
-        five_hour: win({ limitType: 'five_hour', utilization: 0.1 }),
-        seven_day: win({ utilization: 0.78 }),
-      },
+      windows: windowMap(win({ limitType: 'five_hour', utilization: 0.1 }), win({ utilization: 0.78 })),
     });
     render(<UsageIndicator />);
     fireEvent.click(screen.getByTestId('usage-indicator'));
@@ -175,22 +218,44 @@ describe('UsageIndicator', () => {
     expect(popover.textContent).toContain('78%');
   });
 
+  it('names the account each figure belongs to when more than one is in play', () => {
+    useUsageStore.setState({
+      windows: windowMap(
+        win({ limitType: 'five_hour', utilization: 0.12, account: acct('default') }),
+        win({ limitType: 'five_hour', utilization: 0.91, account: acct('claude1') }),
+      ),
+    });
+    render(<UsageIndicator />);
+    // The ring is the account closest to its limit, and says so.
+    expect(screen.getByTestId('usage-account').textContent).toBe('claude1');
+    expect(screen.getByTestId('usage-indicator').getAttribute('aria-label')).toBe(
+      'Plan usage 91% on claude1',
+    );
+
+    fireEvent.click(screen.getByTestId('usage-indicator'));
+    const popover = screen.getByTestId('usage-popover');
+    expect(popover.textContent).toContain('claude1');
+    expect(popover.textContent).toContain('default');
+    expect(popover.textContent).toContain('91%');
+    expect(popover.textContent).toContain('12%');
+  });
+
   it('shows a healthy window that reported no number', () => {
     // The common case on an account well inside its limits: the ring has no
     // percentage to draw, but hiding it entirely reads as "usage unavailable".
     useUsageStore.setState({
-      windows: {
-        five_hour: win({
+      windows: windowMap(
+        win({
           limitType: 'five_hour',
           utilization: null,
           status: 'allowed',
           resetsAt: null,
         }),
-      },
+      ),
     });
     render(<UsageIndicator />);
     expect(screen.getByTestId('usage-indicator').getAttribute('aria-label')).toBe(
-      'Plan usage below warning threshold',
+      'Plan usage below warning threshold on default',
     );
     fireEvent.click(screen.getByTestId('usage-indicator'));
     const popover = screen.getByTestId('usage-popover');
@@ -200,7 +265,7 @@ describe('UsageIndicator', () => {
   });
 
   it('flags overage', () => {
-    useUsageStore.setState({ windows: { seven_day: win({ isUsingOverage: true }) } });
+    useUsageStore.setState({ windows: windowMap(win({ isUsingOverage: true })) });
     render(<UsageIndicator />);
     fireEvent.click(screen.getByTestId('usage-indicator'));
     expect(screen.getByText('using overage')).toBeTruthy();

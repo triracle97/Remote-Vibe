@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import { getBridgeClient } from '../services/bridge-client-singleton';
 import {
   EMPTY_SESSION_USAGE,
-  type RateLimitWindow,
+  type AccountRateLimitWindow,
+  type RateLimitAccount,
   type ServerMsg,
   type SessionUsage,
 } from '../types/protocol';
@@ -18,10 +19,21 @@ import {
 interface UsageState {
   /** sessionId → running totals. */
   bySession: Record<string, SessionUsage>;
-  /** limitType → latest window. */
-  windows: Record<string, RateLimitWindow>;
+  /**
+   * `windowKey(w)` → latest window.
+   *
+   * Keyed by account *and* limit type: two Claude profiles are two plans with
+   * two separate 5-hour windows, and keying on the type alone made whichever
+   * account spoke last overwrite the other's figure.
+   */
+  windows: Record<string, AccountRateLimitWindow>;
   applyServerMsg: (m: ServerMsg) => void;
   refreshRateLimits: () => void;
+}
+
+/** Identity of one window: which plan, which limit. */
+export function windowKey(w: AccountRateLimitWindow): string {
+  return `${w.account.key} ${w.limitType}`;
 }
 
 export const useUsageStore = create<UsageState>((set, get) => ({
@@ -34,8 +46,8 @@ export const useUsageStore = create<UsageState>((set, get) => ({
         set({ bySession: { ...get().bySession, [m.sessionId]: m.usage } });
         return;
       case 'rate_limits': {
-        const windows: Record<string, RateLimitWindow> = {};
-        for (const w of m.windows) windows[w.limitType] = w;
+        const windows: Record<string, AccountRateLimitWindow> = {};
+        for (const w of m.windows) windows[windowKey(w)] = w;
         set({ windows });
         return;
       }
@@ -96,15 +108,51 @@ export function contextTokens(u: SessionUsage): number {
  * window is healthy the indicator shows one of them rather than vanishing.
  */
 export function worstWindow(
-  windows: Record<string, RateLimitWindow>,
-): RateLimitWindow | null {
-  const all = Object.values(windows);
+  windows: Record<string, AccountRateLimitWindow> | AccountRateLimitWindow[],
+): AccountRateLimitWindow | null {
+  const all = Array.isArray(windows) ? windows : Object.values(windows);
   if (all.length === 0) return null;
   return all.reduce((a, b) => {
     if (b.utilization === null) return a;
     if (a.utilization === null) return b;
     return b.utilization > a.utilization ? b : a;
   });
+}
+
+export interface AccountWindows {
+  account: RateLimitAccount;
+  /** That account's windows, worst first. */
+  windows: AccountRateLimitWindow[];
+  /** The one that will stop this account first. Never null — groups are non-empty. */
+  worst: AccountRateLimitWindow;
+}
+
+/**
+ * One group per plan, so the popover can say *whose* 78% it is.
+ *
+ * Accounts sort by how close they are to a limit, then by name — the account
+ * about to run out is the one worth reading first. Within a group, windows the
+ * CLI put a number on come before the healthy ones it stayed quiet about.
+ */
+export function groupByAccount(
+  windows: Record<string, AccountRateLimitWindow>,
+): AccountWindows[] {
+  const groups = new Map<string, AccountRateLimitWindow[]>();
+  for (const w of Object.values(windows)) {
+    const list = groups.get(w.account.key);
+    if (list) list.push(w);
+    else groups.set(w.account.key, [w]);
+  }
+  return [...groups.values()]
+    .map((list) => {
+      const sorted = [...list].sort((a, b) => (b.utilization ?? -1) - (a.utilization ?? -1));
+      return { account: sorted[0]!.account, windows: sorted, worst: worstWindow(sorted)! };
+    })
+    .sort(
+      (a, b) =>
+        (b.worst.utilization ?? -1) - (a.worst.utilization ?? -1) ||
+        a.account.label.localeCompare(b.account.label),
+    );
 }
 
 /**

@@ -267,6 +267,8 @@ class FakeDriver extends EventEmitter implements AgentDriver {
   }
 }
 
+const BUFFER_CAP = 100;
+
 describe('SessionManager board surface', () => {
   let dir: string;
   let registry: SessionRegistry;
@@ -281,7 +283,7 @@ describe('SessionManager board surface', () => {
     drivers = [];
     mgr = new SessionManager({
       allowedDirs: [dir],
-      bufferCap: 100,
+      bufferCap: BUFFER_CAP,
       registry,
       realpath: async (p) => p,
       driverFactory: () => {
@@ -353,6 +355,50 @@ describe('SessionManager board surface', () => {
 
     drivers[0]!.emit('event', { kind: 'result', durationMs: 10 } satisfies AgentEvent);
     expect(cardNow()).toBe(false);
+  });
+
+  it('keeps reporting turnRunning after the opening prompt leaves the buffer', async () => {
+    // The bug: `turnRunning` was a walk back through the session's ring buffer
+    // for an unanswered `user` message. A turn with more events than the cap
+    // loses that message, and the card then read "needs input" — the one thing
+    // it must never say about an agent that is still working.
+    const info = await mgr.spawnSession({ agent: 'claude', dirs: [dir] });
+    mgr.sendInput(info.sessionId, 'do the thing');
+    for (let i = 0; i < BUFFER_CAP * 2; i++) {
+      drivers[0]!.emit('event', { kind: 'stream_delta', delta: '.' } satisfies AgentEvent);
+    }
+    const card = mgr.listBoardSessions().find((s) => s.sessionId === info.sessionId)!;
+    expect(card.turnRunning).toBe(true);
+  });
+
+  it('announces every turn flip so a client need not infer one', async () => {
+    const info = await mgr.spawnSession({ agent: 'claude', dirs: [dir] });
+    const turns = (): unknown[] => broadcasts.filter((m) => m.type === 'session_turn');
+
+    mgr.sendInput(info.sessionId, 'go');
+    expect(turns()).toEqual([{ type: 'session_turn', sessionId: info.sessionId, running: true }]);
+
+    // Mid-turn traffic is not a flip, so it says nothing.
+    drivers[0]!.emit('event', { kind: 'assistant_text', text: 'working' } satisfies AgentEvent);
+    expect(turns()).toHaveLength(1);
+
+    drivers[0]!.emit('event', { kind: 'result', durationMs: 10 } satisfies AgentEvent);
+    expect(turns()).toHaveLength(2);
+    expect(turns()[1]).toEqual({
+      type: 'session_turn',
+      sessionId: info.sessionId,
+      running: false,
+    });
+  });
+
+  it('opens a turn on agent output this process never sent a prompt for', async () => {
+    // A session resumed mid-flight, or spawned with its prompt on the command
+    // line, produces output without `sendInput` ever being called here.
+    const info = await mgr.spawnSession({ agent: 'claude', dirs: [dir] });
+    drivers[0]!.emit('event', { kind: 'tool_use', toolUseId: 't1', toolName: 'Read', input: {} } satisfies AgentEvent);
+    expect(
+      mgr.listBoardSessions().find((s) => s.sessionId === info.sessionId)!.turnRunning,
+    ).toBe(true);
   });
 
   it('never reports turnRunning for a session with no driver', async () => {

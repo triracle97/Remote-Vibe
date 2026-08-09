@@ -279,6 +279,30 @@ export interface RateLimitWindow {
   observedAt: number;
 }
 
+/**
+ * Whose quota a window describes.
+ *
+ * Quota is per credential, and one bridge routinely drives several: a session
+ * on `~/.claude` and one on `~/.claude1` are two different plans with two
+ * different 5-hour windows. Keying the windows by `limitType` alone let the
+ * newest turn overwrite the other account's figure, so the ring showed one
+ * number that belonged to whichever session happened to speak last.
+ */
+export interface RateLimitAccount {
+  /** Stable identity, e.g. `claude:default` — what the windows are keyed by. */
+  key: string;
+  /** What to call it in the UI: the Claude profile / Codex account name. */
+  label: string;
+  agent: AgentKind;
+  /** Resolved CLAUDE_CONFIG_DIR, for the tooltip. Null for Codex. */
+  configDir: string | null;
+}
+
+/** A quota window with the credential it belongs to attached. */
+export interface AccountRateLimitWindow extends RateLimitWindow {
+  account: RateLimitAccount;
+}
+
 export type AgentEvent =
   | { kind: 'assistant_text'; text: string }
   | { kind: 'stream_delta'; delta: string }
@@ -509,15 +533,35 @@ export interface ServerSessionUsageMsg {
 }
 
 /**
- * Current quota windows, keyed by `limitType`.
+ * Current quota windows, one per (account, `limitType`) pair.
  *
  * Pushed whenever a session observes a `rate_limit_event`, and sent on request
- * so a client that connects between turns still has something to show.
+ * so a client that connects between turns still has something to show. Every
+ * window names its account, because a bridge driving two Claude profiles is
+ * reporting on two separate plans.
  */
 export interface ServerRateLimitsMsg {
   type: 'rate_limits';
-  windows: RateLimitWindow[];
+  windows: AccountRateLimitWindow[];
   correlationId?: string;
+}
+
+/**
+ * Whether a session is mid-turn.
+ *
+ * Broadcast on every flip, from the session's own bookkeeping — the client used
+ * to infer this by walking the event stream, which quietly went wrong whenever
+ * the opening `user` message was no longer in the window it could see (a long
+ * turn trimmed past the ring buffer, or a page loaded mid-turn). A card then
+ * read "needs input" while the agent was still working.
+ *
+ * Deliberately outside the seq'd lifecycle stream: it carries no conversation
+ * content, so it must not consume a sequence number or land in the transcript.
+ */
+export interface ServerSessionTurnMsg {
+  type: 'session_turn';
+  sessionId: string;
+  running: boolean;
 }
 
 export interface ClientGetRateLimitsMsg {
@@ -783,7 +827,8 @@ export type ServerMsg =
   | ServerJobDeletedMsg
   | ServerJobStartedMsg
   | ServerSessionUsageMsg
-  | ServerRateLimitsMsg;
+  | ServerRateLimitsMsg
+  | ServerSessionTurnMsg;
 
 // Phase 5 — history viewer + session resume
 
