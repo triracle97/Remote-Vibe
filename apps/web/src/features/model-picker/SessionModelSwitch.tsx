@@ -15,6 +15,11 @@ import type { AgentKind, EffortLevel } from '../../types/protocol';
  *
  * The card in the board store is the source of truth for what the session is
  * currently on, so this stays right even when the change came from elsewhere.
+ *
+ * Ultracode is not offered here. It rides in a `--settings` file the CLI reads
+ * once at launch, so there is no way to switch a running session into it — the
+ * bridge rejects the attempt rather than let a card advertise a mode the
+ * process never got. A session already on it still shows it.
  */
 export function SessionModelSwitch({
   sessionId,
@@ -41,6 +46,7 @@ export function SessionModelSwitch({
   return (
     <ModelEffortPicker
       compact
+      allowUltracode={false}
       agent={agent}
       model={model}
       effort={effort}

@@ -266,3 +266,70 @@ describe('file diff extraction', () => {
     for (const m of out) expect((m as ToolCallMessage).fileDiffs).toBeUndefined();
   });
 });
+
+/** Same event, stamped as coming from a subagent rather than the main agent. */
+function from(parentToolUseId: string, e: SessionEvent): SessionEvent {
+  return { ...e, parentToolUseId } as SessionEvent;
+}
+
+describe('subagent nesting', () => {
+  it('hangs a subagent transcript off the call that started it', () => {
+    reset();
+    const out = projectEvents([
+      assistantText('delegating'),
+      toolUse('task1', 'Task', { description: 'review the diff' }),
+      from('task1', assistantText('reading the diff')),
+      from('task1', toolUse('sub1', 'Read', { file_path: '/a.ts' })),
+      from('task1', toolResult('sub1', 'contents')),
+      toolResult('task1', 'looks fine'),
+    ]);
+
+    // The parent transcript is unchanged by the delegation: prose, one call.
+    expect(kinds(out)).toEqual(['text', 'tool_call']);
+    const call = out[1] as ToolCallMessage;
+    expect(call.status).toBe('ok');
+    expect(kinds(call.subagent!)).toEqual(['text', 'tool_call']);
+    // The subagent's own call paired with its own result, inside its own scope.
+    expect((call.subagent![1] as ToolCallMessage).status).toBe('ok');
+  });
+
+  it('does not let a subagent close the call it is running under', () => {
+    reset();
+    const out = projectEvents([
+      toolUse('task1', 'Task', {}),
+      // A subagent's `Read` result carries the same shape as anything else on
+      // this stream; only the origin says it belongs to a different scope.
+      from('task1', toolResult('task1', 'not the parent answer')),
+    ]);
+    expect((out[0] as ToolCallMessage).status).toBe('running');
+  });
+
+  it('shows output whose parent call is out of view rather than dropping it', () => {
+    // A windowed transcript can start after the `Task` call. Silently losing
+    // the agent's work would be the exact failure nesting exists to fix.
+    reset();
+    const out = projectEvents([from('gone', assistantText('still working'))]);
+    expect(kinds(out)).toEqual(['tool_call']);
+    const call = out[0] as ToolCallMessage;
+    expect(call.toolName).toBe('(subagent)');
+    expect(kinds(call.subagent!)).toEqual(['text']);
+  });
+
+  it('keeps two subagents apart', () => {
+    reset();
+    const out = projectEvents([
+      toolUse('task1', 'Task', {}),
+      toolUse('task2', 'Task', {}),
+      from('task1', assistantText('agent one')),
+      from('task2', assistantText('agent two')),
+      from('task1', assistantText('one again')),
+    ]);
+    const a = out[0] as ToolCallMessage;
+    const b = out[1] as ToolCallMessage;
+    // Interleaved on the wire, contiguous per agent — so agent one's two
+    // messages merge with each other and not with agent two's.
+    expect(a.subagent).toHaveLength(1);
+    expect((a.subagent![0] as { text: string }).text).toBe('agent one\n\none again');
+    expect((b.subagent![0] as { text: string }).text).toBe('agent two');
+  });
+});

@@ -1,18 +1,56 @@
 export type AgentKind = 'claude' | 'codex';
 
 /**
- * Reasoning effort. Mirror of `packages/bridge/src/models.ts`; the values are
- * exactly what `claude --effort` documents.
+ * Reasoning effort. Mirror of `packages/bridge/src/models.ts`.
+ *
+ * The first five are exactly what `claude --effort` documents. `ultracode` is
+ * not one of them — it is a mode (xhigh plus standing multi-agent
+ * orchestration) that Claude Code's own `/config` offers in this same row, and
+ * this list is that row. The bridge resolves it into a flag and a settings
+ * file; nothing here ever reaches `--effort` as written.
  */
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 
-export const EFFORT_LEVELS: ReadonlyArray<{ value: EffortLevel; label: string }> = [
+export const EFFORT_LEVELS: ReadonlyArray<{
+  value: EffortLevel;
+  label: string;
+  /** Claude only, and only on a model that can reach xhigh. */
+  claudeOnly?: boolean;
+}> = [
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
   { value: 'xhigh', label: 'xHigh' },
   { value: 'max', label: 'Max' },
+  { value: 'ultracode', label: 'Ultracode', claudeOnly: true },
 ] as const;
+
+/**
+ * Advisory ceiling on the agent fleet a dynamic workflow may write, in the
+ * CLI's own terms: small aims for fewer than 5 agents, medium (its default)
+ * fewer than 15, large fewer than 50, unrestricted sends no guideline.
+ */
+export type WorkflowSize = 'unrestricted' | 'small' | 'medium' | 'large';
+
+export const WORKFLOW_SIZES: ReadonlyArray<{ value: WorkflowSize; label: string }> = [
+  { value: 'small', label: 'Small · <5 agents' },
+  { value: 'medium', label: 'Medium · <15 agents' },
+  { value: 'large', label: 'Large · <50 agents' },
+  { value: 'unrestricted', label: 'Unrestricted' },
+] as const;
+
+/**
+ * Whether a model can run ultracode.
+ *
+ * The CLI names Fable 5, Opus 4.7+ and Sonnet 5 as xhigh-capable; of the
+ * aliases offered here only Haiku is out, and an alias always resolves to the
+ * newest model on its line. Null means the CLI's own default, which is on a
+ * capable line — and if that ever stops being true the CLI says so itself.
+ */
+export function supportsUltracode(model: string | null | undefined): boolean {
+  if (!model) return true;
+  return !/haiku/i.test(model);
+}
 
 /**
  * Claude offers aliases only: an alias always resolves to the latest model on
@@ -77,6 +115,12 @@ export interface ClientStartMsg {
   claudeConfig?: string;
   model?: string;
   effort?: EffortLevel;
+  /**
+   * Workflow settings for a Claude session. Only reach the CLI when something
+   * turns workflows on — `effort: 'ultracode'`, or one of these being set.
+   */
+  workflowSize?: WorkflowSize;
+  workflowKeywordTrigger?: boolean;
   /** Phase 1-5: single working dir. Still supported for backward compat. */
   projectPath?: string;
   /** Phase 6: multiple working dirs (first = primary cwd). If both `dirs` and `projectPath` present, `dirs` wins. */
@@ -369,6 +413,15 @@ export interface ServerStreamMsg {
   sessionId: string;
   seq: number;
   payload: unknown;
+  /**
+   * Present when a subagent produced this, naming the tool call that started
+   * it — a `Task`, or a `Workflow` whose script spawned it.
+   *
+   * Subagent output shares this channel with the main agent's, so without the
+   * field a transcript would read as one agent abruptly narrating five
+   * different jobs. The transcript nests these under the call instead.
+   */
+  parentToolUseId?: string;
 }
 
 export interface ServerSessionListMsg {
@@ -801,6 +854,9 @@ export interface BoardSession {
   /** Resolved model/effort, or null meaning the CLI's own default. */
   model: string | null;
   effort: EffortLevel | null;
+  /** Resolved workflow settings, or null meaning the CLI's own default. */
+  workflowSize?: WorkflowSize | null;
+  workflowKeywordTrigger?: boolean | null;
   /** The session that spawned this one via `spawn_session`, else null. */
   parentSessionId?: string | null;
   /** Parent's display name, resolved by the bridge. */

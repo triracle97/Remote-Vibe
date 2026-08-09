@@ -49,15 +49,21 @@ function applySupersessionWalk(events: SessionEvent[]): SessionEvent[] {
   // `superseded: true`. Already-flagged events are not re-allocated.
   // Used by BOTH the live `assistant` append path and the `history` bulk-merge
   // (replay) path so reload-replay reaches the same superseded set as live.
+  //
+  // The walk stops at anything from a different speaker. Subagent output rides
+  // the same stream, so without that check a subagent's completed message
+  // would retire the main agent's still-streaming deltas — and the prose the
+  // user was watching would vanish mid-sentence.
   let out: SessionEvent[] | null = null;
   for (let i = 0; i < events.length; i++) {
     const e = events[i]!;
     if (e.type !== 'assistant') continue;
     const text = (e.payload as { text?: unknown }).text;
     if (typeof text !== 'string' || text.length === 0) continue;
+    const speaker = e.parentToolUseId;
     for (let j = i - 1; j >= 0; j--) {
       const prev = (out ?? events)[j]!;
-      if (prev.type !== 'stream_delta') break;
+      if (prev.type !== 'stream_delta' || prev.parentToolUseId !== speaker) break;
       if (prev.superseded) continue;
       if (out === null) out = events.slice();
       out[j] = { ...prev, superseded: true };

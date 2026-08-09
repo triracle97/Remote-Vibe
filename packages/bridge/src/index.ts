@@ -15,6 +15,7 @@ import { loadEnvFile } from './env-file.js';
 import { resolveTailscaleIPv4 } from './tailscale.js';
 import { createHttpHandler } from './http-server.js';
 import { McpConfigWriter } from './mcp-config.js';
+import { ClaudeSettingsWriter } from './claude-settings.js';
 import { ClaudeConfigStore } from './claude-config-store.js';
 import { handleMcpRequest, type McpDeps } from './mcp-server.js';
 import { attachWebSocket } from './websocket.js';
@@ -250,6 +251,7 @@ async function main(): Promise<void> {
     port: cfg.port,
     token: cfg.token,
   });
+  const claudeSettingsWriter = new ClaudeSettingsWriter(cfg.dataDir);
 
   const sessionManager = new SessionManager({
     allowedDirs: cfg.allowedDirs,
@@ -261,6 +263,8 @@ async function main(): Promise<void> {
     claudeConfigs,
     defaultModel: cfg.defaultModel,
     defaultEffort: cfg.defaultEffort,
+    defaultWorkflowSize: cfg.defaultWorkflowSize,
+    defaultWorkflowKeywordTrigger: cfg.defaultWorkflowKeywordTrigger,
     imageStore,
     registry,
     notifier,
@@ -270,6 +274,8 @@ async function main(): Promise<void> {
       (await headroomProxy.ensure()) ? headroomProxy.spawnConfig() : null,
     titler,
     writeMcpConfig: (webSessionId) => mcpConfigWriter.write(webSessionId),
+    writeClaudeSettings: (webSessionId, settings) =>
+      claudeSettingsWriter.write(webSessionId, settings),
   });
 
   // Backs the `spawn_session` MCP tool. Reads the registry directly rather than

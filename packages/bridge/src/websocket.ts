@@ -243,6 +243,10 @@ async function handleMessage(
           ...(msg.claudeConfig ? { claudeConfig: msg.claudeConfig } : {}),
           ...(msg.model ? { model: msg.model } : {}),
           ...(msg.effort ? { effort: msg.effort } : {}),
+          ...(msg.workflowSize ? { workflowSize: msg.workflowSize } : {}),
+          ...(msg.workflowKeywordTrigger !== undefined
+            ? { workflowKeywordTrigger: msg.workflowKeywordTrigger }
+            : {}),
           ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
         });
         return;

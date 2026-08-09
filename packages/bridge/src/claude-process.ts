@@ -2,7 +2,12 @@ import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type ChildProcessByStdio, type SpawnOptions } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import { parseClaudeLine } from './parser.js';
-import { isEffortLevel, isValidModelId, type EffortLevel } from './models.js';
+import {
+  isEffortLevel,
+  isValidModelId,
+  type CliEffortLevel,
+  type EffortLevel,
+} from './models.js';
 import type { AgentEvent } from './types.js';
 
 const STDERR_TAIL_BYTES = 4096;
@@ -19,6 +24,13 @@ const CLAUDE_FLAG_TOKENS = [
   'stream-json',
   '--include-partial-messages',
   '--verbose',
+  // Subagents are otherwise a black box: the transcript shows one `Task` call
+  // and then nothing until it returns, however long it runs. This forwards
+  // their text and thinking as ordinary messages carrying `parent_tool_use_id`,
+  // which is what lets the UI nest them under the call that started them. The
+  // CLI only honours it under `--print` with `--output-format stream-json`,
+  // which is exactly how the bridge spawns.
+  '--forward-subagent-text',
 ];
 const CLAUDE_FLAGS = CLAUDE_FLAG_TOKENS.join(' ');
 
@@ -92,8 +104,22 @@ export interface ClaudeProcessOpts {
    * `haiku`, `fable`) always resolve to the latest model on that line.
    */
   model?: string;
-  /** Reasoning effort, passed as `--effort`. Omitted leaves the CLI default. */
-  effort?: EffortLevel;
+  /**
+   * Reasoning effort, passed as `--effort`. Omitted leaves the CLI default.
+   *
+   * Deliberately not `EffortLevel`: `ultracode` is a mode carried in the
+   * settings file, and the CLI accepts `--effort ultracode` as a plain alias
+   * for `xhigh`, so passing it here would look like it worked while turning
+   * none of the mode on. Callers resolve it with `cliEffortLevel` first.
+   */
+  effort?: CliEffortLevel;
+  /**
+   * Absolute path to a session settings JSON, passed as `--settings <path>`.
+   *
+   * How ultracode and the workflow settings reach the session — see
+   * `claude-settings.ts` for why it is a file and not inline JSON.
+   */
+  settingsPath?: string;
 }
 
 /**
@@ -172,6 +198,9 @@ export class ClaudeProcess extends EventEmitter {
     const mcpConfigPath = opts.mcpConfigPath;
     if (mcpConfigPath !== undefined) assertResumeArgSafe(mcpConfigPath);
     const mcpFlag = mcpConfigPath !== undefined ? `--mcp-config ${mcpConfigPath} ` : '';
+    const settingsPath = opts.settingsPath;
+    if (settingsPath !== undefined) assertResumeArgSafe(settingsPath);
+    const settingsFlag = settingsPath !== undefined ? `--settings ${settingsPath} ` : '';
     const addDirPrefix = addDirArgs.length > 0 ? `${addDirArgs.join(' ')} ` : '';
     const appendPrompt = opts.appendSystemPrompt;
     const promptFlag =
@@ -185,13 +214,17 @@ export class ClaudeProcess extends EventEmitter {
     if (model !== undefined && !isValidModelId(model)) {
       throw new Error(`unsafe model id: ${model}`);
     }
-    if (effort !== undefined && !isEffortLevel(effort)) {
+    // The `ultracode` check is redundant against the declared type and kept
+    // anyway: it is the one value that would otherwise spawn cleanly, cost
+    // xhigh money, and turn none of the mode on — the quietest possible way
+    // to not ship the feature. Types do not reach callers coming over the wire.
+    if (effort !== undefined && (!isEffortLevel(effort) || (effort as string) === 'ultracode')) {
       throw new Error(`unknown effort level: ${effort}`);
     }
     const modelFlag = model !== undefined ? `--model ${shellQuote(model)} ` : '';
     const effortFlag = effort !== undefined ? `--effort ${effort} ` : '';
     const claudeFlags =
-      `${claudePrefix}${addDirPrefix}${mcpFlag}${modelFlag}${effortFlag}${promptFlag}${CLAUDE_FLAGS}`;
+      `${claudePrefix}${addDirPrefix}${mcpFlag}${settingsFlag}${modelFlag}${effortFlag}${promptFlag}${CLAUDE_FLAGS}`;
     const claudeConfigDir = opts.claudeConfigDir;
     if (claudeConfigDir !== undefined) assertResumeArgSafe(claudeConfigDir);
     const argv = [

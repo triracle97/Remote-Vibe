@@ -75,6 +75,10 @@ export function useNewSession(client: BridgeClient): {
             ...(selection.claudeConfig ? { claudeConfig: selection.claudeConfig } : {}),
             ...(selection.model ? { model: selection.model } : {}),
             ...(selection.effort ? { effort: selection.effort } : {}),
+            ...(selection.workflowSize ? { workflowSize: selection.workflowSize } : {}),
+            ...(selection.workflowKeywordTrigger !== undefined
+              ? { workflowKeywordTrigger: selection.workflowKeywordTrigger }
+              : {}),
             correlationId,
           });
         }

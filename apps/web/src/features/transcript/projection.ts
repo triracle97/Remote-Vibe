@@ -39,6 +39,16 @@ export interface ToolCallMessage {
   startedAt?: number;
   /** Parsed edits for Edit/Write/MultiEdit, so the UI can render real diffs. */
   fileDiffs?: FileDiff[];
+  /**
+   * What the subagent this call started has said so far, projected the same
+   * way as the main transcript.
+   *
+   * Only present under `--forward-subagent-text`, and only for a call that
+   * actually delegated — a `Task`, or a `Workflow` whose script spawned
+   * agents. Nesting rather than interleaving is the whole point: five agents
+   * on one flat stream read as one agent with no memory.
+   */
+  subagent?: ViewMessage[];
 }
 
 export interface TextMessage {
@@ -98,8 +108,75 @@ interface ToolResultPayload {
  * Consecutive assistant text is merged into one block: the CLI emits a
  * separate `assistant` message per content block, and rendering each as its
  * own bubble fragments a single paragraph across the screen.
+ *
+ * Subagent output is split off first and projected into the tool call that
+ * started it. It arrives on the same stream as the main agent's, so folding it
+ * in place would merge a subagent's prose into the parent's paragraph and let
+ * a subagent's `tool_result` complete a call the parent was still waiting on.
  */
-export function projectEvents(events: readonly SessionEvent[]): ViewMessage[] {
+export function projectEvents(
+  events: readonly SessionEvent[],
+  /**
+   * Whose transcript this is: the tool call id when projecting a subagent,
+   * absent for the session's own agent. Events tagged with it are this
+   * speaker's own; anything else is one level further down.
+   */
+  scope?: string,
+): ViewMessage[] {
+  const own: SessionEvent[] = [];
+  /** parentToolUseId → that subagent's own events, in order. */
+  const byParent = new Map<string, SessionEvent[]>();
+  for (const e of events) {
+    const parent = parentOf(e);
+    if (parent === undefined || parent === scope) {
+      own.push(e);
+      continue;
+    }
+    const bucket = byParent.get(parent);
+    if (bucket) bucket.push(e);
+    else byParent.set(parent, [e]);
+  }
+
+  const out = projectOwnEvents(own);
+  if (byParent.size > 0) attachSubagents(out, byParent);
+  return out;
+}
+
+function parentOf(e: SessionEvent): string | undefined {
+  const id = (e as { parentToolUseId?: string }).parentToolUseId;
+  return typeof id === 'string' && id.length > 0 ? id : undefined;
+}
+
+/**
+ * Hang each subagent's transcript off the call that started it.
+ *
+ * A bucket whose parent call is not in view — a transcript window that starts
+ * mid-turn, a partially replayed session — becomes a call of its own rather
+ * than disappearing. Dropping it would be the exact failure this feature
+ * exists to fix, just with an extra step.
+ */
+function attachSubagents(out: ViewMessage[], byParent: Map<string, SessionEvent[]>): void {
+  for (const m of out) {
+    if (m.kind !== 'tool_call') continue;
+    const events = byParent.get(m.toolUseId);
+    if (events === undefined) continue;
+    byParent.delete(m.toolUseId);
+    m.subagent = projectEvents(events, m.toolUseId);
+  }
+  for (const [toolUseId, events] of byParent) {
+    out.push({
+      kind: 'tool_call',
+      id: `subagent-${toolUseId}`,
+      toolUseId,
+      toolName: '(subagent)',
+      input: undefined,
+      status: 'ok',
+      subagent: projectEvents(events, toolUseId),
+    });
+  }
+}
+
+function projectOwnEvents(events: readonly SessionEvent[]): ViewMessage[] {
   const out: ViewMessage[] = [];
   /** toolUseId → index in `out`, so a later result can complete the call. */
   const openTools = new Map<string, number>();

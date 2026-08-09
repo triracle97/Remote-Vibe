@@ -25,7 +25,7 @@ const bg = (toolUseId: string, output?: unknown, status: ToolCallMessage['status
 
 describe('runningWork', () => {
   it('counts nothing for an empty transcript', () => {
-    expect(runningWork([])).toEqual({ shells: 0, monitors: 0 });
+    expect(runningWork([])).toEqual({ shells: 0, monitors: 0, subagents: 0, workflows: 0 });
   });
 
   it('ignores a foreground Bash', () => {
@@ -122,7 +122,26 @@ describe('runningWork', () => {
       bg('t1', { shell_id: 'bash_1' }),
       call({ toolUseId: 'm1', toolName: 'Monitor', status: 'running' }),
     ];
-    expect(runningWork(msgs)).toEqual({ shells: 1, monitors: 1 });
+    expect(runningWork(msgs)).toEqual({ shells: 1, monitors: 1, subagents: 0, workflows: 0 });
+  });
+
+  it('counts a subagent for as long as its call is open', () => {
+    // A subagent *is* its tool call — it holds it open for its whole life, so
+    // unlike a background shell there is nothing to track separately.
+    const running: ViewMessage[] = [
+      call({ toolUseId: 'a1', toolName: 'Task', status: 'running' }),
+      call({ toolUseId: 'a2', toolName: 'Task', status: 'running' }),
+      call({ toolUseId: 'a3', toolName: 'Task', status: 'ok' }),
+    ];
+    expect(runningWork(running).subagents).toBe(2);
+  });
+
+  it('counts a workflow separately from the agents it runs', () => {
+    const msgs: ViewMessage[] = [
+      call({ toolUseId: 'w1', toolName: 'Workflow', status: 'running' }),
+      call({ toolUseId: 'a1', toolName: 'Task', status: 'running' }),
+    ];
+    expect(runningWork(msgs)).toEqual({ shells: 0, monitors: 0, subagents: 1, workflows: 1 });
   });
 
   it('accepts the camelCase spellings as well', () => {

@@ -2,22 +2,55 @@ import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { Readable, Writable } from 'node:stream';
 import {
+  cliEffortLevel,
   EFFORT_LEVELS,
   isEffortLevel,
+  isUltracode,
   isValidModelId,
   modelLabel,
   modelsFor,
   parseEffortLevel,
   parseModelId,
   resolveSetting,
+  supportsUltracode,
 } from '../models.js';
 import { ClaudeProcess } from '../claude-process.js';
 import { CodexProcess } from '../codex-process.js';
 
 describe('effort levels', () => {
-  it('matches the levels the CLI documents', () => {
-    // `claude --help`: "--effort <level>  Effort level ... (low, medium, high, xhigh, max)"
-    expect(EFFORT_LEVELS.map((e) => e.value)).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+  it('matches the levels the CLI documents, plus the mode it offers alongside them', () => {
+    // `claude --help`: "--effort <level>  Effort level ... (low, medium, high, xhigh, max)".
+    // `ultracode` is not one of them — it is a mode Claude Code's own /config
+    // puts in the same row, and this list is that row.
+    expect(EFFORT_LEVELS.map((e) => e.value)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultracode',
+    ]);
+  });
+
+  it('runs ultracode at xhigh and everything else at itself', () => {
+    // `--effort ultracode` is a plain alias for xhigh in the CLI and turns the
+    // mode off, so the flag and the mode have to be resolved separately.
+    expect(cliEffortLevel('ultracode')).toBe('xhigh');
+    expect(cliEffortLevel('max')).toBe('max');
+    expect(isUltracode('ultracode')).toBe(true);
+    expect(isUltracode('xhigh')).toBe(false);
+    expect(isUltracode(null)).toBe(false);
+  });
+
+  it('rules out models that cannot reach xhigh', () => {
+    // The CLI names Fable 5, Opus 4.7+ and Sonnet 5. Of the aliases offered
+    // here only Haiku is out, and null means the CLI's own default.
+    expect(supportsUltracode('opus')).toBe(true);
+    expect(supportsUltracode('sonnet')).toBe(true);
+    expect(supportsUltracode('fable')).toBe(true);
+    expect(supportsUltracode(null)).toBe(true);
+    expect(supportsUltracode('haiku')).toBe(false);
+    expect(supportsUltracode('claude-haiku-4-5-20251001')).toBe(false);
   });
 
   it('accepts every documented level', () => {

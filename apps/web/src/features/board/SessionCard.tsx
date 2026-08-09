@@ -115,11 +115,22 @@ export function SessionCard({
             {modelLabel(card.agent, card.model)}
           </Chip>
         )}
-        {card.effort !== null && (
-          <Chip title={`Reasoning effort: ${card.effort}`} tone="var(--color-phase-implementing)">
-            {card.effort}
-          </Chip>
-        )}
+        {card.effort !== null &&
+          (card.effort === 'ultracode' ? (
+            // Its own tone because it is not a dial setting: the session runs
+            // at xHigh and orchestrates fleets of agents on its own initiative,
+            // which is worth spotting on a board of a dozen cards.
+            <Chip
+              title={ultracodeTitle(card)}
+              tone="var(--color-state-unread)"
+            >
+              ultracode
+            </Chip>
+          ) : (
+            <Chip title={`Reasoning effort: ${card.effort}`} tone="var(--color-phase-implementing)">
+              {card.effort}
+            </Chip>
+          ))}
         {card.tags.map((t) => (
           <Chip key={t} tone="var(--color-text-mute)">
             {t}
@@ -180,4 +191,10 @@ function Chip({
 /** `/Users/me/.claude1` → `.claude1`; the tail is the part that distinguishes profiles. */
 function configLabel(dir: string): string {
   return dir.split('/').filter(Boolean).pop() ?? dir;
+}
+
+/** Spell out what the mode actually does, plus the one knob that bounds it. */
+function ultracodeTitle(card: BoardSession): string {
+  const size = card.workflowSize ? `; workflow size ${card.workflowSize}` : '';
+  return `Ultracode: xHigh effort plus standing multi-agent orchestration${size}`;
 }

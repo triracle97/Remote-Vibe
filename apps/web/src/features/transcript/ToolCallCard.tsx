@@ -1,6 +1,6 @@
-import { useState, type JSX } from 'react';
+import { useState, type JSX, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import type { ToolCallMessage, ToolStatus } from './projection';
+import type { ToolCallMessage, ToolStatus, ViewMessage } from './projection';
 import { DiffViewer } from './DiffViewer';
 import { useElapsedTimeRef } from './useElapsedTime';
 import { formatElapsed, formatToolName, outputToText, summarizeToolInput } from './utils';
@@ -24,6 +24,13 @@ interface Props {
   onOpenFile?: (filePath: string) => void;
   /** Expand tool cards by default. */
   defaultOpen?: boolean;
+  /**
+   * Renders a subagent's own transcript, when this call started one.
+   *
+   * Injected rather than imported so the card does not have to reach back into
+   * `TranscriptView` for the renderer that renders the card.
+   */
+  renderSubagent?: (messages: ViewMessage[]) => ReactNode;
 }
 
 const STATUS_COLOR: Record<ToolStatus, string> = {
@@ -37,6 +44,7 @@ export function ToolCallCard({
   projectPath = '',
   onOpenFile,
   defaultOpen = false,
+  renderSubagent,
 }: Props): JSX.Element {
   // Errors are what you want to see; open them without being asked.
   const [open, setOpen] = useState(defaultOpen || message.status === 'error');
@@ -91,6 +99,54 @@ export function ToolCallCard({
         <div className="mt-1 ml-4 flex flex-col gap-1.5">
           <ToolBody message={message} projectPath={projectPath} {...(onOpenFile ? { onOpenFile } : {})} />
         </div>
+      )}
+
+      {/* Outside the disclosure above: a subagent's output is the thing you
+          actually want to watch while it runs, not an argument dump you went
+          looking for. */}
+      {message.subagent !== undefined && message.subagent.length > 0 && renderSubagent && (
+        <SubagentPanel running={running}>{renderSubagent(message.subagent)}</SubagentPanel>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A subagent's transcript, nested under the call that started it.
+ *
+ * Open while the agent is working and collapsed once it returns: the result
+ * the parent gets is the summary, and by then the working-out is reference
+ * material. The rule is one click either way.
+ */
+function SubagentPanel({
+  running,
+  children,
+}: {
+  running: boolean;
+  children: ReactNode;
+}): JSX.Element {
+  const [open, setOpen] = useState(running);
+
+  return (
+    <div className="mt-1 ml-4" data-testid="subagent-panel">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+      >
+        {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+        subagent
+        {running && (
+          <span
+            aria-hidden
+            className="w-1.5 h-1.5 rounded-full animate-pulse"
+            style={{ background: 'var(--color-state-running)' }}
+          />
+        )}
+      </button>
+      {open && (
+        <div className="mt-1 pl-3 border-l-2 border-[var(--color-border)]">{children}</div>
       )}
     </div>
   );

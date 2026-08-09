@@ -24,9 +24,28 @@ import type { ToolCallMessage, ViewMessage } from './projection';
 export interface RunningWork {
   shells: number;
   monitors: number;
+  /**
+   * Subagents still working — `Task` calls that have not returned.
+   *
+   * Unlike a background shell these are read straight off the call's status,
+   * because a subagent *is* the tool call: it holds it open for as long as it
+   * runs. Worth its own count because it is the one kind of background work
+   * that can be spending money in five places at once.
+   */
+  subagents: number;
+  /** Workflow orchestrations in flight — each may be running many agents. */
+  workflows: number;
 }
 
-export const NO_RUNNING_WORK: RunningWork = { shells: 0, monitors: 0 };
+export const NO_RUNNING_WORK: RunningWork = {
+  shells: 0,
+  monitors: 0,
+  subagents: 0,
+  workflows: 0,
+};
+
+/** Tools whose call stays open for the whole life of the agent it started. */
+const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null;
@@ -77,6 +96,8 @@ function reportsCompletion(output: unknown): boolean {
 export function runningWork(messages: readonly ViewMessage[]): RunningWork {
   const openShells = new Set<string>();
   let monitors = 0;
+  let subagents = 0;
+  let workflows = 0;
 
   for (const m of messages) {
     if (m.kind !== 'tool_call') continue;
@@ -84,6 +105,16 @@ export function runningWork(messages: readonly ViewMessage[]): RunningWork {
 
     if (call.toolName === 'Monitor') {
       if (call.status === 'running') monitors += 1;
+      continue;
+    }
+
+    if (SUBAGENT_TOOLS.has(call.toolName)) {
+      if (call.status === 'running') subagents += 1;
+      continue;
+    }
+
+    if (call.toolName === 'Workflow') {
+      if (call.status === 'running') workflows += 1;
       continue;
     }
 
@@ -109,5 +140,5 @@ export function runningWork(messages: readonly ViewMessage[]): RunningWork {
     }
   }
 
-  return { shells: openShells.size, monitors };
+  return { shells: openShells.size, monitors, subagents, workflows };
 }

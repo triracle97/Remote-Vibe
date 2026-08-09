@@ -38,11 +38,20 @@ import type {
 import { DEFAULT_SESSION_PHASE, EMPTY_SESSION_USAGE, isSessionPhase, phaseRank, turnContextTokens } from './types.js';
 import { extractDirectives } from './agent-directives.js';
 import {
+  cliEffortLevel,
+  isUltracode,
   parseEffortLevel,
   parseModelId,
   resolveSetting,
+  supportsUltracode,
+  type CliEffortLevel,
   type EffortLevel,
 } from './models.js';
+import {
+  parseWorkflowSize,
+  type ClaudeSessionSettings,
+  type WorkflowSize,
+} from './claude-settings.js';
 import { loadReplayEvents, type ReplayEvent } from './native-history-replay.js';
 import { DEFAULT_WORKSPACE_DIRS } from './default-workspaces.js';
 
@@ -129,10 +138,20 @@ export interface DriverFactoryArgs {
   additionalDirs?: string[];
   /** Absolute path to this session's `--mcp-config` file (Claude only). */
   mcpConfigPath?: string;
+  /**
+   * Absolute path to this session's `--settings` file (Claude only). Carries
+   * ultracode and the workflow settings; see `claude-settings.ts`.
+   */
+  settingsPath?: string;
   /** Resolved model id (`--model`). Absent leaves the CLI default. */
   model?: string;
-  /** Resolved reasoning effort (`--effort` / `model_reasoning_effort`). */
-  effort?: EffortLevel;
+  /**
+   * Resolved reasoning effort for the CLI flag.
+   *
+   * Never `ultracode`: that is a mode, resolved to xhigh plus a settings file
+   * before it gets here.
+   */
+  effort?: CliEffortLevel;
 }
 
 export interface SessionManagerOpts {
@@ -165,9 +184,21 @@ export interface SessionManagerOpts {
    * sessions launch with no bridge MCP server at all.
    */
   writeMcpConfig?: (webSessionId: string) => Promise<string | null>;
+  /**
+   * Writes a session's `--settings` file and returns its path, or null when
+   * there was nothing to write or the write failed. Absent in tests and in any
+   * deployment that never turns ultracode on.
+   */
+  writeClaudeSettings?: (
+    webSessionId: string,
+    settings: ClaudeSessionSettings,
+  ) => Promise<string | null>;
   /** Bridge-wide model/effort defaults; a session may override either. */
   defaultModel?: string | null;
   defaultEffort?: EffortLevel | null;
+  /** Bridge-wide workflow defaults; a session may override either. */
+  defaultWorkflowSize?: WorkflowSize | null;
+  defaultWorkflowKeywordTrigger?: boolean | null;
   /**
    * Resolves headroom wrapping at spawn time, starting the shared proxy on
    * first use. Returns null when headroom is disabled or unavailable, in which
@@ -248,6 +279,11 @@ export class SessionManager extends EventEmitter {
   /** App-wide defaults from BRIDGE_DEFAULT_MODEL / BRIDGE_DEFAULT_EFFORT. */
   private readonly defaultModel: string | null;
   private readonly defaultEffort: EffortLevel | null;
+  private readonly defaultWorkflowSize: WorkflowSize | null;
+  private readonly defaultWorkflowKeywordTrigger: boolean | null;
+  private readonly writeClaudeSettings:
+    | ((webSessionId: string, settings: ClaudeSessionSettings) => Promise<string | null>)
+    | undefined;
   private readonly resolveHeadroomFn: () => Promise<HeadroomSpawnConfig | null>;
   private readonly titler: SessionTitler | undefined;
   /**
@@ -301,6 +337,9 @@ export class SessionManager extends EventEmitter {
     this.claudeConfigs = opts.claudeConfigs ?? new Map();
     this.defaultModel = parseModelId(opts.defaultModel);
     this.defaultEffort = parseEffortLevel(opts.defaultEffort);
+    this.defaultWorkflowSize = parseWorkflowSize(opts.defaultWorkflowSize);
+    this.defaultWorkflowKeywordTrigger = opts.defaultWorkflowKeywordTrigger ?? null;
+    this.writeClaudeSettings = opts.writeClaudeSettings;
     this.resolveHeadroomFn = opts.resolveHeadroom ?? (() => Promise.resolve(null));
     this.titler = opts.titler;
     this.validatePathFn = makePathValidator({
@@ -351,6 +390,8 @@ export class SessionManager extends EventEmitter {
     headroom?: boolean;
     model?: string | null;
     effort?: EffortLevel | null;
+    workflowSize?: WorkflowSize | null;
+    workflowKeywordTrigger?: boolean | null;
     parentSessionId?: string | null;
   }): Pick<
     RegistryEntry,
@@ -366,6 +407,8 @@ export class SessionManager extends EventEmitter {
     | 'usage'
     | 'model'
     | 'effort'
+    | 'workflowSize'
+    | 'workflowKeywordTrigger'
     | 'parentSessionId'
   > {
     return {
@@ -377,6 +420,8 @@ export class SessionManager extends EventEmitter {
       // was actually launched with (nimbalyst #546).
       model: opts.model ?? null,
       effort: opts.effort ?? null,
+      workflowSize: opts.workflowSize ?? null,
+      workflowKeywordTrigger: opts.workflowKeywordTrigger ?? null,
       lastActiveAt: opts.createdAt,
       endedAt: null,
       archived: false,
@@ -386,6 +431,120 @@ export class SessionManager extends EventEmitter {
       // Null unless an agent spawned this one through the MCP tool.
       parentSessionId: opts.parentSessionId ?? null,
     };
+  }
+
+  /**
+   * Decide what a session actually runs as, once.
+   *
+   * Ultracode is the reason this exists. The user picks it in the effort row,
+   * but it is not an effort the CLI takes — it is xhigh plus a settings file,
+   * and it is refused outright on an agent or a model that cannot do it. Every
+   * one of those cases has to be settled *before* the card is written, or the
+   * card claims a mode the CLI never got (nimbalyst's #546, in a new costume).
+   *
+   * What comes back is what gets persisted AND what gets spawned; there is no
+   * second interpretation anywhere downstream.
+   */
+  private resolveRunSettings(opts: {
+    agent: AgentKind;
+    model: string | undefined;
+    effort: unknown;
+    workflowSize: unknown;
+    workflowKeywordTrigger: boolean | undefined;
+  }): {
+    model: string | null;
+    /** The user's pick, including `ultracode`. Persisted on the card. */
+    effort: EffortLevel | null;
+    /** What goes on the flag. Never `ultracode`. */
+    cliEffort: CliEffortLevel | null;
+    ultracode: boolean;
+    workflowSize: WorkflowSize | null;
+    workflowKeywordTrigger: boolean | null;
+  } {
+    const model = resolveSetting(parseModelId(opts.model), this.defaultModel);
+    let effort = resolveSetting(parseEffortLevel(opts.effort), this.defaultEffort);
+    const workflowSize = resolveSetting(
+      parseWorkflowSize(opts.workflowSize),
+      this.defaultWorkflowSize,
+    );
+    const workflowKeywordTrigger = resolveSetting(
+      opts.workflowKeywordTrigger ?? null,
+      this.defaultWorkflowKeywordTrigger,
+    );
+
+    if (isUltracode(effort)) {
+      if (opts.agent !== 'claude') {
+        // Codex has no equivalent, and `model_reasoning_effort=ultracode`
+        // would be rejected by its own config parser. Fall back to the CLI's
+        // default rather than inventing a level nobody chose.
+        console.warn(`[session] ultracode is Claude-only; ignoring it for a ${opts.agent} session`);
+        effort = null;
+      } else if (!supportsUltracode(model)) {
+        // xhigh is the honest half of the request: the mode is xhigh plus
+        // orchestration, and this model can only be told the first part.
+        console.warn(`[session] model '${model}' cannot run ultracode; falling back to xhigh`);
+        effort = 'xhigh';
+      }
+    }
+
+    return {
+      model,
+      effort,
+      cliEffort: effort === null ? null : cliEffortLevel(effort),
+      ultracode: isUltracode(effort),
+      workflowSize,
+      workflowKeywordTrigger,
+    };
+  }
+
+  /**
+   * The `--settings` file contents for a session, or null when it needs none.
+   *
+   * `enableWorkflows` rides along with ultracode because the CLI refuses the
+   * mode without it, and with an explicit workflow setting because choosing a
+   * fleet size for a feature that is off says the user wants it on.
+   */
+  private claudeSettingsFor(run: {
+    ultracode: boolean;
+    workflowSize: WorkflowSize | null;
+    workflowKeywordTrigger: boolean | null;
+  }): ClaudeSessionSettings | null {
+    const wantsWorkflows =
+      run.ultracode || run.workflowSize !== null || run.workflowKeywordTrigger !== null;
+    if (!wantsWorkflows) return null;
+    return {
+      ...(run.ultracode ? { ultracode: true } : {}),
+      enableWorkflows: true,
+      ...(run.workflowSize !== null ? { workflowSizeGuideline: run.workflowSize } : {}),
+      ...(run.workflowKeywordTrigger !== null
+        ? { workflowKeywordTriggerEnabled: run.workflowKeywordTrigger }
+        : {}),
+    };
+  }
+
+  /**
+   * Write the settings file for a Claude session and hand back its path.
+   *
+   * A failed write is logged and the session still spawns — on the CLI's own
+   * defaults, which is a working session rather than no session.
+   */
+  private async settingsPathFor(
+    webSessionId: string,
+    agent: AgentKind,
+    run: {
+      ultracode: boolean;
+      workflowSize: WorkflowSize | null;
+      workflowKeywordTrigger: boolean | null;
+    },
+  ): Promise<string | undefined> {
+    if (agent !== 'claude' || !this.writeClaudeSettings) return undefined;
+    const settings = this.claudeSettingsFor(run);
+    if (settings === null) return undefined;
+    const path = await this.writeClaudeSettings(webSessionId, settings);
+    if (path === null && run.ultracode) {
+      console.warn('[session] ultracode requested but its settings file could not be written');
+    }
+    return path ?? undefined;
   }
 
   /**
@@ -575,6 +734,9 @@ export class SessionManager extends EventEmitter {
     /** Per-session model/effort override; falls back to the bridge default. */
     model?: string;
     effort?: EffortLevel;
+    /** Per-session workflow overrides; fall back to the bridge defaults. */
+    workflowSize?: WorkflowSize;
+    workflowKeywordTrigger?: boolean;
     correlationId?: string;
     /** Set when another agent spawned this session via the MCP tool. */
     parentSessionId?: string;
@@ -608,8 +770,14 @@ export class SessionManager extends EventEmitter {
     const headroom = await this.resolveHeadroom(params.agent);
     // Resolve once, here, then both spawn and persist read the same value —
     // that is what stops the card claiming a model the CLI never got.
-    const model = resolveSetting(parseModelId(params.model), this.defaultModel);
-    const effort = resolveSetting(parseEffortLevel(params.effort), this.defaultEffort);
+    const run = this.resolveRunSettings({
+      agent: params.agent,
+      model: params.model,
+      effort: params.effort,
+      workflowSize: params.workflowSize,
+      workflowKeywordTrigger: params.workflowKeywordTrigger,
+    });
+    const { model, effort } = run;
     const sessionId = this.mintWebSessionId();
     // Claude only: the Codex CLI's MCP registration is what `--no-mcp` on the
     // headroom wrapper deliberately suppresses, so a Codex session gets no
@@ -619,6 +787,7 @@ export class SessionManager extends EventEmitter {
       params.agent === 'claude' && this.writeMcpConfig
         ? ((await this.writeMcpConfig(sessionId)) ?? undefined)
         : undefined;
+    const settingsPath = await this.settingsPathFor(sessionId, params.agent, run);
     const proc = this.driverFactory({
       agent: params.agent,
       projectPath: primary,
@@ -627,8 +796,9 @@ export class SessionManager extends EventEmitter {
       ...(claudeConfigDir ? { claudeConfigDir } : {}),
       ...(headroom ? { headroom } : {}),
       ...(model !== null ? { model } : {}),
-      ...(effort !== null ? { effort } : {}),
+      ...(run.cliEffort !== null ? { effort: run.cliEffort } : {}),
       ...(mcpConfigPath ? { mcpConfigPath } : {}),
+      ...(settingsPath ? { settingsPath } : {}),
     });
 
     const internal: InternalSession = {
@@ -665,6 +835,8 @@ export class SessionManager extends EventEmitter {
           headroom: headroom !== undefined,
           model,
           effort,
+          workflowSize: run.workflowSize,
+          workflowKeywordTrigger: run.workflowKeywordTrigger,
           parentSessionId: params.parentSessionId ?? null,
         }),
       });
@@ -1050,6 +1222,14 @@ export class SessionManager extends EventEmitter {
       const mcpConfigPath = this.writeMcpConfig
         ? ((await this.writeMcpConfig(entry.webSessionId)) ?? undefined)
         : undefined;
+      // Ultracode is session-scoped, so it exists only for as long as the
+      // settings file is passed. Rebuilding it here is what stops a resumed
+      // session quietly dropping the mode its card still advertises.
+      const settingsPath = await this.settingsPathFor(entry.webSessionId, 'claude', {
+        ultracode: isUltracode(entry.effort),
+        workflowSize: entry.workflowSize,
+        workflowKeywordTrigger: entry.workflowKeywordTrigger,
+      });
       driver = this.driverFactory({
         agent: 'claude',
         projectPath: entry.projectPath,
@@ -1058,8 +1238,9 @@ export class SessionManager extends EventEmitter {
         ...(claudeConfigDir ? { claudeConfigDir } : {}),
         ...(headroom ? { headroom } : {}),
         ...(entry.model !== null ? { model: entry.model } : {}),
-        ...(entry.effort !== null ? { effort: entry.effort } : {}),
+        ...(entry.effort !== null ? { effort: cliEffortLevel(entry.effort) } : {}),
         ...(mcpConfigPath ? { mcpConfigPath } : {}),
+        ...(settingsPath ? { settingsPath } : {}),
         resumeArgs: ['--resume', claudeSessionId],
       });
     } catch (err) {
@@ -1178,7 +1359,10 @@ export class SessionManager extends EventEmitter {
       ...(additionalDirs.length > 0 ? { additionalDirs } : {}),
       ...(headroom ? { headroom } : {}),
       ...(entry.model !== null ? { model: entry.model } : {}),
-      ...(entry.effort !== null ? { effort: entry.effort } : {}),
+      // `ultracode` cannot reach a Codex entry — `resolveRunSettings` drops it
+      // at spawn — but mapping it here anyway keeps the flag typed as
+      // something the CLI accepts rather than relying on that being true.
+      ...(entry.effort !== null ? { effort: cliEffortLevel(entry.effort) } : {}),
       codexResumeSeed: codexSessionId,
     });
     this.attachSession(entry.webSessionId, driver, entry);
@@ -1326,29 +1510,43 @@ export class SessionManager extends EventEmitter {
         void this.applyAgentDirectives(s.sessionId, directives.phase, directives.tags);
         // A message that was *only* a directive has nothing left to show.
         if (directives.text.length === 0) return;
-        e = { kind: 'assistant_text', text: directives.text };
+        // Rebuilt rather than mutated, so keep what said who was speaking.
+        e = { kind: 'assistant_text', text: directives.text, ...subagentOrigin(e) };
       }
     }
 
     const seq = s.nextSeq++;
+    const from = subagentOrigin(e);
     let msg: ServerStreamMsg;
     switch (e.kind) {
       case 'assistant_text':
-        msg = { type: 'assistant', sessionId: s.sessionId, seq, payload: { text: e.text } };
+        msg = { type: 'assistant', sessionId: s.sessionId, seq, payload: { text: e.text }, ...from };
         break;
       case 'stream_delta':
-        msg = { type: 'stream_delta', sessionId: s.sessionId, seq, payload: { delta: e.delta } };
+        msg = {
+          type: 'stream_delta',
+          sessionId: s.sessionId,
+          seq,
+          payload: { delta: e.delta },
+          ...from,
+        };
         break;
       case 'thinking':
         // Rides the assistant channel with a discriminant so the transcript
         // can render it as its own collapsed block.
-        msg = { type: 'assistant', sessionId: s.sessionId, seq, payload: { thinking: e.text } };
+        msg = {
+          type: 'assistant',
+          sessionId: s.sessionId,
+          seq,
+          payload: { thinking: e.text },
+          ...from,
+        };
         break;
       case 'tool_use':
-        msg = { type: 'assistant', sessionId: s.sessionId, seq, payload: { toolUse: e } };
+        msg = { type: 'assistant', sessionId: s.sessionId, seq, payload: { toolUse: e }, ...from };
         break;
       case 'tool_result':
-        msg = { type: 'tool_result', sessionId: s.sessionId, seq, payload: e };
+        msg = { type: 'tool_result', sessionId: s.sessionId, seq, payload: e, ...from };
         break;
       case 'result':
         msg = { type: 'result', sessionId: s.sessionId, seq, payload: e };
@@ -1356,9 +1554,12 @@ export class SessionManager extends EventEmitter {
     }
     this.appendAndBroadcast(s, msg);
     // Phase 8: board bookkeeping. Every event is activity, and tool calls are
-    // the signal we infer phase from.
+    // the signal we infer phase from — a subagent's work included, since it is
+    // this session's work however it was delegated.
     void this.notePhaseSignal(s.sessionId, e);
-    this.noteTitleSignal(s, e);
+    // The titler is the exception: it names the session after the opening ask
+    // and the answer to it, and five subagents talking at once is not that.
+    if (from.parentToolUseId === undefined) this.noteTitleSignal(s, e);
     // Phase 6: notifier — result lifecycle hook. Fired for any result
     // (success or error). Notifier internally checks duration ≥ threshold.
     if (e.kind === 'result') {
@@ -1764,6 +1965,8 @@ export class SessionManager extends EventEmitter {
         phasePinned: entry.phasePinned,
         model: entry.model,
         effort: entry.effort,
+        workflowSize: entry.workflowSize,
+        workflowKeywordTrigger: entry.workflowKeywordTrigger,
         tags: entry.tags,
         archived: entry.archived,
         account: entry.account,
@@ -1842,6 +2045,15 @@ export class SessionManager extends EventEmitter {
       const parsed = next.effort === null ? null : parseEffortLevel(next.effort);
       if (next.effort !== null && parsed === null) {
         throw new InvalidModelError(`Unknown effort level: ${String(next.effort)}`);
+      }
+      if (isUltracode(parsed)) {
+        // The mode lives in a `--settings` file the CLI reads once, at launch.
+        // Recording it here would leave a card claiming a mode the running
+        // process never got — and `/effort ultracode` on a session launched
+        // with `--effort` is refused by the CLI anyway.
+        throw new InvalidModelError(
+          'Ultracode is chosen when a session starts, not switched into one that is already running',
+        );
       }
       patch.effort = parsed;
     }
@@ -2043,6 +2255,18 @@ export class SessionManager extends EventEmitter {
  */
 const VERIFY_COMMAND_RE =
   /\b(test|tests|vitest|jest|pytest|typecheck|tsc|lint|eslint|build|playwright|cargo\s+test|go\s+test)\b/;
+
+/**
+ * The `parentToolUseId` of an event, as a spreadable object.
+ *
+ * Spreadable because `exactOptionalPropertyTypes` rejects assigning
+ * `undefined` to an optional field, and every call site here is building a
+ * literal where the field must simply be absent for the main agent.
+ */
+function subagentOrigin(e: AgentEvent): { parentToolUseId?: string } {
+  const id = (e as { parentToolUseId?: string }).parentToolUseId;
+  return id === undefined ? {} : { parentToolUseId: id };
+}
 
 function bashCommandOf(input: unknown): string | null {
   if (typeof input !== 'object' || input === null) return null;

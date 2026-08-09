@@ -61,7 +61,7 @@ describe('ClaudeProcess', () => {
       [
         '-li',
         '-c',
-        "exec claude -p --dangerously-skip-permissions --output-format stream-json --input-format stream-json --include-partial-messages --verbose",
+        'exec claude -p --dangerously-skip-permissions --output-format stream-json --input-format stream-json --include-partial-messages --verbose --forward-subagent-text',
       ],
       expect.objectContaining({ cwd: '/Users/test/proj', stdio: ['pipe', 'pipe', 'pipe'] }),
     );

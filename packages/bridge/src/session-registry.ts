@@ -1,6 +1,7 @@
 import { promises as fsp } from 'node:fs';
 import { dirname } from 'node:path';
 import type { EffortLevel } from './models.js';
+import type { WorkflowSize } from './claude-settings.js';
 import type { SessionPhase, SessionLifecycleStatus, SessionUsage } from './types.js';
 import { DEFAULT_SESSION_PHASE, EMPTY_SESSION_USAGE } from './types.js';
 
@@ -56,6 +57,14 @@ export interface RegistryEntry {
    */
   model: string | null;
   effort: EffortLevel | null;
+  /**
+   * Workflow settings this session was launched with, or null for "say
+   * nothing and let the CLI decide". Persisted for the same reason as
+   * model/effort: a resume has to reconstruct the settings file, and a card
+   * showing `ultracode` must mean the session really got it.
+   */
+  workflowSize: WorkflowSize | null;
+  workflowKeywordTrigger: boolean | null;
   /**
    * The session that spawned this one via the `spawn_session` MCP tool, or
    * null for anything a human started. Lets the board explain a card that
@@ -121,6 +130,10 @@ export class SessionRegistry {
             usage: { ...EMPTY_SESSION_USAGE, ...(entry.usage ?? {}) },
             model: entry.model ?? null,
             effort: entry.effort ?? null,
+            // Rows written before workflows were configurable said nothing
+            // about them, which is exactly what null means here.
+            workflowSize: entry.workflowSize ?? null,
+            workflowKeywordTrigger: entry.workflowKeywordTrigger ?? null,
             // Rows written before agent-to-agent spawning existed have no
             // parent, which is also the truth: a human started them.
             parentSessionId: entry.parentSessionId ?? null,

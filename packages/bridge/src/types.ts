@@ -1,6 +1,7 @@
 import type { EffortLevel } from './models.js';
+import type { WorkflowSize } from './claude-settings.js';
 
-export type { EffortLevel };
+export type { EffortLevel, WorkflowSize };
 
 export type AgentKind = 'claude' | 'codex';
 
@@ -64,6 +65,12 @@ export interface ClientStartMsg {
   model?: string;
   /** Reasoning effort. Omitted leaves the CLI's own default. */
   effort?: EffortLevel;
+  /**
+   * Workflow settings for a Claude session. Only reach the CLI when something
+   * turns workflows on — `effort: 'ultracode'`, or one of these being set.
+   */
+  workflowSize?: WorkflowSize;
+  workflowKeywordTrigger?: boolean;
   sessionId?: string;
   resume?: boolean;
   correlationId?: string;
@@ -303,13 +310,29 @@ export interface AccountRateLimitWindow extends RateLimitWindow {
   account: RateLimitAccount;
 }
 
+/**
+ * Set on any event a subagent produced, naming the tool call that started it.
+ *
+ * Everything the CLI forwards under `--forward-subagent-text` arrives on the
+ * same channel as the main agent's own output, so without this the transcript
+ * would interleave five agents into one voice.
+ */
+export interface SubagentOrigin {
+  parentToolUseId?: string;
+}
+
 export type AgentEvent =
-  | { kind: 'assistant_text'; text: string }
-  | { kind: 'stream_delta'; delta: string }
+  | ({ kind: 'assistant_text'; text: string } & SubagentOrigin)
+  | ({ kind: 'stream_delta'; delta: string } & SubagentOrigin)
   /** Extended-thinking block. Rendered collapsed; never fed back to the model. */
-  | { kind: 'thinking'; text: string }
-  | { kind: 'tool_use'; toolUseId: string; toolName: string; input: unknown }
-  | { kind: 'tool_result'; toolUseId: string; output: unknown; isError?: boolean }
+  | ({ kind: 'thinking'; text: string } & SubagentOrigin)
+  | ({ kind: 'tool_use'; toolUseId: string; toolName: string; input: unknown } & SubagentOrigin)
+  | ({
+      kind: 'tool_result';
+      toolUseId: string;
+      output: unknown;
+      isError?: boolean;
+    } & SubagentOrigin)
   /** Quota window update. Carries no conversation content. */
   | { kind: 'rate_limit'; window: RateLimitWindow }
   | {
@@ -355,6 +378,17 @@ export interface ServerStreamMsg {
   sessionId: string;
   seq: number;
   payload: unknown;
+  /**
+   * Present when this came from a subagent rather than the session's own
+   * agent, naming the tool call that started it — a `Task`, or a `Workflow`
+   * whose script spawned it.
+   *
+   * The CLI only emits these under `--forward-subagent-text`. Without it a
+   * subagent is a single tool call that goes quiet for minutes; with it, the
+   * work streams, and this field is what stops it reading as the main agent
+   * suddenly talking about somebody else's task.
+   */
+  parentToolUseId?: string;
 }
 
 export interface ServerSessionListMsg {
@@ -416,6 +450,9 @@ export interface BoardSession {
   /** Resolved model/effort, or null meaning the CLI's own default. */
   model: string | null;
   effort: EffortLevel | null;
+  /** Resolved workflow settings, or null meaning the CLI's own default. */
+  workflowSize: WorkflowSize | null;
+  workflowKeywordTrigger: boolean | null;
   /** The session that spawned this one via `spawn_session`, else null. */
   parentSessionId: string | null;
   /** Parent's display name, resolved server-side so the card need not join. */

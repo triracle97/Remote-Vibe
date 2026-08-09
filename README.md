@@ -180,6 +180,73 @@ MCP servers keep working.
 Codex sessions get no bridge tools: `--no-mcp` on the headroom wrapper suppresses
 Codex's MCP registration, which is also why spawned work cannot spawn again.
 
+### Ultracode and workflows
+
+Ultracode is the last entry in the effort picker, and it is not an effort level.
+It is a mode: the session runs at xHigh **and** keeps multi-agent orchestration
+standing, so the agent authors and runs workflows on its own initiative rather
+than waiting to be asked. Expect it to spend accordingly.
+
+There is no CLI flag for it. The CLI calls the setting session-scoped and says
+it arrives "via `--settings` or the `apply_flag_settings` control request", so
+the bridge writes `<dataDir>/claude-settings/<id>.json` at spawn:
+
+```json
+{ "ultracode": true, "enableWorkflows": true, "workflowSizeGuideline": "medium" }
+```
+
+and passes `--settings <path>`. A file rather than the inline-JSON form for the
+same reason `--mcp-config` gets one: everything interpolated into the spawn line
+passes a strict `[A-Za-z0-9_./-]` check, which `{"ultracode":true}` would fail.
+Nothing is written to your own `settings.json` — a per-session choice must not
+leak into every session that profile ever runs.
+
+Two things it needs, both settled before the card is written rather than
+discovered at spawn:
+
+- **A model that can reach xHigh.** The CLI names Fable 5, Opus 4.7+ and
+  Sonnet 5. Of the aliases offered here only Haiku is out, so the option is
+  hidden on Haiku and switching to Haiku drops an already-picked ultracode back
+  to xHigh.
+- **Claude.** Codex has no equivalent; asking for it there leaves the session on
+  the CLI's own default rather than inventing a level.
+
+`--effort ultracode` is *not* what gets passed. The CLI accepts it as a plain
+alias for `xhigh` and turns none of the mode on — an expensive session with none
+of the behaviour. The bridge sends `--effort xhigh` plus the settings file.
+
+Picking ultracode reveals two knobs, both per session with a bridge-wide default
+(`BRIDGE_WORKFLOW_SIZE`, `BRIDGE_WORKFLOW_KEYWORD_TRIGGER`):
+
+- **Workflow size** — advisory ceiling on the agent fleet a workflow may write:
+  small (<5 agents), medium (<15), large (<50), unrestricted. It shapes what the
+  agent writes. It does not cap what it spends.
+- **Keyword trigger** — whether the word "ultracode" appearing in a prompt opts
+  that one turn into orchestration. Independent of the mode.
+
+The mode lives only as long as the settings file is passed, so a resume rebuilds
+it from the card. That is why the choice is persisted rather than the flag it
+decays into: a card reading `ultracode` means the session really got it.
+
+### Watching subagents
+
+Claude sessions launch with `--forward-subagent-text`, so a `Task` is no longer a
+tool call that goes quiet for ten minutes. Every subagent's text and thinking
+arrives tagged with the `parent_tool_use_id` of the call that started it, and the
+transcript nests it under that call — collapsible, open while the agent is
+running, collapsed once it returns.
+
+Nesting rather than interleaving is the whole point. Subagent output shares one
+stream with the main agent's, so left flat it reads as one agent narrating five
+jobs at once, a subagent's `tool_result` can close a call the parent is still
+waiting on, and a subagent's finished message can retire the prose the main agent
+is still streaming. Output whose parent call has scrolled out of the transcript
+window is shown under a `(subagent)` placeholder rather than dropped.
+
+The session header counts what is still in flight — `2 agents · 1 shell` — with
+workflows counted separately from the agents they run, since one workflow can
+have a dozen going at once.
+
 ### Headroom
 
 When enabled, the bridge owns exactly **one** Headroom proxy, shared by **both**

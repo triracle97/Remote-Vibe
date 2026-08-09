@@ -47,7 +47,7 @@ describe('ModelEffortPicker', () => {
     expect([...select.options].map((o) => o.value)).toEqual(['', 'gpt-5-codex', 'gpt-5']);
   });
 
-  it('offers exactly the effort levels the CLI documents', () => {
+  it('offers the effort levels the CLI documents, with ultracode after them', () => {
     render_();
     const select = screen.getByLabelText('Effort') as HTMLSelectElement;
     expect([...select.options].map((o) => o.value)).toEqual([
@@ -57,7 +57,43 @@ describe('ModelEffortPicker', () => {
       'high',
       'xhigh',
       'max',
+      'ultracode',
     ]);
+  });
+
+  it('hides ultracode where the CLI would refuse it', () => {
+    // Codex has no equivalent, and Haiku cannot reach the xhigh the mode runs
+    // at — offering it and then quietly downgrading would be worse than not
+    // offering it.
+    const values = (): string[] =>
+      [...(screen.getByLabelText('Effort') as HTMLSelectElement).options].map((o) => o.value);
+
+    render_({ agent: 'codex' });
+    expect(values()).not.toContain('ultracode');
+    cleanup();
+
+    render_({ model: 'haiku' });
+    expect(values()).not.toContain('ultracode');
+  });
+
+  it('drops the mode when the model is switched to one that cannot run it', () => {
+    const { onEffortChange } = render_({ effort: 'ultracode' });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'haiku' } });
+    // xhigh is the honest half of what was asked for; leaving it on ultracode
+    // would show a choice the spawn is about to overrule.
+    expect(onEffortChange).toHaveBeenCalledWith('xhigh');
+  });
+
+  it('reveals the workflow settings only for ultracode', () => {
+    const onWorkflowSizeChange = vi.fn();
+    render_({ effort: 'max', onWorkflowSizeChange });
+    expect(screen.queryByTestId('workflow-settings')).toBeNull();
+    cleanup();
+
+    render_({ effort: 'ultracode', onWorkflowSizeChange });
+    expect(screen.getByTestId('workflow-settings')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Workflow size'), { target: { value: 'large' } });
+    expect(onWorkflowSizeChange).toHaveBeenCalledWith('large');
   });
 
   it('defaults to the blank option, which means "let the CLI decide"', () => {

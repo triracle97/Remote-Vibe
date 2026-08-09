@@ -2,6 +2,7 @@ import { isAbsolute, join } from 'node:path';
 import { headroomConfigFromEnv } from './headroom.js';
 import { titlerConfigFromEnv } from './titler.js';
 import { parseEffortLevel, parseModelId, type EffortLevel } from './models.js';
+import { parseWorkflowSize, type WorkflowSize } from './claude-settings.js';
 
 export interface BridgeConfig {
   token: string;
@@ -19,6 +20,13 @@ export interface BridgeConfig {
   /** Bridge-wide model/effort defaults; null means "CLI decides". */
   defaultModel: string | null;
   defaultEffort: EffortLevel | null;
+  /**
+   * Bridge-wide workflow defaults for Claude sessions; null means "say nothing
+   * and let the CLI decide". Only reach the session when something turns
+   * workflows on — either ultracode, or one of these being set.
+   */
+  defaultWorkflowSize: WorkflowSize | null;
+  defaultWorkflowKeywordTrigger: boolean | null;
   dataDir: string;
   transcriptRetentionDays: number;
   /** Session registry path. Relative paths resolve against the bridge cwd. */
@@ -159,6 +167,20 @@ export function loadEnv(env: Record<string, string | undefined>): BridgeConfig {
     console.warn(`[bridge] ignoring invalid BRIDGE_DEFAULT_EFFORT: ${env.BRIDGE_DEFAULT_EFFORT}`);
   }
 
+  const defaultWorkflowSize = parseWorkflowSize(env.BRIDGE_WORKFLOW_SIZE?.trim());
+  if (env.BRIDGE_WORKFLOW_SIZE && defaultWorkflowSize === null) {
+    console.warn(
+      `[bridge] ignoring invalid BRIDGE_WORKFLOW_SIZE: ${env.BRIDGE_WORKFLOW_SIZE} ` +
+        '(expected unrestricted | small | medium | large)',
+    );
+  }
+  // Unset stays null rather than defaulting to true: writing the key at all
+  // turns workflows on for the session, which is not something an unset
+  // variable should decide.
+  const keywordRaw = env.BRIDGE_WORKFLOW_KEYWORD_TRIGGER?.trim();
+  const defaultWorkflowKeywordTrigger =
+    keywordRaw === undefined || keywordRaw === '' ? null : /^(1|true|yes|on)$/i.test(keywordRaw);
+
   const headroom = headroomConfigFromEnv(env);
   const titler = titlerConfigFromEnv(env);
 
@@ -170,6 +192,8 @@ export function loadEnv(env: Record<string, string | undefined>): BridgeConfig {
     fsWriteMaxBytes,
     defaultModel,
     defaultEffort,
+    defaultWorkflowSize,
+    defaultWorkflowKeywordTrigger,
     dataDir,
     transcriptRetentionDays,
     sessionsFile,

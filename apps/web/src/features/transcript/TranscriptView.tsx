@@ -185,6 +185,26 @@ function Message({
   onOpenFile?: (filePath: string) => void;
   searchQuery: string;
 }): JSX.Element | null {
+  /**
+   * Render a nested subagent transcript with the same component that renders
+   * everything else, so a subagent's diffs, tool cards and thinking blocks
+   * look like what they are rather than a JSON dump one level down.
+   */
+  const renderSubagent = (messages: ViewMessage[]): JSX.Element => (
+    <>
+      {messages.map((m) => (
+        <Message
+          key={m.id}
+          message={m}
+          projectPath={projectPath}
+          expandTools={expandTools}
+          searchQuery={searchQuery}
+          {...(onOpenFile ? { onOpenFile } : {})}
+        />
+      ))}
+    </>
+  );
+
   switch (message.kind) {
     case 'text':
       return message.role === 'user' ? (
@@ -204,6 +224,7 @@ function Message({
           message={message}
           projectPath={projectPath}
           defaultOpen={expandTools}
+          renderSubagent={renderSubagent}
           {...(onOpenFile ? { onOpenFile } : {})}
         />
       );

@@ -27,6 +27,12 @@ interface RawClaudeMsg {
   subtype?: string;
   session_id?: string;
   is_error?: boolean;
+  /**
+   * Set by `--forward-subagent-text` on everything a subagent produced, naming
+   * the `Task` (or `Workflow`) call that started it. Absent on the session's
+   * own agent, which is how the two are told apart — they share the channel.
+   */
+  parent_tool_use_id?: unknown;
   message?: {
     model?: string;
     content?: RawContentBlock[] | string;
@@ -76,6 +82,21 @@ export function parseClaudeLine(line: string): ClaudeParseResult[] {
   }
   if (!raw || typeof raw.type !== 'string') return [];
 
+  const out = parseByType(raw);
+  // Stamped after the fact rather than threaded through every branch: the
+  // whole line belongs to one speaker, so every event it yields does too.
+  const parent = raw.parent_tool_use_id;
+  if (typeof parent === 'string' && parent.length > 0) {
+    for (const e of out) {
+      if ('kind' in e && e.kind !== 'session_id' && e.kind !== 'result' && e.kind !== 'rate_limit') {
+        (e as { parentToolUseId?: string }).parentToolUseId = parent;
+      }
+    }
+  }
+  return out;
+}
+
+function parseByType(raw: RawClaudeMsg): ClaudeParseResult[] {
   switch (raw.type) {
     case 'stream_event': {
       const ev = raw.event;

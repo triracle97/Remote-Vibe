@@ -6,7 +6,7 @@ import { DirPicker } from '../profiles/DirPicker';
 import { ProfilePicker } from '../profiles/ProfilePicker';
 import { ProfileEditor } from '../profiles/ProfileEditor';
 import { Modal } from '../../shell/Modal';
-import type { AgentKind, EffortLevel, Profile } from '../../types/protocol';
+import type { AgentKind, EffortLevel, Profile, WorkflowSize } from '../../types/protocol';
 import { DEFAULT_WORKSPACE_DIRS } from './default-workspaces';
 import { ProjectQuickAdd } from './ProjectQuickAdd';
 import { ModelEffortPicker } from '../model-picker/ModelEffortPicker';
@@ -56,6 +56,9 @@ export interface ProjectPickerSelection {
   claudeConfig?: string;
   model?: string;
   effort?: EffortLevel;
+  /** Only sent when ultracode is picked; see `ModelEffortPicker`. */
+  workflowSize?: WorkflowSize;
+  workflowKeywordTrigger?: boolean;
 }
 
 interface ProjectPickerProps {
@@ -69,6 +72,8 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
   const [editorOpen, setEditorOpen] = useState(false);
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<EffortLevel | null>(null);
+  const [workflowSize, setWorkflowSize] = useState<WorkflowSize | null>(null);
+  const [workflowKeywordTrigger, setWorkflowKeywordTrigger] = useState<boolean | null>(null);
   const accounts = useAccountsStore((s) => s.accounts);
   const selectedAccount = useAccountsStore((s) => s.selectedAccount);
   const setSelectedAccount = useAccountsStore((s) => s.setSelectedAccount);
@@ -113,10 +118,23 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
     claudeConfig?: string;
     model?: string;
     effort?: EffortLevel;
+    workflowSize?: WorkflowSize;
+    workflowKeywordTrigger?: boolean;
   } => {
+    // The workflow settings only travel with the mode that uses them: sending
+    // them otherwise would turn the CLI's workflow feature on for a session
+    // nobody asked to orchestrate anything.
+    const workflow =
+      effort === 'ultracode'
+        ? {
+            ...(workflowSize !== null ? { workflowSize } : {}),
+            ...(workflowKeywordTrigger !== null ? { workflowKeywordTrigger } : {}),
+          }
+        : {};
     const tuning = {
       ...(model !== null ? { model } : {}),
       ...(effort !== null ? { effort } : {}),
+      ...workflow,
     };
     if (agent === 'codex' && selectedAccount) return { account: selectedAccount, ...tuning };
     if (agent === 'claude' && selectedClaudeConfig) {
@@ -273,6 +291,10 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
                 effort={effort}
                 onModelChange={setModel}
                 onEffortChange={setEffort}
+                workflowSize={workflowSize}
+                onWorkflowSizeChange={setWorkflowSize}
+                workflowKeywordTrigger={workflowKeywordTrigger}
+                onWorkflowKeywordTriggerChange={setWorkflowKeywordTrigger}
               />
             </div>
           )}

@@ -13,15 +13,62 @@
  * model on its line, so the list never goes stale as new versions ship.
  */
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 
-export const EFFORT_LEVELS: ReadonlyArray<{ value: EffortLevel; label: string }> = [
+/** What may actually go on `claude --effort` / `codex -c model_reasoning_effort`. */
+export type CliEffortLevel = Exclude<EffortLevel, 'ultracode'>;
+
+export const EFFORT_LEVELS: ReadonlyArray<{
+  value: EffortLevel;
+  label: string;
+  /** Claude only, and only on a model that can do xhigh. */
+  claudeOnly?: boolean;
+}> = [
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
   { value: 'xhigh', label: 'xHigh' },
   { value: 'max', label: 'Max' },
+  { value: 'ultracode', label: 'Ultracode', claudeOnly: true },
 ] as const;
+
+/**
+ * Ultracode is a *mode*, not a level, and sits in this list because that is
+ * where Claude Code itself puts it — `/config` offers it as one more choice in
+ * the effort row.
+ *
+ * What the CLI actually wants is two things at once: `--effort xhigh` and a
+ * session settings file carrying `{"ultracode": true}`. The CLI describes the
+ * key as "xhigh effort plus standing dynamic-workflow orchestration", and it
+ * refuses the mode without workflows enabled and an xhigh-capable model.
+ *
+ * `--effort ultracode` is accepted as an alias for `xhigh` and does *not* turn
+ * the mode on, so passing the user's pick straight through would silently give
+ * them an expensive session with none of the behaviour they asked for.
+ */
+export function isUltracode(effort: EffortLevel | null | undefined): boolean {
+  return effort === 'ultracode';
+}
+
+/** The value for the CLI flag. Ultracode runs at xhigh; everything else is itself. */
+export function cliEffortLevel(effort: EffortLevel): CliEffortLevel {
+  return effort === 'ultracode' ? 'xhigh' : effort;
+}
+
+/**
+ * Whether a model can run ultracode at all.
+ *
+ * The CLI names Fable 5, Opus 4.7+ and Sonnet 5 as xhigh-capable. Of the
+ * aliases this app offers only Haiku is out, and an alias always resolves to
+ * the newest model on its line — so the check is "not Haiku" rather than a
+ * version table that would go stale on the next release. A null model means
+ * the CLI's own default, which is on a capable line; if that ever changes the
+ * CLI rejects the mode itself and says which models qualify.
+ */
+export function supportsUltracode(model: string | null | undefined): boolean {
+  if (!model) return true;
+  return !/haiku/i.test(model);
+}
 
 /** The CLI's own default. Only used to label the UI, never sent as a flag. */
 export const DEFAULT_EFFORT_LEVEL: EffortLevel = 'high';
