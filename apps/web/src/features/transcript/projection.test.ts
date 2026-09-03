@@ -305,15 +305,155 @@ describe('subagent nesting', () => {
     expect((out[0] as ToolCallMessage).status).toBe('running');
   });
 
-  it('shows output whose parent call is out of view rather than dropping it', () => {
-    // A windowed transcript can start after the `Task` call. Silently losing
-    // the agent's work would be the exact failure nesting exists to fix.
+  it('shows output whose parent call is out of view while the agent is still working', () => {
+    // A buffer can start after the `Task` call. Losing a live agent's work
+    // would be the exact failure nesting exists to fix.
     reset();
     const out = projectEvents([from('gone', assistantText('still working'))]);
     expect(kinds(out)).toEqual(['tool_call']);
     const call = out[0] as ToolCallMessage;
     expect(call.toolName).toBe('(subagent)');
+    expect(call.status).toBe('running');
+    expect(call.subagentRunning).toBe(true);
     expect(kinds(call.subagent!)).toEqual(['text']);
+  });
+
+  it('drops output whose parent call is out of view once the agent is done', () => {
+    // The old placeholder was pinned below the conversation forever, with
+    // nothing to say when the agent had finished. Its call is gone, so there
+    // is nowhere it can truthfully sit; the turn boundary after its last word
+    // is the end of it.
+    reset();
+    const out = projectEvents([
+      from('gone', assistantText('finished a while ago')),
+      result(),
+      userText('next'),
+      assistantText('on it'),
+    ]);
+    expect(kinds(out)).toEqual(['turn_end', 'text', 'text']);
+  });
+
+  it('hangs a nested subagent off the call inside its parent transcript', () => {
+    // A subagent's own `Agent` call sits in *its* stream; the grandchild's
+    // output is tagged with the grandchild's id. Bucketing one level deep
+    // left it unclaimed and pinned to the end of the chat.
+    reset();
+    const out = projectEvents([
+      toolUse('task1', 'Agent', { description: 'lead' }),
+      from('task1', assistantText('delegating further')),
+      from('task1', toolUse('task2', 'Agent', { description: 'worker' })),
+      from('task2', assistantText('deep work')),
+      from('task1', toolResult('task2', 'worker done')),
+      toolResult('task1', 'lead done'),
+    ]);
+    expect(kinds(out)).toEqual(['tool_call']);
+    const lead = out[0] as ToolCallMessage;
+    expect(kinds(lead.subagent!)).toEqual(['text', 'tool_call']);
+    const worker = lead.subagent![1] as ToolCallMessage;
+    expect(worker.toolName).toBe('Agent');
+    expect(worker.status).toBe('ok');
+    expect(kinds(worker.subagent!)).toEqual(['text']);
+    expect(worker.subagentRunning).toBe(false);
+    expect(lead.subagentRunning).toBe(false);
+  });
+
+  it('keeps a parent live while a nested agent is', () => {
+    reset();
+    const out = projectEvents([
+      toolUse('task1', 'Agent', {}),
+      from('task1', toolUse('task2', 'Agent', {})),
+      from('task2', assistantText('still going')),
+    ]);
+    const lead = out[0] as ToolCallMessage;
+    expect(lead.subagentRunning).toBe(true);
+    expect((lead.subagent![0] as ToolCallMessage).subagentRunning).toBe(true);
+  });
+});
+
+describe('async subagents', () => {
+  // `Agent` returns "Async agent launched" at once and the agent keeps
+  // talking under an `ok` card; nothing ever announces its end.
+  const launched = (id: string): SessionEvent => toolResult(id, 'Async agent launched successfully.');
+
+  it('is still working after its call has returned', () => {
+    reset();
+    const out = projectEvents([
+      toolUse('task1', 'Agent', {}),
+      launched('task1'),
+      from('task1', assistantText('reading')),
+    ]);
+    const call = out[0] as ToolCallMessage;
+    expect(call.status).toBe('ok');
+    expect(call.subagentRunning).toBe(true);
+  });
+
+  it('is done once a turn boundary follows its last word', () => {
+    reset();
+    const out = projectEvents([
+      toolUse('task1', 'Agent', {}),
+      launched('task1'),
+      from('task1', assistantText('verdict')),
+      result(),
+    ]);
+    expect((out[0] as ToolCallMessage).subagentRunning).toBe(false);
+  });
+
+  it('comes back to life if it speaks after the turn that launched it ended', () => {
+    // Seen in real transcripts: the main turn's `result`, then the agent's
+    // final message, then the main agent picking it up in a new turn.
+    reset();
+    const out = projectEvents([
+      toolUse('task1', 'Agent', {}),
+      launched('task1'),
+      from('task1', assistantText('working')),
+      result(),
+      from('task1', assistantText('verdict')),
+    ]);
+    expect((out[0] as ToolCallMessage).subagentRunning).toBe(true);
+
+    reset();
+    const later = projectEvents([
+      toolUse('task1', 'Agent', {}),
+      launched('task1'),
+      from('task1', assistantText('working')),
+      result(),
+      from('task1', assistantText('verdict')),
+      assistantText('acting on the verdict'),
+      result(),
+    ]);
+    expect((later[0] as ToolCallMessage).subagentRunning).toBe(false);
+  });
+
+  it('a foreground agent is done when its call returns, turn still open', () => {
+    reset();
+    const out = projectEvents([
+      toolUse('task1', 'Agent', {}),
+      from('task1', assistantText('reviewing')),
+      toolResult('task1', 'looks fine'),
+      assistantText('the main agent carries on'),
+    ]);
+    expect((out[0] as ToolCallMessage).subagentRunning).toBe(false);
+  });
+
+  it('a foreground agent is live while its call is', () => {
+    reset();
+    const out = projectEvents([toolUse('task1', 'Agent', {}), from('task1', assistantText('reviewing'))]);
+    expect((out[0] as ToolCallMessage).subagentRunning).toBe(true);
+  });
+
+  it('a session ending is the end of it', () => {
+    reset();
+    const ended = (): SessionEvent => {
+      seq += 1;
+      return { type: 'system', event: 'session_ended', sessionId: 's', seq } as SessionEvent;
+    };
+    const out = projectEvents([
+      toolUse('task1', 'Agent', {}),
+      launched('task1'),
+      from('task1', assistantText('working')),
+      ended(),
+    ]);
+    expect((out[0] as ToolCallMessage).subagentRunning).toBe(false);
   });
 
   it('keeps two subagents apart', () => {

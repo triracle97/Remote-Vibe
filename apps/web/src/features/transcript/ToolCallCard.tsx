@@ -1,4 +1,4 @@
-import { useState, type JSX, type ReactNode } from 'react';
+import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { ToolCallMessage, ToolStatus, ViewMessage } from './projection';
 import { DiffViewer } from './DiffViewer';
@@ -105,7 +105,11 @@ export function ToolCallCard({
           actually want to watch while it runs, not an argument dump you went
           looking for. */}
       {message.subagent !== undefined && message.subagent.length > 0 && renderSubagent && (
-        <SubagentPanel running={running}>{renderSubagent(message.subagent)}</SubagentPanel>
+        // The agent's own state, not the call's: an async agent's call reads
+        // `ok` from the moment it is launched, while the agent keeps working.
+        <SubagentPanel running={message.subagentRunning ?? running}>
+          {renderSubagent(message.subagent)}
+        </SubagentPanel>
       )}
     </div>
   );
@@ -126,6 +130,13 @@ function SubagentPanel({
   children: ReactNode;
 }): JSX.Element {
   const [open, setOpen] = useState(running);
+  // An async agent can go quiet past a turn boundary and speak again after it,
+  // which flips `running` back on under a panel that already collapsed. Live
+  // output should be visible, so reopen on that edge only — a collapse made by
+  // hand while the agent is still talking is left alone.
+  useEffect(() => {
+    if (running) setOpen(true);
+  }, [running]);
 
   return (
     <div className="mt-1 ml-4" data-testid="subagent-panel">

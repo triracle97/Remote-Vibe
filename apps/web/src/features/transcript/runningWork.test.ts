@@ -245,3 +245,35 @@ describe('shell ids quoted in prose', () => {
     expect(runningWork([bg('t1', 'no id here')]).shells).toBe(1);
   });
 });
+
+describe('async agents', () => {
+  it('counts an agent whose call returned but which is still working', () => {
+    // `Agent` returns "launched" at once; the call reads `ok` for as long as
+    // the agent works. Counting `running` calls never saw it.
+    const msgs: ViewMessage[] = [
+      call({ toolUseId: 'a1', toolName: 'Agent', status: 'ok', subagent: [], subagentRunning: true } as Partial<ToolCallMessage>),
+    ];
+    expect(runningWork(msgs).subagents).toBe(1);
+  });
+
+  it('stops counting it once the projection says it is done', () => {
+    const msgs: ViewMessage[] = [
+      call({ toolUseId: 'a1', toolName: 'Agent', status: 'ok', subagent: [], subagentRunning: false } as Partial<ToolCallMessage>),
+    ];
+    expect(runningWork(msgs).subagents).toBe(0);
+  });
+
+  it('counts a live agent whose call is out of view', () => {
+    const msgs: ViewMessage[] = [
+      call({ toolUseId: 'gone', toolName: '(subagent)', status: 'running', subagent: [], subagentRunning: true } as Partial<ToolCallMessage>),
+    ];
+    expect(runningWork(msgs).subagents).toBe(1);
+  });
+
+  it('counts a workflow whose agents are still working', () => {
+    const msgs: ViewMessage[] = [
+      call({ toolUseId: 'w1', toolName: 'Workflow', status: 'ok', subagent: [], subagentRunning: true } as Partial<ToolCallMessage>),
+    ];
+    expect(runningWork(msgs).workflows).toBe(1);
+  });
+});

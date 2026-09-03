@@ -8,10 +8,12 @@ import type { ToolCallMessage, ViewMessage } from './projection';
  * because two shapes:
  *
  * - **A call that stays open for the life of the work.** `Monitor` blocks while
- *   it watches; a subagent *is* its `Task` call. The projection already knows
- *   these are `running`, so counting them is enough — and the projection now
- *   closes anything left open by a `result` or a `session_ended`, so a turn
- *   that was interrupted does not leave phantoms behind.
+ *   it watches; a foreground subagent *is* its `Task` call. The projection
+ *   already knows these are `running`, so counting them is enough — and the
+ *   projection closes anything left open by a `result` or a `session_ended`,
+ *   so a turn that was interrupted does not leave phantoms behind. An async
+ *   agent's call returns at once, so for agents the projection's
+ *   `subagentRunning` is read instead: it follows the agent, not the call.
  * - **A call that returns immediately and leaves something behind.** A
  *   background `Bash` hands back a shell id and reads `ok` within a second, so
  *   counting `running` calls would always report zero. Its shell is opened by
@@ -48,7 +50,18 @@ export const NO_RUNNING_WORK: RunningWork = {
 };
 
 /** Tools whose call stays open for the whole life of the agent it started. */
-const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
+const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent', '(subagent)']);
+
+/**
+ * Whether a delegating call still has an agent working under it.
+ *
+ * The call's own status is enough for a foreground agent. An async agent's
+ * `Task` returns "launched" immediately and reads `ok` for the whole time the
+ * agent works, so the projection's per-agent flag is what actually answers.
+ */
+function agentLive(call: ToolCallMessage): boolean {
+  return call.status === 'running' || call.subagentRunning === true;
+}
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null;
@@ -155,12 +168,12 @@ export function runningWork(messages: readonly ViewMessage[]): RunningWork {
     }
 
     if (SUBAGENT_TOOLS.has(call.toolName)) {
-      if (call.status === 'running') subagents += 1;
+      if (agentLive(call)) subagents += 1;
       continue;
     }
 
     if (call.toolName === 'Workflow') {
-      if (call.status === 'running') workflows += 1;
+      if (agentLive(call)) workflows += 1;
       continue;
     }
 

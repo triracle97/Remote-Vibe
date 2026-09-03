@@ -49,6 +49,16 @@ export interface ToolCallMessage {
    * on one flat stream read as one agent with no memory.
    */
   subagent?: ViewMessage[];
+  /**
+   * Whether the agent under this call is still working.
+   *
+   * Not the same as `status === 'running'`. A foreground agent *is* its call
+   * and ends when the result lands, but an async agent's call returns
+   * "launched" at once and the agent keeps talking under an `ok` card —
+   * sometimes past the `result` of the turn that started it, since nothing
+   * ever announces its end. Set whenever `subagent` is.
+   */
+  subagentRunning?: boolean;
 }
 
 export interface TextMessage {
@@ -114,22 +124,19 @@ interface ToolResultPayload {
  * in place would merge a subagent's prose into the parent's paragraph and let
  * a subagent's `tool_result` complete a call the parent was still waiting on.
  */
-export function projectEvents(
-  events: readonly SessionEvent[],
-  /**
-   * Whose transcript this is: the tool call id when projecting a subagent,
-   * absent for the session's own agent. Events tagged with it are this
-   * speaker's own; anything else is one level further down.
-   */
-  scope?: string,
-): ViewMessage[] {
+export function projectEvents(events: readonly SessionEvent[]): ViewMessage[] {
   const own: SessionEvent[] = [];
-  /** parentToolUseId → that subagent's own events, in order. */
+  /** parentToolUseId → that subagent's own events, in order. Every depth. */
   const byParent = new Map<string, SessionEvent[]>();
+  // Where the main agent last stopped. An async agent is the one thing that
+  // can outlive that, and the one thing whose end is never announced — so
+  // the boundary after its last word is taken as its end.
+  let lastBoundary = 0;
   for (const e of events) {
     const parent = parentOf(e);
-    if (parent === undefined || parent === scope) {
+    if (parent === undefined) {
       own.push(e);
+      if (isTurnBoundary(e)) lastBoundary = e.seq;
       continue;
     }
     const bucket = byParent.get(parent);
@@ -137,8 +144,11 @@ export function projectEvents(
     else byParent.set(parent, [e]);
   }
 
-  const out = projectOwnEvents(own);
-  if (byParent.size > 0) attachSubagents(out, byParent);
+  const { out, closedAt } = projectOwnEvents(own);
+  if (byParent.size > 0) {
+    attachSubagents(out, closedAt, byParent, lastBoundary);
+    surfaceOrphans(out, byParent, lastBoundary);
+  }
   return out;
 }
 
@@ -147,39 +157,100 @@ function parentOf(e: SessionEvent): string | undefined {
   return typeof id === 'string' && id.length > 0 ? id : undefined;
 }
 
+/** A finished turn or a dead process: the main agent is not working past it. */
+function isTurnBoundary(e: SessionEvent): boolean {
+  return e.type === 'result' || (e.type === 'system' && e.event === 'session_ended');
+}
+
+function lastSeq(events: readonly SessionEvent[]): number {
+  return events[events.length - 1]?.seq ?? 0;
+}
+
 /**
- * Hang each subagent's transcript off the call that started it.
+ * Hang each subagent's transcript off the call that started it, at any depth.
  *
- * A bucket whose parent call is not in view — a transcript window that starts
- * mid-turn, a partially replayed session — becomes a call of its own rather
- * than disappearing. Dropping it would be the exact failure this feature
- * exists to fix, just with an extra step.
+ * One map shared down the recursion, rather than re-bucketing per level: a
+ * subagent's own `Agent` call sits in *its* stream, tagged with its id, while
+ * the grandchild's output is tagged with the grandchild's. Bucketing a single
+ * level deep left every nested agent unclaimed, and the fallback then pinned
+ * all of them below the conversation as `(subagent)` cards that never left.
+ *
+ * `subagentRunning` is decided here because the call's status cannot say it.
+ * If the agent spoke after its call returned, it is async, and it is working
+ * until the next turn boundary after its last word; otherwise it is its call.
+ * A parent is also still working while anything nested under it is.
  */
-function attachSubagents(out: ViewMessage[], byParent: Map<string, SessionEvent[]>): void {
+function attachSubagents(
+  out: ViewMessage[],
+  closedAt: ReadonlyMap<string, number>,
+  byParent: Map<string, SessionEvent[]>,
+  lastBoundary: number,
+): void {
   for (const m of out) {
     if (m.kind !== 'tool_call') continue;
     const events = byParent.get(m.toolUseId);
     if (events === undefined) continue;
     byParent.delete(m.toolUseId);
-    m.subagent = projectEvents(events, m.toolUseId);
+
+    const nested = projectOwnEvents(events);
+    attachSubagents(nested.out, nested.closedAt, byParent, lastBoundary);
+    m.subagent = nested.out;
+
+    const spoke = lastSeq(events);
+    const returned = closedAt.get(m.toolUseId);
+    const isAsync = returned !== undefined && spoke > returned;
+    m.subagentRunning =
+      m.status === 'running' ||
+      (isAsync && spoke > lastBoundary) ||
+      nested.out.some((n) => n.kind === 'tool_call' && n.subagentRunning === true);
   }
+}
+
+/**
+ * Output whose parent call is not in view at all — a buffer that starts
+ * mid-turn, a partially replayed session.
+ *
+ * Shown only while the agent is still working, as a `(subagent)` card at the
+ * end, which is where live output belongs. A finished one is dropped: its call
+ * is gone, so there is nowhere in the transcript it can truthfully sit, and a
+ * card pinned below the conversation for good was the bug this fixes.
+ */
+function surfaceOrphans(
+  out: ViewMessage[],
+  byParent: Map<string, SessionEvent[]>,
+  lastBoundary: number,
+): void {
   for (const [toolUseId, events] of byParent) {
+    byParent.delete(toolUseId);
+    if (lastSeq(events) <= lastBoundary) continue;
+    const nested = projectOwnEvents(events);
+    attachSubagents(nested.out, nested.closedAt, byParent, lastBoundary);
     out.push({
       kind: 'tool_call',
       id: `subagent-${toolUseId}`,
       toolUseId,
       toolName: '(subagent)',
       input: undefined,
-      status: 'ok',
-      subagent: projectEvents(events, toolUseId),
+      status: 'running',
+      subagent: nested.out,
+      subagentRunning: true,
     });
   }
 }
 
-function projectOwnEvents(events: readonly SessionEvent[]): ViewMessage[] {
+/**
+ * One speaker's events, folded. `closedAt` is the `seq` of the result that
+ * completed each call — what tells an async agent (spoke after it) from a
+ * foreground one (spoke before it).
+ */
+function projectOwnEvents(events: readonly SessionEvent[]): {
+  out: ViewMessage[];
+  closedAt: Map<string, number>;
+} {
   const out: ViewMessage[] = [];
   /** toolUseId → index in `out`, so a later result can complete the call. */
   const openTools = new Map<string, number>();
+  const closedAt = new Map<string, number>();
 
   for (const e of events) {
     if (e.superseded) continue;
@@ -252,6 +323,7 @@ function projectOwnEvents(events: readonly SessionEvent[]): ViewMessage[] {
           break;
         }
         openTools.delete(p.toolUseId);
+        closedAt.set(p.toolUseId, e.seq);
         const call = out[at] as ToolCallMessage;
         call.status = p.isError ? 'error' : 'ok';
         call.output = p.output;
@@ -317,7 +389,7 @@ function projectOwnEvents(events: readonly SessionEvent[]): ViewMessage[] {
     }
   }
 
-  return out;
+  return { out, closedAt };
 }
 
 /** `seq` is unique and monotonic per session, so it makes a stable React key. */
