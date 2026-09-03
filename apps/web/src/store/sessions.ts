@@ -50,10 +50,12 @@ function applySupersessionWalk(events: SessionEvent[]): SessionEvent[] {
   // Used by BOTH the live `assistant` append path and the `history` bulk-merge
   // (replay) path so reload-replay reaches the same superseded set as live.
   //
-  // The walk stops at anything from a different speaker. Subagent output rides
-  // the same stream, so without that check a subagent's completed message
-  // would retire the main agent's still-streaming deltas — and the prose the
-  // user was watching would vanish mid-sentence.
+  // "Contiguous" is per speaker, not per position. Subagent output shares this
+  // stream, so a message from one speaker must not retire another's
+  // still-streaming deltas — and must not be *stopped* by them either. Two
+  // agents streaming at once interleave, so a strict positional walk would hit
+  // the other one immediately and leave every delta live forever, which is how
+  // "Thinking…" gets stuck under a session with nothing running.
   let out: SessionEvent[] | null = null;
   for (let i = 0; i < events.length; i++) {
     const e = events[i]!;
@@ -63,7 +65,9 @@ function applySupersessionWalk(events: SessionEvent[]): SessionEvent[] {
     const speaker = e.parentToolUseId;
     for (let j = i - 1; j >= 0; j--) {
       const prev = (out ?? events)[j]!;
-      if (prev.type !== 'stream_delta' || prev.parentToolUseId !== speaker) break;
+      // Somebody else talking is not this speaker's boundary.
+      if ((prev as { parentToolUseId?: string }).parentToolUseId !== speaker) continue;
+      if (prev.type !== 'stream_delta') break;
       if (prev.superseded) continue;
       if (out === null) out = events.slice();
       out[j] = { ...prev, superseded: true };

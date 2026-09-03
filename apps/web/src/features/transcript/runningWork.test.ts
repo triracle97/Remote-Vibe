@@ -157,3 +157,91 @@ describe('runningWork', () => {
     expect(runningWork(msgs).shells).toBe(0);
   });
 });
+
+describe('background work started by a subagent', () => {
+  it('counts a shell a delegated agent opened', () => {
+    // Nesting subagent output under its call took this work out of the flat
+    // list, and the count silently stopped seeing any of it.
+    const msgs: ViewMessage[] = [
+      call({
+        toolUseId: 'task1',
+        toolName: 'Task',
+        status: 'running',
+        subagent: [bg('t1', { shell_id: 'bash_1' })],
+      } as Partial<ToolCallMessage>),
+    ];
+    // One agent working, and the shell it left running.
+    expect(runningWork(msgs)).toEqual({ shells: 1, monitors: 0, subagents: 1, workflows: 0 });
+  });
+
+  it('counts a monitor and a nested agent at any depth', () => {
+    const msgs: ViewMessage[] = [
+      call({
+        toolUseId: 'w1',
+        toolName: 'Workflow',
+        status: 'running',
+        subagent: [
+          call({ toolUseId: 'm1', toolName: 'Monitor', status: 'running' }),
+          call({
+            toolUseId: 'task1',
+            toolName: 'Task',
+            status: 'running',
+            subagent: [call({ toolUseId: 'm2', toolName: 'Monitor', status: 'running' })],
+          } as Partial<ToolCallMessage>),
+        ],
+      } as Partial<ToolCallMessage>),
+    ];
+    expect(runningWork(msgs)).toEqual({ shells: 0, monitors: 2, subagents: 1, workflows: 1 });
+  });
+
+  it('lets a subagent close a shell the main agent opened', () => {
+    // Shell ids are session-wide, so whoever polls the shell closes it.
+    const msgs: ViewMessage[] = [
+      bg('t1', { shell_id: 'bash_1' }),
+      call({
+        toolUseId: 'task1',
+        toolName: 'Task',
+        status: 'ok',
+        subagent: [
+          call({
+            toolUseId: 'b1',
+            toolName: 'BashOutput',
+            input: { shell_id: 'bash_1' },
+            output: { status: 'completed' },
+          }),
+        ],
+      } as Partial<ToolCallMessage>),
+    ];
+    expect(runningWork(msgs).shells).toBe(0);
+  });
+});
+
+describe('shell ids quoted in prose', () => {
+  it('matches a text-reported id against the BashOutput that closes it', () => {
+    // The background Bash reports its id as text, not a field. Keyed by the
+    // tool-use id instead, the closing BashOutput matched nothing and the
+    // shell was counted forever — a number that only ever went up.
+    const msgs: ViewMessage[] = [
+      bg('t1', 'Command running in background with shell ID: bash_7'),
+      call({
+        toolUseId: 'b1',
+        toolName: 'BashOutput',
+        input: { bash_id: 'bash_7' },
+        output: '<status>completed</status>',
+      }),
+    ];
+    expect(runningWork(msgs).shells).toBe(0);
+  });
+
+  it('finds a bare bash_N in the output too', () => {
+    const msgs: ViewMessage[] = [
+      bg('t1', 'started as bash_3'),
+      call({ toolUseId: 'k1', toolName: 'KillShell', input: { shell_id: 'bash_3' } }),
+    ];
+    expect(runningWork(msgs).shells).toBe(0);
+  });
+
+  it('still falls back to the tool-use id when nothing names a shell', () => {
+    expect(runningWork([bg('t1', 'no id here')]).shells).toBe(1);
+  });
+});

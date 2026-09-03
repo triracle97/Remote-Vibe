@@ -171,6 +171,40 @@ describe('sessions store', () => {
     expect((assistant as { superseded?: boolean }).superseded).toBeUndefined();
   });
 
+  it('supersedes each speaker\'s own deltas when two stream at once', () => {
+    // Subagent output shares this stream, so the deltas of two agents
+    // interleave. A positional walk hits the other speaker immediately and
+    // gives up, leaving live deltas behind forever — which is what kept
+    // "Thinking…" up under a session with nothing running.
+    const store = useSessionsStore.getState();
+    store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });
+    store.applyServerMsg({ type: 'stream_delta', sessionId: 's1', seq: 2, payload: { delta: 'a' } });
+    store.applyServerMsg({
+      type: 'stream_delta',
+      sessionId: 's1',
+      seq: 3,
+      payload: { delta: 'x' },
+      parentToolUseId: 'task1',
+    });
+    store.applyServerMsg({ type: 'assistant', sessionId: 's1', seq: 4, payload: { text: 'a' } });
+
+    const at = (seq: number): { superseded?: boolean } =>
+      useSessionsStore.getState().sessions['s1']!.events.find((e) => 'seq' in e && e.seq === seq)!;
+    // The main agent's own delta is retired past the subagent's...
+    expect(at(2).superseded).toBe(true);
+    // ...and the subagent's is left alone: nobody has finalised it yet.
+    expect(at(3).superseded).toBeUndefined();
+
+    store.applyServerMsg({
+      type: 'assistant',
+      sessionId: 's1',
+      seq: 5,
+      payload: { text: 'x' },
+      parentToolUseId: 'task1',
+    });
+    expect(at(3).superseded).toBe(true);
+  });
+
   it('does NOT supersede stream_deltas from a previous turn', () => {
     const store = useSessionsStore.getState();
     store.applyServerMsg({ type: 'system', event: 'session_created', sessionId: 's1', seq: 1 });

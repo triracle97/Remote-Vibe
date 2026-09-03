@@ -16,7 +16,7 @@ import { TranscriptSearchBar } from '../transcript/TranscriptSearchBar';
 import { TranscriptSidebar } from '../transcript/TranscriptSidebar';
 import { projectEvents } from '../transcript/projection';
 import { runningWork } from '../transcript/runningWork';
-import { isTurnRunning } from '../transcript/turnState';
+import { isStreamingText, isTurnRunning } from '../transcript/turnState';
 import { imageFilesFromClipboard } from '../image-attach/clipboardImages';
 import {
   absolutePathsFromDataTransfer,
@@ -80,6 +80,7 @@ export function Chat({
   // the Esc / ⌃C bindings — they must agree, or the key does nothing while the
   // button says otherwise.
   const turnRunning = useMemo(() => isTurnRunning(session.events), [session.events]);
+  const streaming = useMemo(() => isStreamingText(session.events), [session.events]);
 
   const interrupt = useCallback(() => {
     if (!turnRunning || !session.alive) return;
@@ -255,11 +256,10 @@ export function Chat({
             settings={DEFAULT_TRANSCRIPT_SETTINGS}
             searchQuery={searchQuery}
             onOpenFile={openFile}
-            footer={
-              session.events.some((e) => e.type === 'stream_delta' && !e.superseded) ? (
-                <ThinkingPill />
-              ) : null
-            }
+            // Both halves matter: text has to be arriving *and* the turn has to
+            // still be open. A turn that died mid-stream leaves deltas at the
+            // tail that nothing will ever finalise.
+            footer={turnRunning && streaming ? <ThinkingPill /> : null}
           />
         </div>
         {sidebarOpen && isDesktop && (

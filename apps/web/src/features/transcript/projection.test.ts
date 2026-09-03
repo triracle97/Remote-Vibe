@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { projectEvents, type ToolCallMessage, type ViewMessage } from './projection';
+import { runningWork } from './runningWork';
 import type { SessionEvent } from '../../store/sessions';
 
 let seq = 0;
@@ -331,5 +332,38 @@ describe('subagent nesting', () => {
     expect(a.subagent).toHaveLength(1);
     expect((a.subagent![0] as { text: string }).text).toBe('agent one\n\none again');
     expect((b.subagent![0] as { text: string }).text).toBe('agent two');
+  });
+});
+
+describe('tools left open', () => {
+  const ended = (): SessionEvent => {
+    seq += 1;
+    return { type: 'system', event: 'session_ended', sessionId: 's', seq } as SessionEvent;
+  };
+
+  it('closes what a finished turn abandoned', () => {
+    reset();
+    const out = projectEvents([toolUse('t1', 'Monitor', {}), result()]);
+    expect((out[0] as ToolCallMessage).status).not.toBe('running');
+  });
+
+  it('closes what a killed session was holding', () => {
+    // Nothing will ever answer these — the process is gone. Left `running`
+    // they keep being counted as live background work on a dead card.
+    reset();
+    const out = projectEvents([
+      toolUse('t1', 'Monitor', {}),
+      toolUse('t2', 'Task', { description: 'review' }),
+      ended(),
+    ]);
+    expect((out[0] as ToolCallMessage).status).toBe('error');
+    expect((out[1] as ToolCallMessage).status).toBe('error');
+    expect(runningWork(out)).toEqual({ shells: 0, monitors: 0, subagents: 0, workflows: 0 });
+  });
+
+  it('leaves a tool that really did finish alone', () => {
+    reset();
+    const out = projectEvents([toolUse('t1', 'Monitor', {}), toolResult('t1', 'saw it'), ended()]);
+    expect((out[0] as ToolCallMessage).status).toBe('ok');
   });
 });

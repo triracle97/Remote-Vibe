@@ -292,6 +292,15 @@ function projectOwnEvents(events: readonly SessionEvent[]): ViewMessage[] {
         if (e.event === 'session_created') {
           out.push({ kind: 'notice', id: idFor(e), text: 'session started', tone: 'info' });
         } else if (e.event === 'session_ended') {
+          // Same abandonment rule as `result`, and for a stronger reason: the
+          // process is gone, so nothing will ever answer these. Without it a
+          // session killed mid-turn keeps reporting the tools it died holding
+          // — a dead card claiming two monitors and a subagent, forever.
+          for (const at of openTools.values()) {
+            const call = out[at] as ToolCallMessage;
+            if (call.status === 'running') call.status = 'error';
+          }
+          openTools.clear();
           const reason = e.reason ? `, ${e.reason}` : '';
           out.push({
             kind: 'notice',
