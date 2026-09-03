@@ -19,6 +19,7 @@ import type { PendingImage, UseImagePaste } from '../image-attach/useImagePaste'
 import type { AgentKind } from '../../types/protocol';
 import { SlashAutocomplete, type SlashAutocompleteHandle } from './SlashAutocomplete';
 import { AtTagAutocomplete, type AtTagAutocompleteHandle } from './AtTagAutocomplete';
+import { COMPOSER_MIN_HEIGHT, useComposerHeight } from './composerHeight';
 
 interface InputBoxProps {
   onSend(text: string, images?: ReadonlyArray<{ mime: string; base64: string }>): void;
@@ -83,6 +84,7 @@ export function InputBox({
   const taRef = useRef<HTMLTextAreaElement>(null);
   const slashRef = useRef<SlashAutocompleteHandle>(null);
   const atRef = useRef<AtTagAutocompleteHandle>(null);
+  const composer = useComposerHeight(taRef, text);
   // Image attach is allowed on dead Claude sessions too — the message + images
   // get queued and flush after resume succeeds.
   // Both CLIs take images — Claude inline on stdin, Codex via `codex exec -i`
@@ -457,6 +459,35 @@ export function InputBox({
           cursor={cursor}
           onPick={onPick}
         />
+        {/*
+          Resize grip. Auto-grow already covers "it's too small" without any
+          gesture, so this is the override, and it deliberately isn't
+          drag-only: it takes focus, arrow keys nudge it a step at a time, and
+          Enter/Esc/double-click hand the height back to auto-grow.
+        */}
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize message input"
+          aria-valuenow={composer.height}
+          aria-valuemin={COMPOSER_MIN_HEIGHT}
+          aria-valuemax={composer.max}
+          tabIndex={0}
+          title="Drag or use ↑/↓ to resize · double-click to fit the text"
+          onPointerDown={composer.onGripPointerDown}
+          onKeyDown={composer.onGripKeyDown}
+          onDoubleClick={composer.resetHeight}
+          className="composer-grip group -mt-2 -mb-1 h-6 shrink-0 flex items-center justify-center cursor-ns-resize touch-none rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
+        >
+          <span
+            className={[
+              'h-1 w-10 rounded-full transition-colors',
+              composer.manual ? 'bg-[var(--color-text-dim)]' : 'bg-[var(--color-border)]',
+              'group-hover:bg-[var(--color-text-mute)]',
+            ].join(' ')}
+            aria-hidden="true"
+          />
+        </div>
         <textarea
           ref={taRef}
           value={text}
@@ -473,9 +504,9 @@ export function InputBox({
           onKeyUp={updateCursor}
           onSelect={updateCursor}
           onClick={updateCursor}
-          rows={3}
           disabled={disabled}
-          className="bg-transparent border-0 outline-none ring-0 text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] resize-none min-h-[3rem] text-sm md:text-[15px] focus:ring-0 disabled:opacity-60"
+          style={{ height: `${composer.height}px` }}
+          className="bg-transparent border-0 outline-none ring-0 text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] resize-none overflow-y-auto text-sm md:text-[15px] focus:ring-0 disabled:opacity-60"
         />
         <input
           ref={fileInputRef}

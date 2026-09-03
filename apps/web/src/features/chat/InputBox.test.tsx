@@ -544,3 +544,81 @@ describe('InputBox — paste a file path', () => {
     expect(container.querySelector('textarea')!.value).toBe('');
   });
 });
+
+describe('InputBox — composer resize grip', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('starts at the auto height with no stored override', () => {
+    const { container } = render(<InputBox {...defaultProps()} />);
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement;
+    expect(ta.style.height).toBe('72px');
+  });
+
+  it('restores a stored height on mount', () => {
+    localStorage.setItem('mrt.composerHeight', '260');
+    const { container } = render(<InputBox {...defaultProps()} />);
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement;
+    expect(ta.style.height).toBe('260px');
+  });
+
+  it('grows and shrinks by keyboard, and persists', () => {
+    const { container } = render(<InputBox {...defaultProps()} />);
+    const grip = container.querySelector('.composer-grip') as HTMLElement;
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement;
+
+    fireEvent.keyDown(grip, { key: 'ArrowUp' });
+    expect(ta.style.height).toBe('96px');
+    expect(localStorage.getItem('mrt.composerHeight')).toBe('96');
+
+    fireEvent.keyDown(grip, { key: 'ArrowDown' });
+    expect(ta.style.height).toBe('72px');
+  });
+
+  it('never shrinks below the floor', () => {
+    const { container } = render(<InputBox {...defaultProps()} />);
+    const grip = container.querySelector('.composer-grip') as HTMLElement;
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement;
+
+    for (let i = 0; i < 5; i++) fireEvent.keyDown(grip, { key: 'ArrowDown' });
+    expect(ta.style.height).toBe('72px');
+  });
+
+  it('drags taller when pulled up, and remembers it', () => {
+    const { container } = render(<InputBox {...defaultProps()} />);
+    const grip = container.querySelector('.composer-grip') as HTMLElement;
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement;
+
+    fireEvent.pointerDown(grip, { button: 0, clientY: 400 });
+    fireEvent(window, new MouseEvent('pointermove', { clientY: 300 }));
+    expect(ta.style.height).toBe('172px');
+
+    fireEvent(window, new MouseEvent('pointerup', { clientY: 300 }));
+    expect(localStorage.getItem('mrt.composerHeight')).toBe('172');
+
+    // Pointer released — later movement must not keep resizing.
+    fireEvent(window, new MouseEvent('pointermove', { clientY: 100 }));
+    expect(ta.style.height).toBe('172px');
+  });
+
+  it('double-click hands the height back to auto-grow and forgets the override', () => {
+    localStorage.setItem('mrt.composerHeight', '260');
+    const { container } = render(<InputBox {...defaultProps()} />);
+    const grip = container.querySelector('.composer-grip') as HTMLElement;
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement;
+    expect(ta.style.height).toBe('260px');
+
+    fireEvent.doubleClick(grip);
+    expect(ta.style.height).toBe('72px');
+    expect(localStorage.getItem('mrt.composerHeight')).toBeNull();
+  });
+
+  it('exposes its range to assistive tech', () => {
+    const { container } = render(<InputBox {...defaultProps()} />);
+    const grip = container.querySelector('.composer-grip') as HTMLElement;
+    expect(grip.getAttribute('role')).toBe('separator');
+    expect(grip.getAttribute('aria-valuemin')).toBe('72');
+    expect(Number(grip.getAttribute('aria-valuemax'))).toBeGreaterThanOrEqual(72);
+  });
+});
