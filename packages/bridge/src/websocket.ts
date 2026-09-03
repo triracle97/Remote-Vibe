@@ -455,9 +455,13 @@ async function handleMessage(
         return;
       }
       case 'get_rate_limits': {
+        // Polled rather than answered from what past turns happened to
+        // mention: the CLI names one window per turn and withholds the
+        // percentage until that window is nearly spent, so the cached view is
+        // partial by construction. The poller's TTL absorbs repeat asks.
         send({
           type: 'rate_limits',
-          windows: sessionManager.rateLimitWindows(),
+          windows: await sessionManager.refreshRateLimits(),
           ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
         });
         return;

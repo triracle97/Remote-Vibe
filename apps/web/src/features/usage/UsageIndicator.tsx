@@ -1,3 +1,4 @@
+import { RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState, type JSX } from 'react';
 import {
   formatLimitType,
@@ -39,8 +40,9 @@ const TONE_VAR: Record<'ok' | 'warn' | 'danger', string> = {
   danger: '--color-danger',
 };
 
-export function UsageIndicator(): JSX.Element | null {
+export function UsageIndicator(): JSX.Element {
   const windows = useUsageStore((s) => s.windows);
+  const refresh = useUsageStore((s) => s.refreshRateLimits);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -63,8 +65,20 @@ export function UsageIndicator(): JSX.Element | null {
 
   const groups = groupByAccount(windows);
   const worst = worstWindow(windows);
-  // Nothing observed yet — better to show nothing than a confident zero.
-  if (worst === null) return null;
+  if (worst === null) {
+    return (
+      <button
+        type="button"
+        onClick={refresh}
+        aria-label="Reload plan usage"
+        title="Reload plan usage"
+        data-testid="reload-usage"
+        className="w-9 h-9 flex items-center justify-center rounded-md text-[var(--color-text-dim)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-2)] transition-colors"
+      >
+        <RefreshCw size={16} aria-hidden />
+      </button>
+    );
+  }
 
   const tone = utilizationTone(worst.utilization);
   const util = worst.utilization;
@@ -130,16 +144,20 @@ export function UsageIndicator(): JSX.Element | null {
         </span>
       )}
 
-      {open && <UsagePopover groups={groups} onClose={() => setOpen(false)} />}
+      {open && (
+        <UsagePopover groups={groups} onRefresh={refresh} onClose={() => setOpen(false)} />
+      )}
     </div>
   );
 }
 
 function UsagePopover({
   groups,
+  onRefresh,
   onClose,
 }: {
   groups: AccountWindows[];
+  onRefresh: () => void;
   onClose: () => void;
 }): JSX.Element {
   return (
@@ -160,9 +178,19 @@ function UsagePopover({
         </h3>
         <button
           type="button"
+          onClick={onRefresh}
+          aria-label="Reload plan usage"
+          title="Reload plan usage"
+          data-testid="reload-usage"
+          className="ml-auto p-1 text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+        >
+          <RefreshCw size={14} aria-hidden />
+        </button>
+        <button
+          type="button"
           onClick={onClose}
           aria-label="Close"
-          className="ml-auto text-[var(--color-text-dim)] hover:text-[var(--color-text)] leading-none"
+          className="text-[var(--color-text-dim)] hover:text-[var(--color-text)] leading-none"
         >
           ×
         </button>
@@ -225,7 +253,7 @@ function UsagePopover({
       ))}
 
       <p className="mt-2.5 text-[10px] text-[var(--color-text-dim)] leading-snug">
-        Reported by the agent CLI during a turn, per account. Updates as you work.{' '}
+        Reported by the agent CLI during a turn, per account. Reload to fetch the latest usage.{' '}
         <strong className="text-[var(--color-text-mute)]">OK</strong> means the CLI gave no
         percentage — it only names one once a window nears its limit.
       </p>

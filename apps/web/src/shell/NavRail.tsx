@@ -63,10 +63,8 @@ export function NavRail(): JSX.Element {
         </NavLink>
       ))}
       {/*
-        Quota ring. Given its own fixed track rather than sharing the routes'
-        `1fr` columns: it renders nothing until a turn reports usage, and a cell
-        that collapses would resize every tab the first time a turn lands. The
-        track is reserved whether or not the ring is there.
+        Quota ring, or its manual reload button before usage has been fetched.
+        Given its own fixed track rather than sharing the routes' `1fr` columns.
       */}
       <div className="flex items-center justify-center md:mt-auto md:pb-1">
         <UsageIndicator />

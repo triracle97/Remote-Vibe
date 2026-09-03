@@ -81,6 +81,12 @@ export interface SessionView {
   lastSeq: number;
   alive: boolean;
   account?: string;
+  /**
+   * Which credential this session runs as, e.g. `claude:claude1`. Matches
+   * `RateLimitAccount.key`, so the header can show this session's own plan
+   * usage rather than the worst window across every account.
+   */
+  accountKey?: string;
   name?: string | null;
 }
 
@@ -142,6 +148,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     if (m.type === 'system' && m.event === 'session_created') {
       const existing = get().sessions[m.sessionId];
       const resolvedAccount = m.account ?? existing?.account;
+      const resolvedAccountKey = m.accountKey ?? existing?.accountKey;
       const view: SessionView = {
         sessionId: m.sessionId,
         agent: m.agent ?? existing?.agent ?? 'claude',
@@ -151,6 +158,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         lastSeq: m.seq,
         alive: true,
         ...(resolvedAccount !== undefined ? { account: resolvedAccount } : {}),
+        ...(resolvedAccountKey !== undefined ? { accountKey: resolvedAccountKey } : {}),
         // Carry the name across. `session_created` has no `name` on the wire,
         // and opening a session replays this event from the bridge's buffer —
         // so rebuilding the view from scratch used to wipe a name that had
@@ -243,6 +251,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
               lastSeq: 0,
               alive: true,
               ...(summary.account !== undefined ? { account: summary.account } : {}),
+              ...(summary.accountKey !== undefined ? { accountKey: summary.accountKey } : {}),
               ...(summary.name !== undefined ? { name: summary.name } : {}),
             };
         order.push(summary.sessionId);

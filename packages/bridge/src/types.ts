@@ -284,6 +284,15 @@ export interface RateLimitWindow {
   isUsingOverage: boolean;
   /** ms since epoch when this bridge observed it. */
   observedAt: number;
+  /**
+   * Where the figure came from.
+   *
+   * `poll` is the account's usage endpoint, which always names a percentage;
+   * `event` is Claude's mid-stream `rate_limit_event`, which names one only
+   * past its warning threshold. A poll therefore outranks an event, and an
+   * event must never blank a polled number back to "no figure".
+   */
+  source?: 'poll' | 'event';
 }
 
 /**
@@ -368,6 +377,13 @@ export interface ServerLifecycleMsg {
   projectPath?: string;
   createdAt?: number;
   account?: string;
+  /**
+   * Which credential's quota this session's figures come from, e.g.
+   * `claude:claude1`. Matches `RateLimitAccount.key`, so the UI can show the
+   * windows for the account the session is actually running as rather than the
+   * worst window across every account the bridge drives.
+   */
+  accountKey?: string;
   correlationId?: string;
   reason?: string;
   exitCode?: number;
@@ -399,6 +415,8 @@ export interface ServerSessionListMsg {
     projectPath: string;
     createdAt: number;
     account?: string;
+    /** See `ServerLifecycleMsg.accountKey`. */
+    accountKey?: string;
     /**
      * Joined from the registry. Without this the web client loses the session
      * name on every page reload, since `session_renamed` only fires on change.

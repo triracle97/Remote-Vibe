@@ -53,6 +53,7 @@ import {
   type WorkflowSize,
 } from './claude-settings.js';
 import { loadReplayEvents, type ReplayEvent } from './native-history-replay.js';
+import type { QuotaSource } from './quota.js';
 import { DEFAULT_WORKSPACE_DIRS } from './default-workspaces.js';
 
 export interface SessionInfo {
@@ -207,6 +208,20 @@ export interface SessionManagerOpts {
   resolveHeadroom?: () => Promise<HeadroomSpawnConfig | null>;
   /** Names sessions from their first turn. Omit to keep prompt-derived names. */
   titler?: SessionTitler;
+  /**
+   * Reads live plan quota for one account.
+   *
+   * Omitted, the bridge knows only what Claude's mid-stream `rate_limit_event`
+   * volunteers — one window per turn, and no percentage at all until that
+   * window is nearly spent. Tests leave it out so nothing reaches the keychain
+   * or the network; `index.ts` wires the real `QuotaPoller`.
+   */
+  quota?: QuotaReader;
+}
+
+/** The slice of `QuotaPoller` the session manager depends on. */
+export interface QuotaReader {
+  windows(src: QuotaSource, opts?: { force?: boolean }): Promise<RateLimitWindow[]>;
 }
 
 export class SessionDeadError extends Error {
@@ -307,6 +322,7 @@ export class SessionManager extends EventEmitter {
    * keying on the limit type alone let whichever spoke last overwrite the other.
    */
   private readonly rateLimits = new Map<string, AccountRateLimitWindow>();
+  private readonly quota: QuotaReader | undefined;
   private readonly validatePathFn: (projectPath: string) => Promise<string>;
   private readonly resumeInFlight = new Map<string, Promise<void>>();
   /**
@@ -342,6 +358,7 @@ export class SessionManager extends EventEmitter {
     this.writeClaudeSettings = opts.writeClaudeSettings;
     this.resolveHeadroomFn = opts.resolveHeadroom ?? (() => Promise.resolve(null));
     this.titler = opts.titler;
+    this.quota = opts.quota;
     this.validatePathFn = makePathValidator({
       allowedDirs: this.allowedDirs,
       realpath: this.realpath,
@@ -696,6 +713,7 @@ export class SessionManager extends EventEmitter {
       agent: internal.agent,
       projectPath: internal.projectPath,
       createdAt: internal.createdAt,
+      accountKey: this.rateLimitAccountOf(internal).key,
       ...(account ? { account: account.name } : {}),
       ...(params.correlationId ? { correlationId: params.correlationId } : {}),
     });
@@ -850,6 +868,7 @@ export class SessionManager extends EventEmitter {
       agent: internal.agent,
       projectPath: internal.projectPath,
       createdAt: internal.createdAt,
+      accountKey: this.rateLimitAccountOf(internal).key,
       ...(account ? { account: account.name } : {}),
       ...(params.correlationId ? { correlationId: params.correlationId } : {}),
     });
@@ -1439,6 +1458,7 @@ export class SessionManager extends EventEmitter {
       agent: s.agent,
       projectPath: s.projectPath,
       createdAt: s.createdAt,
+      accountKey: this.rateLimitAccountOf(s).key,
       ...(s.account ? { account: s.account } : {}),
     });
   }
@@ -1500,6 +1520,11 @@ export class SessionManager extends EventEmitter {
     // is proof one is open — including on a session whose opening prompt this
     // process never saw, because it was resumed mid-flight or spawned with one.
     this.setTurnOpen(s, e.kind !== 'result');
+
+    // A finished turn is when the account's quota actually moved. Claude may
+    // or may not have volunteered a `rate_limit_event` this turn, and Codex
+    // never does, so this is the one boundary both agents share.
+    if (e.kind === 'result') void this.refreshQuotaFor(s);
 
     // The agent can drive its own board card with inline directives. Act on
     // them and strip them here, so no client ever sees the marker and the
@@ -1695,8 +1720,11 @@ export class SessionManager extends EventEmitter {
    * is by definition the `default` profile. A dir no profile claims any more
    * still reads better as its own tail than as a full path in a 64px rail.
    */
-  private claudeProfileLabel(configDir: string | null): string {
-    if (configDir === null) return 'default';
+  private claudeProfileLabel(configDir: string | null | undefined): string {
+    // Nullish, not just null: the resume path resolves the dir through
+    // `resolveClaudeConfigDir`, which returns undefined for a session that
+    // inherits the environment. Both mean the same profile.
+    if (!configDir) return 'default';
     for (const p of this.claudeConfigs.values()) {
       if (p.configDir === configDir) return p.name;
     }
@@ -1704,15 +1732,148 @@ export class SessionManager extends EventEmitter {
   }
 
   private noteRateLimit(s: InternalSession, window: RateLimitWindow): void {
-    const account = this.rateLimitAccountOf(s);
-    const key = `${account.key} ${window.limitType}`;
+    if (this.recordWindow(this.rateLimitAccountOf(s), { ...window, source: 'event' })) {
+      this.broadcastRateLimits();
+    }
+    // A `rate_limit_event` is the CLI saying the numbers just moved, which
+    // makes it the cheapest moment to go and read the real ones. The poller's
+    // own TTL keeps a chatty session from meaning a chatty bridge.
+    void this.refreshQuotaFor(s);
+  }
+
+  /**
+   * Store one window, keeping whatever the previous one knew that this does not.
+   *
+   * Returns true only when something a client would render actually changed:
+   * polling a healthy account every minute otherwise means a broadcast every
+   * minute saying nothing.
+   *
+   * The merge exists because the two sources are not equals. A poll always
+   * names a percentage; a `rate_limit_event` names one only once the window
+   * passes its warning threshold, and arrives far more often. Taking the newer
+   * report wholesale therefore blanked a freshly polled "17%" back to "no
+   * figure" on the very next turn.
+   */
+  private recordWindow(account: RateLimitAccount, window: RateLimitWindow): boolean {
+    const key = `${account.key} ${window.limitType}`;
     const prev = this.rateLimits.get(key);
-    if (prev && prev.observedAt > window.observedAt) return;
-    this.rateLimits.set(key, { ...window, account });
+    if (prev && prev.observedAt > window.observedAt) return false;
+
+    const keptFigure = window.utilization === null && prev?.utilization != null;
+    const source = keptFigure ? prev?.source : window.source;
+    const next: AccountRateLimitWindow = {
+      ...window,
+      utilization: window.utilization ?? prev?.utilization ?? null,
+      ...(source ? { source } : {}),
+      account,
+    };
+
+    this.rateLimits.set(key, next);
+    return (
+      prev === undefined ||
+      prev.utilization !== next.utilization ||
+      prev.resetsAt !== next.resetsAt ||
+      prev.status !== next.status ||
+      prev.isUsingOverage !== next.isUsingOverage
+    );
+  }
+
+  private broadcastRateLimits(): void {
     this.emit('broadcast', {
       type: 'rate_limits',
       windows: this.rateLimitWindows(),
     } satisfies ServerRateLimitsMsg);
+  }
+
+  /**
+   * Where to read one session's credential from.
+   *
+   * `spawnConfigDir` rather than the recorded directory, because the keychain
+   * item Claude Code writes is derived from the `CLAUDE_CONFIG_DIR` the spawn
+   * actually exports. A session that inherits the environment keeps its
+   * credential in the unsuffixed slot, so asking for `~/.claude`'s hashed one
+   * would read a profile nobody ever logged into.
+   */
+  private quotaSourceOf(s: InternalSession): QuotaSource {
+    const account = this.rateLimitAccountOf(s);
+    if (s.agent !== 'claude') {
+      return {
+        account,
+        claudeConfigDir: null,
+        codexHome: this.accounts.get(s.account ?? 'default')?.codexHome ?? null,
+      };
+    }
+    return {
+      account,
+      claudeConfigDir: this.spawnConfigDir(s.claudeConfigDir) ?? null,
+      codexHome: null,
+    };
+  }
+
+  /**
+   * Every credential this bridge can speak for, session or no session.
+   *
+   * Polling these rather than only the accounts with a live session is what
+   * lets a freshly loaded page show real figures before the first turn.
+   */
+  private allQuotaSources(): QuotaSource[] {
+    const out: QuotaSource[] = [];
+    for (const profile of this.claudeConfigs.values()) {
+      out.push({
+        account: {
+          key: `claude:${profile.name}`,
+          label: profile.name,
+          agent: 'claude',
+          configDir: profile.configDir,
+        },
+        claudeConfigDir: profile.inheritEnv ? null : profile.configDir,
+        codexHome: null,
+      });
+    }
+    for (const acct of this.accounts.values()) {
+      out.push({
+        account: { key: `codex:${acct.name}`, label: acct.name, agent: 'codex', configDir: null },
+        claudeConfigDir: null,
+        codexHome: acct.codexHome,
+      });
+    }
+    return out;
+  }
+
+  /** Poll one session's account, broadcasting only if a figure moved. */
+  private async refreshQuotaFor(s: InternalSession): Promise<void> {
+    const quota = this.quota;
+    if (!quota) return;
+    const src = this.quotaSourceOf(s);
+    let changed = false;
+    for (const w of await quota.windows(src)) {
+      if (this.recordWindow(src.account, w)) changed = true;
+    }
+    if (changed) this.broadcastRateLimits();
+  }
+
+  /**
+   * Poll every known account and return the merged windows.
+   *
+   * Awaited by `get_rate_limits`, so the reply carries live figures rather than
+   * whatever the last turn happened to mention. Per-account failures are
+   * already swallowed inside the poller — one logged-out profile must not cost
+   * the others their numbers.
+   */
+  async refreshRateLimits(): Promise<AccountRateLimitWindow[]> {
+    const quota = this.quota;
+    if (!quota) return this.rateLimitWindows();
+    const results = await Promise.all(
+      this.allQuotaSources().map(async (src) => ({ src, windows: await quota.windows(src) })),
+    );
+    let changed = false;
+    for (const { src, windows } of results) {
+      for (const w of windows) {
+        if (this.recordWindow(src.account, w)) changed = true;
+      }
+    }
+    if (changed) this.broadcastRateLimits();
+    return this.rateLimitWindows();
   }
 
   /**
@@ -1923,12 +2084,13 @@ export class SessionManager extends EventEmitter {
    * web client drops the session name on every page reload, because
    * `session_renamed` is only broadcast on change.
    */
-  listSessions(): Array<SessionInfo & { name?: string | null }> {
+  listSessions(): Array<SessionInfo & { name?: string | null; accountKey?: string }> {
     return [...this.sessions.values()].map((s) => ({
       sessionId: s.sessionId,
       agent: s.agent,
       projectPath: s.projectPath,
       createdAt: s.createdAt,
+      accountKey: this.rateLimitAccountOf(s).key,
       ...(s.account ? { account: s.account } : {}),
       name: this.registry?.get(s.sessionId)?.name ?? null,
     }));

@@ -20,6 +20,7 @@ import { ClaudeConfigStore } from './claude-config-store.js';
 import { handleMcpRequest, type McpDeps } from './mcp-server.js';
 import { attachWebSocket } from './websocket.js';
 import { SessionManager, type AgentDriver, type DriverFactoryArgs } from './session.js';
+import { QuotaPoller } from './quota.js';
 import { TranscriptStore } from './transcript-store.js';
 import { PromptStore } from './prompt-store.js';
 import { FsApi } from './fs-api.js';
@@ -273,6 +274,7 @@ async function main(): Promise<void> {
     resolveHeadroom: async () =>
       (await headroomProxy.ensure()) ? headroomProxy.spawnConfig() : null,
     titler,
+    quota: new QuotaPoller(),
     writeMcpConfig: (webSessionId) => mcpConfigWriter.write(webSessionId),
     writeClaudeSettings: (webSessionId, settings) =>
       claudeSettingsWriter.write(webSessionId, settings),

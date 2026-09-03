@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getBridgeClient } from '../services/bridge-client-singleton';
+import { getBridgeClient, hasBridgeClient } from '../services/bridge-client-singleton';
 import {
   EMPTY_SESSION_USAGE,
   type AccountRateLimitWindow,
@@ -73,6 +73,10 @@ export const useUsageStore = create<UsageState>((set, get) => ({
   },
 
   refreshRateLimits: () => {
+    // Quota is decoration: it renders empty without a bridge and must not
+    // throw for the sake of it. Usage is fetched only when the user asks for
+    // it, so opening the app never starts background quota requests.
+    if (!hasBridgeClient()) return;
     getBridgeClient().send({ type: 'get_rate_limits' });
   },
 }));
@@ -117,6 +121,45 @@ export function worstWindow(
     if (a.utilization === null) return b;
     return b.utilization > a.utilization ? b : a;
   });
+}
+
+/**
+ * Reading order for one account's windows: the short window first, because it
+ * is the one that stops you this afternoon, then the week.
+ *
+ * Anything unrecognised sorts last rather than being dropped — a plan that
+ * grows a new window should show it, not hide it.
+ */
+const WINDOW_ORDER = ['five_hour', 'seven_day', 'seven_day_opus'];
+
+function windowRank(limitType: string): number {
+  const i = WINDOW_ORDER.indexOf(limitType);
+  return i === -1 ? WINDOW_ORDER.length : i;
+}
+
+/**
+ * The windows belonging to one credential, in reading order.
+ *
+ * This is what the session header asks for: a session running as `claude1`
+ * should show `claude1`'s 5-hour and weekly figures, not the worst window
+ * across every account the bridge happens to drive.
+ *
+ * Windows the account does not report simply are not here — a Codex plan
+ * reports one weekly window and no 5-hour one, so a Codex session shows a
+ * single row rather than an empty "5h —".
+ */
+export function windowsForAccount(
+  windows: Record<string, AccountRateLimitWindow> | AccountRateLimitWindow[],
+  accountKey: string | null | undefined,
+): AccountRateLimitWindow[] {
+  if (!accountKey) return [];
+  const all = Array.isArray(windows) ? windows : Object.values(windows);
+  return all
+    .filter((w) => w.account.key === accountKey)
+    .sort(
+      (a, b) => windowRank(a.limitType) - windowRank(b.limitType) ||
+        a.limitType.localeCompare(b.limitType),
+    );
 }
 
 export interface AccountWindows {
@@ -174,6 +217,16 @@ export function formatLimitType(limitType: string): string {
     five_hour: '5-hour',
     seven_day: '7-day',
     seven_day_opus: '7-day (Opus)',
+  };
+  return map[limitType] ?? limitType.replace(/_/g, ' ');
+}
+
+/** `five_hour` → `5h`. For the header chip, where `5-hour` will not fit. */
+export function shortLimitType(limitType: string): string {
+  const map: Record<string, string> = {
+    five_hour: '5h',
+    seven_day: '7d',
+    seven_day_opus: '7d opus',
   };
   return map[limitType] ?? limitType.replace(/_/g, ' ');
 }

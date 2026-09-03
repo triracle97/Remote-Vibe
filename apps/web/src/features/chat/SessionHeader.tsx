@@ -3,6 +3,7 @@ import { Menu, Folder, Search, PanelRight, MoreHorizontal, Pencil } from 'lucide
 import type { SessionView } from '../../store/sessions';
 import { SessionRenameInline } from '../session-list/SessionRenameInline';
 import { SessionUsageBadge } from '../usage/SessionUsageBadge';
+import { SessionQuotaBadge } from '../usage/SessionQuotaBadge';
 import { SpawnedSessionsBadge } from '../board/SpawnedSessionsBadge';
 import { SessionModelSwitch } from '../model-picker/SessionModelSwitch';
 import { RunningWorkBadge } from '../transcript/RunningWorkBadge';
@@ -90,6 +91,7 @@ export function SessionHeader({
         <SessionModelSwitch sessionId={session.sessionId} agent={session.agent} />
         <SpawnedSessionsBadge sessionId={session.sessionId} />
         <SessionUsageBadge sessionId={session.sessionId} />
+        <SessionQuotaBadge accountKey={session.accountKey} />
         <IconButton
           label="Find in transcript"
           pressed={searchOpen}
@@ -186,6 +188,7 @@ export function SessionHeader({
             <SessionModelSwitch sessionId={session.sessionId} agent={session.agent} />
             <SpawnedSessionsBadge sessionId={session.sessionId} />
             <SessionUsageBadge sessionId={session.sessionId} />
+            <SessionQuotaBadge accountKey={session.accountKey} />
           </div>
 
           <ul className="list-none p-0 m-0 flex flex-col gap-1">

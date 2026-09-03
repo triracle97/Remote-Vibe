@@ -23,6 +23,7 @@ afterEach(cleanup);
 
 const sent: ClientMsg[] = [];
 vi.mock('../../services/bridge-client-singleton', () => ({
+  hasBridgeClient: () => true,
   getBridgeClient: () => ({ send: (m: ClientMsg) => sent.push(m) }),
 }));
 
@@ -188,9 +189,10 @@ describe('usage store', () => {
 });
 
 describe('UsageIndicator', () => {
-  it('renders nothing before any window is observed', () => {
-    const { container } = render(<UsageIndicator />);
-    expect(container.firstChild).toBeNull();
+  it('offers a manual reload before any window is observed', () => {
+    render(<UsageIndicator />);
+    fireEvent.click(screen.getByTestId('reload-usage'));
+    expect(sent).toEqual([{ type: 'get_rate_limits' }]);
   });
 
   it('shows the worst window as a percentage', () => {
@@ -216,6 +218,14 @@ describe('UsageIndicator', () => {
     expect(popover.textContent).toContain('5-hour');
     expect(popover.textContent).toContain('7-day');
     expect(popover.textContent).toContain('78%');
+  });
+
+  it('reloads usage manually from the popover', () => {
+    useUsageStore.setState({ windows: windowMap(win()) });
+    render(<UsageIndicator />);
+    fireEvent.click(screen.getByTestId('usage-indicator'));
+    fireEvent.click(screen.getByTestId('reload-usage'));
+    expect(sent).toEqual([{ type: 'get_rate_limits' }]);
   });
 
   it('names the account each figure belongs to when more than one is in play', () => {
