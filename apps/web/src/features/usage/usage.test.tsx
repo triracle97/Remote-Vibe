@@ -3,7 +3,9 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { UsageIndicator } from './UsageIndicator';
 import { SessionUsageBadge } from './SessionUsageBadge';
 import {
+  describeReset,
   formatLimitType,
+  formatResetsAt,
   formatResetsIn,
   groupByAccount,
   totalTokens,
@@ -151,6 +153,39 @@ describe('usage selectors', () => {
     expect(formatResetsIn(at(30 * 60_000), now)).toBe('resets in 30m');
     expect(formatResetsIn(at(150 * 60_000), now)).toBe('resets in 2h 30m');
     expect(formatResetsIn(at(-1000), now)).toBe('resets soon');
+  });
+
+  it('formats reset times as a clock reading, with the day once it is not today', () => {
+    // Noon on a fixed local day, so "today" vs "later" is unambiguous.
+    const base = new Date(2026, 8, 3, 12, 0, 0);
+    const now = base.getTime();
+    const at = (deltaMs: number): number => Math.floor((now + deltaMs) / 1000);
+    const clock = (deltaMs: number): string =>
+      new Date(now + deltaMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    expect(formatResetsAt(null, now)).toBe('');
+    // Same day: just the time.
+    expect(formatResetsAt(at(150 * 60_000), now)).toBe(clock(150 * 60_000));
+    // Tomorrow: the weekday in front.
+    const tomorrow = 26 * 3_600_000;
+    const weekday = new Date(now + tomorrow).toLocaleDateString([], { weekday: 'short' });
+    expect(formatResetsAt(at(tomorrow), now)).toBe(`${weekday} ${clock(tomorrow)}`);
+    // Beyond the week: the date, since a weekday alone would be ambiguous.
+    const later = 9 * 24 * 3_600_000;
+    const date = new Date(now + later).toLocaleDateString([], { day: 'numeric', month: 'short' });
+    expect(formatResetsAt(at(later), now)).toBe(`${date} ${clock(later)}`);
+  });
+
+  it('describes a reset as both a countdown and a clock time', () => {
+    const now = new Date(2026, 8, 3, 12, 0, 0).getTime();
+    const at = (deltaMs: number): number => Math.floor((now + deltaMs) / 1000);
+    const clock = new Date(now + 150 * 60_000).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    expect(describeReset(at(150 * 60_000), now)).toBe(`resets in 2h 30m · ${clock}`);
+    expect(describeReset(at(-1000), now)).toBe('resets soon');
+    expect(describeReset(null, now)).toBe('');
     expect(formatResetsIn(null, now)).toBe('');
   });
 });
@@ -218,6 +253,21 @@ describe('UsageIndicator', () => {
     expect(popover.textContent).toContain('5-hour');
     expect(popover.textContent).toContain('7-day');
     expect(popover.textContent).toContain('78%');
+  });
+
+  it('says when each window resets, as a countdown and a time', () => {
+    const now = Date.now();
+    const resetsAt = Math.floor(now / 1000) + 150 * 60;
+    const clock = new Date(resetsAt * 1000).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    useUsageStore.setState({ windows: windowMap(win({ limitType: 'five_hour', resetsAt })) });
+    render(<UsageIndicator />);
+    fireEvent.click(screen.getByTestId('usage-indicator'));
+    const text = screen.getByTestId('usage-reset').textContent ?? '';
+    expect(text).toMatch(/resets in 2h (29|30)m/);
+    expect(text).toContain(clock);
   });
 
   it('reloads usage manually from the popover', () => {

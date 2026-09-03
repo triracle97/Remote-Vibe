@@ -1,14 +1,15 @@
 import { RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState, type JSX } from 'react';
 import {
+  describeReset,
   formatLimitType,
-  formatResetsIn,
   groupByAccount,
   useUsageStore,
   utilizationTone,
   worstWindow,
   type AccountWindows,
 } from '../../store/usage';
+import { useNow } from './useNow';
 
 /**
  * Circular quota ring, modelled on nimbalyst's `ClaudeUsageIndicator`.
@@ -99,7 +100,7 @@ export function UsageIndicator(): JSX.Element {
         onClick={() => setOpen((o) => !o)}
         aria-label={`Plan usage ${level} on ${label}`}
         aria-expanded={open}
-        title={`${label}: ${formatLimitType(worst.limitType)} ${level} — ${formatResetsIn(worst.resetsAt)}`}
+        title={`${label}: ${formatLimitType(worst.limitType)} ${level} — ${describeReset(worst.resetsAt)}`}
         data-testid="usage-indicator"
         className="relative w-9 h-9 flex items-center justify-center rounded-md hover:bg-[var(--color-surface-2)] transition-colors"
       >
@@ -160,6 +161,8 @@ function UsagePopover({
   onRefresh: () => void;
   onClose: () => void;
 }): JSX.Element {
+  // Countdowns are computed against this, so they keep moving while open.
+  const now = useNow();
   return (
     <div
       role="dialog"
@@ -240,7 +243,7 @@ function UsagePopover({
                     </div>
                   )}
                   <div className="mt-0.5 flex gap-2 text-[10px] text-[var(--color-text-dim)]">
-                    <span>{formatResetsIn(w.resetsAt)}</span>
+                    <span data-testid="usage-reset">{describeReset(w.resetsAt, now)}</span>
                     {w.isUsingOverage && (
                       <span style={{ color: 'var(--color-warn)' }}>using overage</span>
                     )}

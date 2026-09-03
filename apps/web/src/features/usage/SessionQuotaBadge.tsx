@@ -1,12 +1,15 @@
+import { Clock } from 'lucide-react';
 import { useEffect, useRef, useState, type JSX } from 'react';
 import {
+  describeReset,
   formatLimitType,
-  formatResetsIn,
+  formatResetsAt,
   shortLimitType,
   useUsageStore,
   utilizationTone,
   windowsForAccount,
 } from '../../store/usage';
+import { useNow } from './useNow';
 
 /**
  * Plan quota for the account *this* session runs as, in the session header.
@@ -24,6 +27,11 @@ import {
  * Rows come from whatever the account actually reports. A Codex plan reports a
  * weekly window and no 5-hour one, so a Codex session shows a single row
  * rather than an empty 5-hour slot pretending the limit exists.
+ *
+ * The 5-hour window's reset time rides in the chip itself. It is the one
+ * figure that changes what you do next — "wait twenty minutes" and "wait
+ * until three" are different decisions — and a click to find it is one too
+ * many when the number is right there. The week's reset stays in the popover.
  */
 
 const TONE_VAR: Record<'ok' | 'warn' | 'danger', string> = {
@@ -61,13 +69,17 @@ export function SessionQuotaBadge({
     };
   }, [open]);
 
+  const now = useNow();
   const mine = windowsForAccount(windows, accountKey);
   // Nothing observed for this account yet. Better an absent chip than one
   // reading 0%, which is a claim nobody made.
   if (mine.length === 0) return null;
 
   const label = mine[0]!.account.label;
-  const summary = mine.map((w) => `${shortLimitType(w.limitType)} ${pctLabel(w.utilization)}`);
+  const summary = mine.map((w) => {
+    const reset = w.resetsAt === null ? '' : ` (${describeReset(w.resetsAt, now)})`;
+    return `${shortLimitType(w.limitType)} ${pctLabel(w.utilization)}${reset}`;
+  });
 
   return (
     <div ref={rootRef} className="relative">
@@ -77,7 +89,7 @@ export function SessionQuotaBadge({
         aria-expanded={open}
         aria-label={`Plan usage on ${label}: ${summary.join(', ')}`}
         data-testid="session-quota-badge"
-        title={`Plan usage for ${label}`}
+        title={`Plan usage for ${label}: ${summary.join(' · ')}`}
         className="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--color-border)] text-[11px] tabular-nums text-[var(--color-text-dim)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-2)] transition-colors"
       >
         {mine.map((w, i) => (
@@ -91,6 +103,15 @@ export function SessionQuotaBadge({
               >
                 {pctLabel(w.utilization)}
               </span>
+              {w.limitType === 'five_hour' && w.resetsAt !== null && (
+                <span
+                  data-testid="session-quota-reset"
+                  className="ml-1 inline-flex items-center gap-0.5 text-[var(--color-text-dim)]"
+                >
+                  <Clock size={10} aria-hidden />
+                  {formatResetsAt(w.resetsAt, now)}
+                </span>
+              )}
             </span>
           </span>
         ))}
@@ -138,7 +159,9 @@ export function SessionQuotaBadge({
                     </div>
                   )}
                   <div className="mt-0.5 flex gap-2 text-[10px] text-[var(--color-text-dim)]">
-                    <span>{formatResetsIn(w.resetsAt)}</span>
+                    <span data-testid="session-quota-popover-reset">
+                      {describeReset(w.resetsAt, now)}
+                    </span>
                     {w.isUsingOverage && (
                       <span style={{ color: 'var(--color-warn)' }}>using overage</span>
                     )}

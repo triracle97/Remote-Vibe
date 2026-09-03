@@ -243,3 +243,34 @@ export function formatResetsIn(resetsAt: number | null, now: number = Date.now()
   const days = Math.floor(hours / 24);
   return `resets in ${days}d ${hours % 24}h`;
 }
+
+/**
+ * The clock time a window resets, for planning around it: "14:35" if that is
+ * today, "Thu 14:35" later in the week, "10 Sep 14:35" beyond that. Local
+ * time in the browser's own locale, because that is the clock on the wall —
+ * a countdown says how long, this says *when*.
+ */
+export function formatResetsAt(resetsAt: number | null, now: number = Date.now()): string {
+  if (resetsAt === null) return '';
+  const at = new Date(resetsAt * 1000);
+  const ref = new Date(now);
+  const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const sameDay =
+    at.getFullYear() === ref.getFullYear() &&
+    at.getMonth() === ref.getMonth() &&
+    at.getDate() === ref.getDate();
+  if (sameDay) return time;
+  const withinWeek = resetsAt * 1000 - now < 6 * 24 * 3_600_000;
+  const day = withinWeek
+    ? at.toLocaleDateString([], { weekday: 'short' })
+    : at.toLocaleDateString([], { day: 'numeric', month: 'short' });
+  return `${day} ${time}`;
+}
+
+/** "resets in 2h 10m · 14:35", or "resets soon" once the window has elapsed. */
+export function describeReset(resetsAt: number | null, now: number = Date.now()): string {
+  if (resetsAt === null) return '';
+  const relative = formatResetsIn(resetsAt, now);
+  if (relative === 'resets soon') return relative;
+  return `${relative} · ${formatResetsAt(resetsAt, now)}`;
+}

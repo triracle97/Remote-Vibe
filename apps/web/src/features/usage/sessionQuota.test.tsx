@@ -152,6 +152,40 @@ describe('SessionQuotaBadge', () => {
   });
 });
 
+describe('SessionQuotaBadge reset time', () => {
+  const clockOf = (resetsAt: number): string =>
+    new Date(resetsAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  it('shows when the 5-hour window resets in the chip itself', () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 150 * 60;
+    useUsageStore.setState({ windows: windowMap(win({ resetsAt })) });
+    render(<SessionQuotaBadge accountKey="claude:default" />);
+    expect(screen.getByTestId('session-quota-reset').textContent).toContain(clockOf(resetsAt));
+    // Assistive tech gets the countdown as well as the clock.
+    const label = screen.getByTestId('session-quota-badge').getAttribute('aria-label') ?? '';
+    expect(label).toMatch(/resets in 2h (29|30)m/);
+  });
+
+  it('keeps the weekly reset to the popover', () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 3 * 24 * 3600;
+    useUsageStore.setState({
+      windows: windowMap(win({ limitType: 'seven_day', utilization: 0.4, resetsAt })),
+    });
+    render(<SessionQuotaBadge accountKey="claude:default" />);
+    expect(screen.queryByTestId('session-quota-reset')).toBeNull();
+    fireEvent.click(screen.getByTestId('session-quota-badge'));
+    const text = screen.getByTestId('session-quota-popover-reset').textContent ?? '';
+    expect(text).toMatch(/resets in 2d 23h/);
+    expect(text).toContain(clockOf(resetsAt));
+  });
+
+  it('shows nothing for a window that did not report a reset', () => {
+    useUsageStore.setState({ windows: windowMap(win({ resetsAt: null })) });
+    render(<SessionQuotaBadge accountKey="claude:default" />);
+    expect(screen.queryByTestId('session-quota-reset')).toBeNull();
+  });
+});
+
 describe('rate limit refresh', () => {
   it('does not ask for quota when the socket opens', () => {
     useUsageStore.getState().applyServerMsg({ type: 'system', event: 'init' });
