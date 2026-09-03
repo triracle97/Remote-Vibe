@@ -305,6 +305,16 @@ prompt-derived name.
 `/board` is a Kanban view of every session the bridge knows about — live and
 historical — grouped into `Backlog / Planning / Implementing / Verifying / Done`.
 
+### Backlog
+
+The Backlog column holds **jobs**: work written down before any agent runs.
+Starting one spawns a session seeded with the job's title and notes, carries
+its tags across, and the card moves on as a session from then on.
+
+Jobs sort **high priority first, then newest**. Flag a job from its card (the
+flag button) or from the editor when it should be picked up before the rest.
+Priority only orders the column; it changes nothing about how the session runs.
+
 ### How a card moves
 
 A new session starts in **Planning**. Three things can move it after that, in

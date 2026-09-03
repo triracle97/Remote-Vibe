@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import type { JSX } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { Board } from './Board';
 import { JobCard } from './JobCard';
@@ -31,6 +32,7 @@ function job(over: Partial<JobSummary> = {}): JobSummary {
     claudeConfig: null,
     model: null,
     effort: null,
+    priority: 'normal',
     createdAt: 1000,
     updatedAt: 1000,
     startedSessionId: null,
@@ -206,15 +208,76 @@ describe('Board renders', () => {
 });
 
 describe('JobCard', () => {
+  const card = (j: JobSummary, over: Partial<Parameters<typeof JobCard>[0]> = {}): JSX.Element => (
+    <JobCard
+      job={j}
+      starting={false}
+      onStart={vi.fn()}
+      onEdit={vi.fn()}
+      onDelete={vi.fn()}
+      onSetPriority={vi.fn()}
+      {...over}
+    />
+  );
+
   it('requires a second click to delete', () => {
     const onDelete = vi.fn();
-    render(
-      <JobCard job={job()} starting={false} onStart={vi.fn()} onEdit={vi.fn()} onDelete={onDelete} />,
-    );
+    render(card(job(), { onDelete }));
     fireEvent.click(screen.getByLabelText('Delete job'));
     expect(onDelete).not.toHaveBeenCalled();
     fireEvent.click(screen.getByLabelText('Confirm delete job'));
     expect(onDelete).toHaveBeenCalled();
+  });
+
+  it('raises a normal job to high from the card', () => {
+    const onSetPriority = vi.fn();
+    render(card(job(), { onSetPriority }));
+    expect(screen.queryByTestId('job-priority')).toBeNull();
+    fireEvent.click(screen.getByLabelText('Mark high priority'));
+    expect(onSetPriority).toHaveBeenCalledWith(expect.objectContaining({ id: 'j1' }), 'high');
+  });
+
+  it('flags a high job and offers to lower it', () => {
+    const onSetPriority = vi.fn();
+    render(card(job({ priority: 'high' }), { onSetPriority }));
+    expect(screen.getByTestId('job-priority').textContent).toMatch(/high/);
+    expect(screen.getByTestId('job-card').getAttribute('data-priority')).toBe('high');
+    fireEvent.click(screen.getByLabelText('Set normal priority'));
+    expect(onSetPriority).toHaveBeenCalledWith(expect.objectContaining({ id: 'j1' }), 'normal');
+  });
+});
+
+describe('Board — job priority', () => {
+  beforeEach(() => {
+    sent.length = 0;
+  });
+
+  it('lists high-priority jobs above newer normal ones', () => {
+    useJobsStore.setState({
+      jobs: {
+        newer: job({ id: 'newer', createdAt: 5000 }),
+        urgent: job({ id: 'urgent', createdAt: 1000, priority: 'high' }),
+      },
+    });
+    renderBoard();
+    const order = screen.getAllByTestId('job-card').map((el) => el.getAttribute('data-job-id'));
+    expect(order).toEqual(['urgent', 'newer']);
+  });
+
+  it('re-ranks from the card and tells the bridge', () => {
+    useJobsStore.setState({
+      jobs: {
+        newer: job({ id: 'newer', createdAt: 5000 }),
+        older: job({ id: 'older', createdAt: 1000 }),
+      },
+    });
+    renderBoard();
+    const older = screen.getAllByTestId('job-card')[1]!;
+    fireEvent.click(older.querySelector('[aria-label="Mark high priority"]') as HTMLElement);
+    expect(sent.find((m) => m.type === 'update_job')).toMatchObject({ jobId: 'older', priority: 'high' });
+    // Optimistic: the card has already moved to the top.
+    const order = screen.getAllByTestId('job-card').map((el) => el.getAttribute('data-job-id'));
+    expect(order).toEqual(['older', 'newer']);
   });
 });
 
@@ -275,6 +338,33 @@ describe('JobEditor', () => {
   it('renders on mobile without crashing', () => {
     render(<JobEditor target="new" onClose={vi.fn()} mobile />);
     expect(screen.getByLabelText('Job title')).toBeTruthy();
+  });
+
+  it('creates a high-priority job', () => {
+    render(
+      <JobEditor
+        target="new"
+        onClose={vi.fn()}
+        mobile={false}
+        defaultProjectPath="/Volumes/Code/thing"
+      />,
+    );
+    expect(screen.getByLabelText('normal priority').getAttribute('aria-pressed')).toBe('true');
+    fireEvent.change(screen.getByLabelText('Job title'), { target: { value: 'first thing' } });
+    fireEvent.click(screen.getByLabelText('high priority'));
+    fireEvent.click(screen.getByText('Add to Backlog'));
+    expect(sent.find((m) => m.type === 'create_job')).toMatchObject({
+      title: 'first thing',
+      priority: 'high',
+    });
+  });
+
+  it('seeds priority from the job being edited', () => {
+    render(<JobEditor target={job({ priority: 'high' })} onClose={vi.fn()} mobile={false} />);
+    expect(screen.getByLabelText('high priority').getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByLabelText('normal priority'));
+    fireEvent.click(screen.getByText('Save'));
+    expect(sent.find((m) => m.type === 'update_job')).toMatchObject({ jobId: 'j1', priority: 'normal' });
   });
 });
 

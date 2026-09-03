@@ -494,6 +494,7 @@ async function handleMessage(
             ...(msg.claudeConfig !== undefined ? { claudeConfig: msg.claudeConfig } : {}),
             ...(msg.model !== undefined ? { model: msg.model } : {}),
             ...(msg.effort !== undefined ? { effort: msg.effort } : {}),
+            ...(msg.priority !== undefined ? { priority: msg.priority } : {}),
           });
           broadcastAll({
             type: 'job_upserted',
@@ -518,6 +519,7 @@ async function handleMessage(
           if (msg.claudeConfig !== undefined) patch.claudeConfig = msg.claudeConfig;
           if (msg.model !== undefined) patch.model = msg.model;
           if (msg.effort !== undefined) patch.effort = msg.effort;
+          if (msg.priority !== undefined) patch.priority = msg.priority;
           if (msg.archived !== undefined) patch.archived = msg.archived;
           const job = await jobStore.update(msg.jobId, patch);
           broadcastAll({

@@ -37,6 +37,7 @@ export function Board({ onDetails, onNewJob, onEditJob }: Props): JSX.Element {
   const starting = useJobsStore((s) => s.starting);
   const startJob = useJobsStore((s) => s.startJob);
   const deleteJob = useJobsStore((s) => s.deleteJob);
+  const setPriority = useJobsStore((s) => s.setPriority);
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [overPhase, setOverPhase] = useState<SessionPhase | null>(null);
@@ -180,6 +181,7 @@ export function Board({ onDetails, onNewJob, onEditJob }: Props): JSX.Element {
                     onStart={(j) => startJob(j.id)}
                     onEdit={onEditJob}
                     onDelete={(j) => deleteJob(j.id)}
+                    onSetPriority={(j, p) => setPriority(j.id, p)}
                   />
                 ))}
 

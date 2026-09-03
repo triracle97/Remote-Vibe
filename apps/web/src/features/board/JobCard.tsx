@@ -1,6 +1,6 @@
 import { useState, type JSX } from 'react';
-import { Play, Trash2 } from 'lucide-react';
-import type { JobSummary } from '../../types/protocol';
+import { Flag, Play, Trash2 } from 'lucide-react';
+import type { JobPriority, JobSummary } from '../../types/protocol';
 import { projectLabel, timeAgo } from './cardState';
 
 interface Props {
@@ -9,6 +9,7 @@ interface Props {
   onStart: (job: JobSummary) => void;
   onEdit: (job: JobSummary) => void;
   onDelete: (job: JobSummary) => void;
+  onSetPriority: (job: JobSummary, priority: JobPriority) => void;
 }
 
 /**
@@ -18,14 +19,30 @@ interface Props {
  * dot, and a Start button instead of a status badge. The two never mean the
  * same thing, so they should not look the same.
  */
-export function JobCard({ job, starting, onStart, onEdit, onDelete }: Props): JSX.Element {
+export function JobCard({
+  job,
+  starting,
+  onStart,
+  onEdit,
+  onDelete,
+  onSetPriority,
+}: Props): JSX.Element {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const high = job.priority === 'high';
 
   return (
     <article
       data-testid="job-card"
       data-job-id={job.id}
-      className="group rounded-lg border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] p-3 transition-colors hover:bg-[var(--color-surface-2)]"
+      data-priority={job.priority}
+      className={[
+        'group rounded-lg border border-dashed bg-[var(--color-surface)] p-3 transition-colors hover:bg-[var(--color-surface-2)]',
+        // A high-priority job earns a solid edge in the warn colour: the one
+        // card in a column of dashed ones that is already spoken for.
+        high
+          ? 'border-l-2 [border-left-style:solid] border-l-[var(--color-warn)] border-[color-mix(in_srgb,var(--color-warn)_45%,var(--color-border))]'
+          : 'border-[var(--color-border)]',
+      ].join(' ')}
     >
       <button type="button" onClick={() => onEdit(job)} className="w-full text-left">
         <span className="block font-semibold text-[var(--color-text)] text-sm leading-snug line-clamp-2">
@@ -45,6 +62,15 @@ export function JobCard({ job, starting, onStart, onEdit, onDelete }: Props): JS
       </button>
 
       <div className="mt-2 flex items-center gap-1 flex-wrap">
+        {high && (
+          <span
+            data-testid="job-priority"
+            className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded text-[var(--color-warn)] bg-[color-mix(in_srgb,var(--color-warn)_15%,transparent)]"
+          >
+            <Flag size={10} aria-hidden />
+            high
+          </span>
+        )}
         <span
           className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
             job.agent === 'codex' ? 'bg-[#2a1c44] text-[#ffaaee]' : 'bg-[#1c2a44] text-[#aaeeff]'
@@ -79,6 +105,20 @@ export function JobCard({ job, starting, onStart, onEdit, onDelete }: Props): JS
         >
           <Play size={12} aria-hidden />
           {starting ? 'Starting…' : 'Start'}
+        </button>
+        <button
+          type="button"
+          onClick={() => onSetPriority(job, high ? 'normal' : 'high')}
+          aria-pressed={high}
+          aria-label={high ? 'Set normal priority' : 'Mark high priority'}
+          title={high ? 'Back to normal priority' : 'Do this before the rest of the Backlog'}
+          className={`shrink-0 px-2 py-1.5 rounded-lg border text-xs transition-colors ${
+            high
+              ? 'border-[var(--color-warn)] text-[var(--color-warn)] bg-[color-mix(in_srgb,var(--color-warn)_15%,transparent)]'
+              : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]'
+          }`}
+        >
+          <Flag size={12} aria-hidden />
         </button>
         <button
           type="button"

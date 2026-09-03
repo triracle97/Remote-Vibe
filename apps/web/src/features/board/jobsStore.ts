@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import { getBridgeClient } from '../../services/bridge-client-singleton';
-import type { AgentKind, EffortLevel, JobSummary, ServerMsg } from '../../types/protocol';
+import type {
+  AgentKind,
+  EffortLevel,
+  JobPriority,
+  JobSummary,
+  ServerMsg,
+} from '../../types/protocol';
 
 /**
  * Backlog jobs — work written down before an agent runs.
@@ -8,8 +14,8 @@ import type { AgentKind, EffortLevel, JobSummary, ServerMsg } from '../../types/
  * Unlike the session board, mutations here are *not* optimistic: creating a
  * job is a deliberate act with a form behind it, so waiting for the bridge to
  * echo `job_upserted` costs nothing and avoids inventing an id client-side.
- * The one exception is delete, which removes the card immediately because the
- * card is the only feedback the action has.
+ * The exceptions are delete and the priority toggle, which change the card
+ * immediately because the card is the only feedback either action has.
  */
 
 export interface NewJobInput {
@@ -23,6 +29,7 @@ export interface NewJobInput {
   claudeConfig: string | null;
   model: string | null;
   effort: EffortLevel | null;
+  priority: JobPriority;
 }
 
 interface JobsState {
@@ -38,6 +45,11 @@ interface JobsState {
   refresh: () => void;
   createJob: (input: NewJobInput) => void;
   updateJob: (jobId: string, patch: Partial<NewJobInput> & { archived?: boolean }) => void;
+  /**
+   * One-tap re-rank from the card. Optimistic, unlike the editor's save: the
+   * card jumping to the top of the column *is* the feedback.
+   */
+  setPriority: (jobId: string, priority: JobPriority) => void;
   deleteJob: (jobId: string) => void;
   startJob: (jobId: string) => void;
   clearError: () => void;
@@ -132,6 +144,9 @@ export const useJobsStore = create<JobsState>((set, get) => ({
       agent: input.agent,
       account: input.account,
       claudeConfig: input.claudeConfig,
+      model: input.model,
+      effort: input.effort,
+      priority: input.priority,
       correlationId,
     });
   },
@@ -140,6 +155,15 @@ export const useJobsStore = create<JobsState>((set, get) => ({
     const correlationId = nextCorrelationId('update');
     pending.set(correlationId, { jobId });
     getBridgeClient().send({ type: 'update_job', jobId, ...patch, correlationId });
+  },
+
+  setPriority: (jobId, priority) => {
+    const existing = get().jobs[jobId];
+    if (!existing || existing.priority === priority) return;
+    const correlationId = nextCorrelationId('priority');
+    pending.set(correlationId, { jobId, restore: existing });
+    set({ jobs: { ...get().jobs, [jobId]: { ...existing, priority } } });
+    getBridgeClient().send({ type: 'update_job', jobId, priority, correlationId });
   },
 
   deleteJob: (jobId) => {
@@ -165,9 +189,12 @@ export const useJobsStore = create<JobsState>((set, get) => ({
   clearLastStarted: () => set({ lastStarted: null }),
 }));
 
-/** Backlog order: newest first, matching the bridge. */
+/** Backlog order, matching the bridge: high priority first, then newest. */
 export function sortedJobs(jobs: Record<string, JobSummary>): JobSummary[] {
-  return Object.values(jobs).sort((a, b) => b.createdAt - a.createdAt);
+  return Object.values(jobs).sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority === 'high' ? -1 : 1;
+    return b.createdAt - a.createdAt;
+  });
 }
 
 /** Same filter semantics as session cards, so the filter bar governs both. */

@@ -2,7 +2,7 @@ import { promises as fsp } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { parseEffortLevel, parseModelId, type EffortLevel } from './models.js';
-import type { AgentKind } from './types.js';
+import type { AgentKind, JobPriority } from './types.js';
 
 /**
  * A **job** is work you intend to do, written down before any agent runs.
@@ -33,6 +33,11 @@ export interface Job {
   /** Model/effort the launched session should run with; null = CLI default. */
   model: string | null;
   effort: EffortLevel | null;
+  /**
+   * `high` puts the job above every `normal` one in the Backlog. Ordering
+   * only — it changes nothing about how the session runs once started.
+   */
+  priority: JobPriority;
   createdAt: number;
   updatedAt: number;
   /**
@@ -60,6 +65,7 @@ export interface CreateJobInput {
   claudeConfig?: string | null;
   model?: string | null;
   effort?: EffortLevel | null;
+  priority?: JobPriority;
 }
 
 export class InvalidJobError extends Error {
@@ -113,6 +119,13 @@ function validateTitle(raw: unknown): string {
   return title;
 }
 
+/** Absent means `normal`; anything else has to be one of the two words. */
+function validatePriority(raw: unknown): JobPriority {
+  if (raw === undefined || raw === null) return 'normal';
+  if (raw === 'normal' || raw === 'high') return raw;
+  throw new InvalidJobError('priority must be normal or high');
+}
+
 function validateNotes(raw: unknown): string {
   if (raw === undefined || raw === null) return '';
   if (typeof raw !== 'string') throw new InvalidJobError('notes must be a string');
@@ -129,6 +142,12 @@ function validateNotes(raw: unknown): string {
 export function jobLaunchPrompt(job: Job): string {
   const notes = job.notes.trim();
   return notes.length > 0 ? `${job.title}\n\n${notes}` : job.title;
+}
+
+/** Backlog order: `high` above `normal`, newest first within a level. */
+export function compareJobs(a: Pick<Job, 'priority' | 'createdAt'>, b: Pick<Job, 'priority' | 'createdAt'>): number {
+  if (a.priority !== b.priority) return a.priority === 'high' ? -1 : 1;
+  return b.createdAt - a.createdAt;
 }
 
 /**
@@ -164,6 +183,8 @@ export class JobStore {
             claudeConfig: j.claudeConfig ?? null,
             model: parseModelId(j.model),
             effort: parseEffortLevel(j.effort),
+            // Rows written before priority existed are ordinary, not broken.
+            priority: j.priority === 'high' ? 'high' : 'normal',
             createdAt: j.createdAt ?? 0,
             updatedAt: j.updatedAt ?? j.createdAt ?? 0,
             startedSessionId: j.startedSessionId ?? null,
@@ -187,12 +208,12 @@ export class JobStore {
     return this.state.jobs[id];
   }
 
-  /** Newest first — the Backlog reads top-down. */
+  /** High priority first, then newest — the Backlog reads top-down. */
   all(opts: { includeArchived?: boolean; includeStarted?: boolean } = {}): Job[] {
     return Object.values(this.state.jobs)
       .filter((j) => (opts.includeArchived ? true : !j.archived))
       .filter((j) => (opts.includeStarted ? true : j.startedSessionId === null))
-      .sort((a, b) => b.createdAt - a.createdAt);
+      .sort(compareJobs);
   }
 
   async create(input: CreateJobInput): Promise<Job> {
@@ -216,6 +237,7 @@ export class JobStore {
       claudeConfig: input.claudeConfig ?? null,
       model: parseModelId(input.model),
       effort: parseEffortLevel(input.effort),
+      priority: validatePriority(input.priority),
       createdAt: now,
       updatedAt: now,
       startedSessionId: null,
@@ -241,6 +263,7 @@ export class JobStore {
       claudeConfig?: string | null;
       model?: string | null;
       effort?: EffortLevel | null;
+      priority?: unknown;
       archived?: boolean;
     },
   ): Promise<Job> {
@@ -266,6 +289,7 @@ export class JobStore {
     // request that created it.
     if (patch.model !== undefined) next.model = parseModelId(patch.model);
     if (patch.effort !== undefined) next.effort = parseEffortLevel(patch.effort);
+    if (patch.priority !== undefined) next.priority = validatePriority(patch.priority);
     if (patch.archived !== undefined) next.archived = patch.archived === true;
 
     this.state.jobs[id] = next;

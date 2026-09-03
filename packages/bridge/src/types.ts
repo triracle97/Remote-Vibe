@@ -563,6 +563,15 @@ export interface ClientDeleteSessionMsg {
 // Jobs — the Backlog column. Work written down before an agent runs; starting
 // one spawns a session seeded with its text. See `job-store.ts`.
 
+/**
+ * How urgently a job wants doing, relative to the rest of the Backlog.
+ *
+ * Two levels, not a number: the question the column answers is "what next",
+ * and for that "this one, before the others" is the whole vocabulary. `high`
+ * sorts above everything at `normal`; within a level, newest first as before.
+ */
+export type JobPriority = 'normal' | 'high';
+
 export interface JobSummary {
   id: string;
   title: string;
@@ -573,6 +582,7 @@ export interface JobSummary {
   agent: AgentKind;
   account: string | null;
   claudeConfig: string | null;
+  priority: JobPriority;
   createdAt: number;
   updatedAt: number;
   startedSessionId: string | null;
@@ -650,6 +660,8 @@ export interface ClientCreateJobMsg {
   claudeConfig?: string | null;
   model?: string | null;
   effort?: EffortLevel | null;
+  /** Defaults to `normal`. */
+  priority?: JobPriority;
   correlationId?: string;
 }
 
@@ -666,6 +678,7 @@ export interface ClientUpdateJobMsg {
   claudeConfig?: string | null;
   model?: string | null;
   effort?: EffortLevel | null;
+  priority?: JobPriority;
   archived?: boolean;
   correlationId?: string;
 }

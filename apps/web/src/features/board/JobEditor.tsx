@@ -6,7 +6,7 @@ import { ProjectQuickAdd } from '../project-picker/ProjectQuickAdd';
 import { ModelEffortPicker } from '../model-picker/ModelEffortPicker';
 import { useAccountsStore } from '../../store/accounts';
 import { useJobsStore, type NewJobInput } from './jobsStore';
-import type { AgentKind, EffortLevel, JobSummary } from '../../types/protocol';
+import type { AgentKind, EffortLevel, JobPriority, JobSummary } from '../../types/protocol';
 
 interface Props {
   /** null = closed; a job = edit; 'new' = create. */
@@ -59,6 +59,7 @@ function Body({
   const [claudeConfig, setClaudeConfig] = useState<string | null>(editing?.claudeConfig ?? null);
   const [model, setModel] = useState<string | null>(editing?.model ?? null);
   const [effort, setEffort] = useState<EffortLevel | null>(editing?.effort ?? null);
+  const [priority, setPriority] = useState<JobPriority>(editing?.priority ?? 'normal');
   const [dirs, setDirs] = useState<string[]>(
     editing
       ? [editing.projectPath, ...editing.additionalDirs]
@@ -79,6 +80,7 @@ function Body({
     setClaudeConfig(editing?.claudeConfig ?? null);
     setModel(editing?.model ?? null);
     setEffort(editing?.effort ?? null);
+    setPriority(editing?.priority ?? 'normal');
     setDirs(
       editing
         ? [editing.projectPath, ...editing.additionalDirs]
@@ -114,6 +116,7 @@ function Body({
       claudeConfig: agent === 'claude' ? claudeConfig : null,
       model,
       effort,
+      priority,
     };
     if (editing) updateJob(editing.id, input);
     else createJob(input);
@@ -191,6 +194,30 @@ function Body({
           />
         </div>
         <Hint>Carried over to the session when the job starts.</Hint>
+      </Field>
+
+      <Field label="Priority">
+        <div className="flex gap-1.5">
+          {(['normal', 'high'] as const).map((p) => (
+            <button
+              key={p}
+              type="button"
+              aria-pressed={priority === p}
+              aria-label={`${p} priority`}
+              onClick={() => setPriority(p)}
+              className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                priority === p
+                  ? p === 'high'
+                    ? 'border-[var(--color-warn)] bg-[color-mix(in_srgb,var(--color-warn)_18%,transparent)] text-[var(--color-text)]'
+                    : 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_20%,transparent)] text-[var(--color-text)]'
+                  : 'border-[var(--color-border)] text-[var(--color-text-mute)]'
+              }`}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+        <Hint>High sits above everything else in the Backlog.</Hint>
       </Field>
 
       <Field label="Agent">

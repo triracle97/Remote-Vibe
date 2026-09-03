@@ -1789,6 +1789,42 @@ describe('websocket', () => {
     await close();
   });
 
+  it('create_job takes a priority, update_job re-ranks it, and a bad value is refused', async () => {
+    const { port, close } = await startServer();
+    const { sock, waitFor } = await connectJobs(port);
+
+    const created = waitFor('job_upserted');
+    sock.send(
+      JSON.stringify({
+        type: 'create_job',
+        title: 'do this first',
+        projectPath: '/Users/test/proj',
+        agent: 'claude',
+        priority: 'high',
+        correlationId: 'c1',
+      }),
+    );
+    const job = (await created).job as Record<string, unknown>;
+    expect(job.priority).toBe('high');
+
+    const lowered = waitFor('job_upserted');
+    sock.send(
+      JSON.stringify({ type: 'update_job', jobId: job.id, priority: 'normal', correlationId: 'c2' }),
+    );
+    expect(((await lowered).job as Record<string, unknown>).priority).toBe('normal');
+
+    const refused = waitFor('error');
+    sock.send(
+      JSON.stringify({ type: 'update_job', jobId: job.id, priority: 'urgent', correlationId: 'c3' }),
+    );
+    const err = await refused;
+    expect(err.code).toBe('job_invalid');
+    expect(err.correlationId).toBe('c3');
+
+    sock.close();
+    await close();
+  });
+
   it('start_job spawns a session, seeds the prompt and carries the tags', async () => {
     // Board state lives in the registry, so this test needs a real one.
     const { port, close, procs, mgr } = await startServer({

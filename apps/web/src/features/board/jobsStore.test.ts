@@ -22,8 +22,9 @@ function job(over: Partial<JobSummary> = {}): JobSummary {
     agent: 'claude',
     account: null,
     claudeConfig: null,
-  model: null,
-  effort: null,
+    model: null,
+    effort: null,
+    priority: 'normal',
     createdAt: 1000,
     updatedAt: 1000,
     startedSessionId: null,
@@ -44,6 +45,7 @@ const INPUT = {
   claudeConfig: null,
   model: null,
   effort: null,
+  priority: 'normal' as const,
 };
 
 beforeEach(() => {
@@ -64,6 +66,16 @@ describe('sortedJobs', () => {
       new: job({ id: 'new', createdAt: 99 }),
     };
     expect(sortedJobs(jobs).map((j) => j.id)).toEqual(['new', 'old']);
+  });
+
+  it('puts high priority above newer normal jobs, newest first within a level', () => {
+    const jobs = {
+      a: job({ id: 'a', createdAt: 50 }),
+      b: job({ id: 'b', createdAt: 99 }),
+      c: job({ id: 'c', createdAt: 1, priority: 'high' }),
+      d: job({ id: 'd', createdAt: 10, priority: 'high' }),
+    };
+    expect(sortedJobs(jobs).map((j) => j.id)).toEqual(['d', 'c', 'b', 'a']);
   });
 });
 
@@ -148,6 +160,38 @@ describe('jobs store mutations', () => {
       projectPath: '/proj',
       agent: 'claude',
     });
+  });
+
+  it('sends the priority and the model choice along with the rest', () => {
+    useJobsStore.getState().createJob({ ...INPUT, priority: 'high', model: 'opus', effort: 'high' });
+    expect(sent[0]).toMatchObject({ type: 'create_job', priority: 'high', model: 'opus', effort: 'high' });
+  });
+
+  it('re-ranks a job at once and tells the bridge', () => {
+    useJobsStore.setState({ jobs: { a: job({ id: 'a' }) } });
+    useJobsStore.getState().setPriority('a', 'high');
+    expect(useJobsStore.getState().jobs.a!.priority).toBe('high');
+    expect(sent[0]).toMatchObject({ type: 'update_job', jobId: 'a', priority: 'high' });
+  });
+
+  it('puts the old priority back if the bridge refuses', () => {
+    useJobsStore.setState({ jobs: { a: job({ id: 'a' }) } });
+    useJobsStore.getState().setPriority('a', 'high');
+    const correlationId = (sent[0] as { correlationId: string }).correlationId;
+    useJobsStore.getState().applyServerMsg({
+      type: 'error',
+      code: 'job_invalid',
+      message: 'no',
+      correlationId,
+    });
+    expect(useJobsStore.getState().jobs.a!.priority).toBe('normal');
+    expect(useJobsStore.getState().error).toBe('no');
+  });
+
+  it('sends nothing for a priority the job already has', () => {
+    useJobsStore.setState({ jobs: { a: job({ id: 'a', priority: 'high' }) } });
+    useJobsStore.getState().setPriority('a', 'high');
+    expect(sent).toHaveLength(0);
   });
 
   it('does not invent a card before the bridge confirms', () => {

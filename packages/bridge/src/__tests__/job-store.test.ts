@@ -6,6 +6,7 @@ import {
   JobStore,
   InvalidJobError,
   JobNotFoundError,
+  compareJobs,
   jobLaunchPrompt,
   normalizeTags,
   type Job,
@@ -192,8 +193,75 @@ describe('JobStore', () => {
     expect(j.archived).toBe(false);
   });
 
+  it('defaults to normal priority', async () => {
+    const job = await store.create(BASE);
+    expect(job.priority).toBe('normal');
+  });
+
+  it('takes a priority on create and on update, and nothing but the two words', async () => {
+    const job = await store.create({ ...BASE, priority: 'high' });
+    expect(job.priority).toBe('high');
+    expect((await store.update(job.id, { priority: 'normal' })).priority).toBe('normal');
+    await expect(store.update(job.id, { priority: 'urgent' })).rejects.toThrow(
+      /normal or high/,
+    );
+    await expect(store.create({ ...BASE, priority: 3 as never })).rejects.toThrow(InvalidJobError);
+  });
+
+  it('lists high priority above newer normal jobs', async () => {
+    // The high one is created first, so on recency alone it would sink.
+    const urgent = await store.create({ ...BASE, title: 'urgent', priority: 'high' });
+    await store.create({ ...BASE, title: 'later' });
+    await store.create({ ...BASE, title: 'latest' });
+    expect(store.all()[0]!.id).toBe(urgent.id);
+  });
+
+  it('persists priority across reload, and reads older rows as normal', async () => {
+    const job = await store.create({ ...BASE, priority: 'high' });
+    const reopened = new JobStore(path);
+    await reopened.load();
+    expect(reopened.get(job.id)!.priority).toBe('high');
+
+    await writeFile(
+      path,
+      JSON.stringify({
+        jobs: {
+          old: { id: 'old', title: 'old job', projectPath: '/p' },
+          odd: { id: 'odd', title: 'odd job', projectPath: '/p', priority: 'urgent' },
+        },
+      }),
+    );
+    const migrated = new JobStore(path);
+    await migrated.load();
+    expect(migrated.get('old')!.priority).toBe('normal');
+    expect(migrated.get('odd')!.priority).toBe('normal');
+  });
+
   it('refuses mutations before load()', async () => {
     const unloaded = new JobStore(join(dir, 'x.json'));
     await expect(unloaded.create(BASE)).rejects.toThrow(/load\(\) must be awaited/);
+  });
+});
+
+describe('compareJobs', () => {
+  const j = (priority: 'normal' | 'high', createdAt: number): Pick<Job, 'priority' | 'createdAt'> => ({
+    priority,
+    createdAt,
+  });
+
+  it('puts high above normal whatever the age', () => {
+    expect([j('normal', 9), j('high', 1)].sort(compareJobs).map((x) => x.priority)).toEqual([
+      'high',
+      'normal',
+    ]);
+  });
+
+  it('keeps newest first within a level', () => {
+    expect([j('high', 1), j('high', 5), j('normal', 2), j('normal', 7)].sort(compareJobs)).toEqual([
+      j('high', 5),
+      j('high', 1),
+      j('normal', 7),
+      j('normal', 2),
+    ]);
   });
 });
