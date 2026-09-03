@@ -144,10 +144,17 @@ export function shellQuote(value: string): string {
  * `-v/--verbose` collide with claude's `-p` and `--verbose`, and Click parses
  * known options even under `ignore_unknown_options`.
  *
- * `--no-mcp --no-serena --no-rtk` are load-bearing. Those steps rewrite the
- * active Claude config dir; with concurrent sessions they would race on the
- * same `.claude.json`, and we do not want the bridge silently editing the
- * user's profile.
+ * `--no-mcp --no-serena` are load-bearing. Those steps rewrite the active
+ * Claude config dir; with concurrent sessions they would race on the same
+ * `.claude.json`, and we do not want the bridge silently editing the user's
+ * profile.
+ *
+ * There is deliberately no `--no-rtk`. headroom retired its CLI context tools
+ * (rtk, lean-ctx) and forwards unrecognised flags to the wrapped CLI, so the
+ * flag reached `claude`, which exited with `unknown option '--no-rtk'` before
+ * the session produced a single line of stream-json — surfacing as
+ * `resume_spawn_failed`. Anything added here must be a flag `headroom wrap`
+ * still owns.
  *
  * `exec` is safe on both branches — headroom is the process being replaced, and
  * it reaps `claude` itself via `subprocess.run`.
@@ -161,8 +168,53 @@ export function buildClaudeCommand(opts: {
   assertResumeArgSafe(headroom.bin);
   return (
     `exec ${headroom.bin} wrap claude --port ${headroom.port} ` +
-    `--no-proxy --no-mcp --no-serena --no-rtk -- ${claudeFlags}`
+    `--no-proxy --no-mcp --no-serena -- ${claudeFlags}`
   );
+}
+
+/**
+ * Startup chatter written by the bridge's own `zsh -lic`, not by the agent.
+ *
+ * The shell is interactive (`-i`) so the user's `.zshrc` — nvm, pyenv, PATH —
+ * is in scope, but its stdio are pipes, so it has no controlling terminal:
+ * `setopt monitor` fails and powerlevel10k's gitstatus aborts across a dozen
+ * lines. It cannot be turned off from the environment (a p10k config `unset`s
+ * every `POWERLEVEL9K_*` variable before reading it), and every byte of it
+ * lands in the stderr tail that *becomes* the text of `resume_spawn_failed`.
+ * Dropping it here is the difference between an error that reads
+ * `unknown option '--no-rtk'` and three paragraphs about Zsh.
+ */
+const SHELL_STARTUP_NOISE: readonly RegExp[] = [
+  /can't change option: monitor/,
+  /gitstatus failed to initialize/,
+  /GITSTATUS_LOG_LEVEL/,
+  /gitstatus initialization/,
+  /Add the following parameter to .*\.zshrc/,
+  /^exec zsh$/,
+];
+
+/** Strip SGR escapes; the noise is colourised and the patterns are not. */
+function plain(line: string): string {
+  // eslint-disable-next-line no-control-regex
+  return line.replace(/\x1b\[[0-9;]*m/g, '').trim();
+}
+
+/**
+ * Remove shell-startup lines, then collapse the blank runs they leave behind.
+ *
+ * Deliberately line-scoped and pattern-scoped: a real agent message that
+ * happens to sit next to this noise survives intact, and an unrecognised shell
+ * error is still shown rather than swallowed.
+ */
+export function stripShellStartupNoise(stderr: string): string {
+  const kept: string[] = [];
+  for (const line of stderr.split('\n')) {
+    const bare = plain(line);
+    if (SHELL_STARTUP_NOISE.some((re) => re.test(bare))) continue;
+    if (bare === '' && kept.length > 0 && plain(kept[kept.length - 1] ?? '') === '') continue;
+    kept.push(line);
+  }
+  return kept.join('\n').trim();
 }
 
 export class ClaudeProcess extends EventEmitter {
@@ -300,7 +352,7 @@ export class ClaudeProcess extends EventEmitter {
   }
 
   stderrTail(): string {
-    return this.stderrBuf.toString('utf8');
+    return stripShellStartupNoise(this.stderrBuf.toString('utf8'));
   }
 
   sendUserText(text: string, images?: ReadonlyArray<{ mime: string; base64: string }>): void {

@@ -38,9 +38,22 @@ describe('buildClaudeCommand', () => {
       headroom: { bin: 'headroom', port: 8787 },
     });
     expect(cmd).toBe(
-      'exec headroom wrap claude --port 8787 --no-proxy --no-mcp --no-serena --no-rtk ' +
+      'exec headroom wrap claude --port 8787 --no-proxy --no-mcp --no-serena ' +
         `-- ${FLAGS}`,
     );
+  });
+
+  it('passes no retired headroom context-tool flag', () => {
+    // headroom removed rtk / lean-ctx and forwards unknown flags to the wrapped
+    // CLI, so `--no-rtk` reached claude and killed the spawn with
+    // `unknown option '--no-rtk'` — a resume that never got past startup.
+    const cmd = buildClaudeCommand({
+      claudeFlags: FLAGS,
+      headroom: { bin: 'headroom', port: 8787 },
+    });
+    const [head] = cmd.split(' -- ');
+    expect(head).not.toContain('--no-rtk');
+    expect(head).not.toContain('--context-tool');
   });
 
   it('puts every claude flag after `--`', () => {
@@ -310,11 +323,22 @@ describe('buildCodexSpawn', () => {
         '--no-proxy',
         '--no-mcp',
         '--no-serena',
-        '--no-rtk',
         '--',
         ...CODEX_ARGS,
       ],
     });
+  });
+
+  it('passes no retired headroom context-tool flag', () => {
+    // Same trap as the claude builder: an unknown headroom flag is handed
+    // straight to codex, which exits before the turn starts.
+    const { args } = buildCodexSpawn({
+      codexArgs: CODEX_ARGS,
+      headroom: { bin: 'headroom', port: 8787 },
+    });
+    const head = args.slice(0, args.indexOf('--'));
+    expect(head).not.toContain('--no-rtk');
+    expect(head).not.toContain('--context-tool');
   });
 
   it('puts every codex arg after the -- separator', () => {

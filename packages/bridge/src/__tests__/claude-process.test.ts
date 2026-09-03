@@ -111,6 +111,34 @@ describe('ClaudeProcess', () => {
     expect(proc.stderrTail().endsWith('A'.repeat(10))).toBe(true);
   });
 
+  it('drops zsh startup noise from the stderr tail', async () => {
+    const fakes = makeFakeChild();
+    const spawn = vi.fn().mockReturnValue(fakes.child);
+    const proc = new ClaudeProcess('/p', { spawn });
+
+    // Verbatim from a `zsh -lic` spawned on pipes: no controlling terminal, so
+    // job control is unavailable and powerlevel10k's gitstatus aborts loudly.
+    // The tail is the text of a `resume_spawn_failed`, so the agent's own last
+    // words have to survive it.
+    fakes.pushStderr(
+      "(anon):setopt:7: can't change option: monitor\n" +
+        '\n' +
+        '[\x1b[31mERROR\x1b[39m]: gitstatus failed to initialize.\n' +
+        '\n\n' +
+        '  Add the following parameter to \x1b[4m~/.zshrc\x1b[24m for extra diagnostics on error:\n' +
+        '\n' +
+        '    \x1b[1mGITSTATUS_LOG_LEVEL=DEBUG\x1b[0m\n' +
+        '\n' +
+        '  Restart Zsh to retry gitstatus initialization:\n' +
+        '\n' +
+        '    exec zsh\n' +
+        "error: unknown option '--no-rtk'\n",
+    );
+    await new Promise((r) => setImmediate(r));
+
+    expect(proc.stderrTail()).toBe("error: unknown option '--no-rtk'");
+  });
+
   it('writes user input as a single NDJSON line to stdin', () => {
     const fakes = makeFakeChild();
     const spawn = vi.fn().mockReturnValue(fakes.child);

@@ -253,8 +253,8 @@ When enabled, the bridge owns exactly **one** Headroom proxy, shared by **both**
 agents:
 
 ```
-headroom wrap claude --port 8787 --no-proxy --no-mcp --no-serena --no-rtk -- <claude flags>
-headroom wrap codex  --port 8787 --no-proxy --no-mcp --no-serena --no-rtk -- <codex args>
+headroom wrap claude --port 8787 --no-proxy --no-mcp --no-serena -- <claude flags>
+headroom wrap codex  --port 8787 --no-proxy --no-mcp --no-serena -- <codex args>
 ```
 
 `wrap claude` sets `ANTHROPIC_BASE_URL`, `wrap codex` sets `OPENAI_BASE_URL`; one
@@ -263,9 +263,13 @@ traffic to route.
 
 - `--no-proxy` because concurrent sessions would otherwise race to bind the port.
   If a proxy is already listening the bridge reuses it and never kills it.
-- `--no-mcp --no-serena --no-rtk` because those steps rewrite the agent's active
+- `--no-mcp --no-serena` because those steps rewrite the agent's active
   config (`.claude.json` / the Codex config file), and concurrent sessions would
   race on the same file. The bridge has no business editing your profile.
+- No `--no-rtk`: headroom retired its CLI context tools (rtk, lean-ctx) and
+  forwards unrecognised flags straight to the wrapped CLI, so that flag reached
+  the agent and killed it on startup (`unknown option '--no-rtk'`, surfacing as
+  `resume_spawn_failed`). Only pass flags `headroom wrap` still owns.
 - The `--` separator is mandatory: headroom's own `-p/--port` and `-v/--verbose`
   are real options and would be consumed before the agent saw them.
 

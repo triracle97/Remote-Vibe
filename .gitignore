@@ -35,3 +35,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Claude Code local state (per-machine settings, headroom wrap markers)
+.claude/settings.local.json
+.claude/.headroom_*

@@ -70,10 +70,15 @@ function assertHeadroomBinSafe(bin: string): void {
  * `-p/--port` and `-v/--verbose` are real Click options and would be consumed
  * before Codex ever saw them.
  *
- * `--no-mcp --no-serena --no-rtk` are load-bearing, and more so here than for
- * Claude — `headroom wrap codex` registers its MCP server in the *active Codex
- * config file*. Concurrent sessions would race on that file, and the bridge has
- * no business rewriting the user's Codex profile behind their back.
+ * `--no-mcp --no-serena` are load-bearing, and more so here than for Claude —
+ * `headroom wrap codex` registers its MCP server in the *active Codex config
+ * file*. Concurrent sessions would race on that file, and the bridge has no
+ * business rewriting the user's Codex profile behind their back.
+ *
+ * There is deliberately no `--no-rtk`. headroom retired its CLI context tools
+ * (rtk, lean-ctx) and forwards unrecognised flags to the wrapped CLI, so the
+ * flag reached `codex` and killed the turn on startup. Anything added here
+ * must be a flag `headroom wrap` still owns.
  */
 export function buildCodexSpawn(opts: {
   codexArgs: string[];
@@ -92,7 +97,6 @@ export function buildCodexSpawn(opts: {
       '--no-proxy',
       '--no-mcp',
       '--no-serena',
-      '--no-rtk',
       '--',
       ...codexArgs,
     ],
