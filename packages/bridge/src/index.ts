@@ -32,6 +32,7 @@ import { AGENT_DIRECTIVE_PROMPT } from './agent-directives.js';
 import { ProfileStore } from './profile-store.js';
 import { SlashCommandsScanner } from './slash-commands.js';
 import { FileSearch } from './file-search.js';
+import { ConductorScanner } from './conductor.js';
 import { Notifier } from './notifier.js';
 import { TerminalManager } from './terminal-manager.js';
 
@@ -237,6 +238,17 @@ async function main(): Promise<void> {
       : {}),
   });
 
+  // Conductor pipelines. Shares FileSearch's dirs-for-session lookup, so a
+  // pipeline in any of a session's working dirs is found, not just the primary.
+  const conductor = new ConductorScanner({
+    allowedDirs: cfg.allowedDirs,
+    getDirsForSession: (sessionId: string) => {
+      const entry = registry.get(sessionId);
+      if (!entry) return [];
+      return [entry.projectPath, ...entry.additionalDirs];
+    },
+  });
+
   // Phase 6: telegram notifier (no-op if env unset)
   const notifier = new Notifier({
     ...(process.env.BRIDGE_TELEGRAM_BOT_TOKEN ? { token: process.env.BRIDGE_TELEGRAM_BOT_TOKEN } : {}),
@@ -358,6 +370,7 @@ async function main(): Promise<void> {
     profileStore,
     slashCommands,
     fileSearch,
+    conductor,
     terminalManager,
     jobStore,
     allowedDirs: cfg.allowedDirs,

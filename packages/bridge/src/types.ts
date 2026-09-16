@@ -203,7 +203,8 @@ export type ClientMsg =
   | ClientUpdateJobMsg
   | ClientDeleteJobMsg
   | ClientStartJobMsg
-  | ClientGetRateLimitsMsg;
+  | ClientGetRateLimitsMsg
+  | ClientListPipelinesMsg;
 
 /** Token accounting for one turn, straight off the CLI's `result` line. */
 export interface TurnUsage {
@@ -634,6 +635,23 @@ export interface ClientGetRateLimitsMsg {
   correlationId?: string;
 }
 
+/**
+ * The agent naming the conductor pipeline it is driving, via
+ * `<!--mrt:pipeline=<slug>-->`.
+ *
+ * Broadcast, not persisted. The bridge can already find pipelines by scanning
+ * the session's dirs, and in the ordinary case it finds exactly one — this
+ * only settles the tie when a repo holds several. Storing it would mean a new
+ * registry field and a load migration to win a reload in an uncommon case,
+ * which is not worth it; after a reload the scan's guess applies again until
+ * the agent says so once more.
+ */
+export interface ServerSessionPipelineMsg {
+  type: 'session_pipeline';
+  sessionId: string;
+  slug: string;
+}
+
 export interface ClientListJobsMsg {
   type: 'list_jobs';
   includeArchived?: boolean;
@@ -896,7 +914,39 @@ export type ServerMsg =
   | ServerJobStartedMsg
   | ServerSessionUsageMsg
   | ServerRateLimitsMsg
-  | ServerSessionTurnMsg;
+  | ServerSessionTurnMsg
+  | ServerPipelineListMsg
+  | ServerSessionPipelineMsg;
+
+// Conductor — a read-only view of `.pipeline/<slug>/` directories found in a
+// session's working dirs. See `conductor.ts`; the shapes are re-exported here
+// so the protocol stays declared in one place.
+
+export type { PipelineArtefact, PipelineSummary, TicketSummary } from './conductor.js';
+
+/**
+ * Find conductor pipelines. Scoped to a session's working dirs when
+ * `sessionId` is given, otherwise every allowed dir.
+ */
+export interface ClientListPipelinesMsg {
+  type: 'list_pipelines';
+  sessionId?: string;
+  correlationId?: string;
+}
+
+export interface ServerPipelineListMsg {
+  type: 'pipeline_list';
+  pipelines: import('./conductor.js').PipelineSummary[];
+  /**
+   * Directories that could not be scanned, and why.
+   *
+   * Carried rather than swallowed: "no pipelines" and "could not look" are
+   * different answers, and conflating them is precisely how a pipeline in an
+   * unscanned worktree goes missing.
+   */
+  warnings: string[];
+  correlationId?: string;
+}
 
 // Phase 5 — history viewer + session resume
 

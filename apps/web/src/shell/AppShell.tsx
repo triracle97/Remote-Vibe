@@ -7,6 +7,7 @@ import { useSessionsStore } from '../store/sessions';
 import { useAccountsStore } from '../store/accounts';
 import { usePromptHistoryStore } from '../store/prompt-history';
 import { useFileExplorerStore } from '../store/file-explorer';
+import { useConductorStore } from '../store/conductor';
 import { useHistoryStore } from '../features/history/historyStore';
 import { useProfileStore } from '../features/profiles/profileStore';
 import { useProjectsStore } from '../features/projects/projectsStore';
@@ -83,11 +84,23 @@ export function AppShell(): JSX.Element {
         return;
       }
       if (m.type === 'file_result') {
+        // The conductor panel reads pipeline docs through the same `read_file`
+        // as the drawer, so it gets first refusal on its own reply — otherwise
+        // opening a spec would also swap what the editor is showing.
+        if (useConductorStore.getState().applyFileResult(m)) return;
         useFileExplorerStore.getState().applyFileResult(m);
         return;
       }
       if (m.type === 'file_written') {
         useFileExplorerStore.getState().applyFileWritten(m);
+        return;
+      }
+      if (m.type === 'pipeline_list') {
+        useConductorStore.getState().applyPipelineList(m);
+        return;
+      }
+      if (m.type === 'session_pipeline') {
+        useConductorStore.getState().setAgentTie(m.sessionId, m.slug);
         return;
       }
       if (m.type === 'history_list') {

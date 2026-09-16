@@ -33,6 +33,7 @@ import type {
   AccountRateLimitWindow,
   RateLimitAccount,
   RateLimitWindow,
+  ServerSessionPipelineMsg,
   TurnUsage,
 } from './types.js';
 import { DEFAULT_SESSION_PHASE, EMPTY_SESSION_USAGE, isSessionPhase, phaseRank, turnContextTokens } from './types.js';
@@ -1531,8 +1532,23 @@ export class SessionManager extends EventEmitter {
     // transcript on disk stays clean too.
     if (e.kind === 'assistant_text') {
       const directives = extractDirectives(e.text);
-      if (directives.phase !== null || directives.tags !== null) {
+      if (
+        directives.phase !== null ||
+        directives.tags !== null ||
+        directives.pipeline !== null
+      ) {
         void this.applyAgentDirectives(s.sessionId, directives.phase, directives.tags);
+        // Pipeline is broadcast rather than stored — see ServerSessionPipelineMsg.
+        // It must be part of the condition above regardless, or a message that
+        // was *only* a pipeline marker would reach the client with the marker
+        // still in it.
+        if (directives.pipeline !== null) {
+          this.emit('broadcast', {
+            type: 'session_pipeline',
+            sessionId: s.sessionId,
+            slug: directives.pipeline,
+          } satisfies ServerSessionPipelineMsg);
+        }
         // A message that was *only* a directive has nothing left to show.
         if (directives.text.length === 0) return;
         // Rebuilt rather than mutated, so keep what said who was speaking.

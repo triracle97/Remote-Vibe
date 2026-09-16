@@ -16,7 +16,12 @@ import type { ServerMsg } from '../types.js';
 describe('extractDirectives', () => {
   it('leaves ordinary text untouched', () => {
     const out = extractDirectives('Just a normal reply.');
-    expect(out).toEqual({ text: 'Just a normal reply.', phase: null, tags: null });
+    expect(out).toEqual({
+      text: 'Just a normal reply.',
+      phase: null,
+      tags: null,
+      pipeline: null,
+    });
   });
 
   it('reads the investigating phase', () => {
@@ -36,6 +41,36 @@ describe('extractDirectives', () => {
     // Trimmed, de-duped case-insensitively, spaces dashed.
     expect(out.tags).toEqual(['api', 'bug']);
     expect(out.text).toBe('Working on it.');
+  });
+
+  it('reads a conductor pipeline slug and strips it', () => {
+    const out = extractDirectives('On it. <!--mrt:pipeline=inventory-stock-tracking-->');
+    expect(out.pipeline).toBe('inventory-stock-tracking');
+    expect(out.text).toBe('On it.');
+  });
+
+  it('leaves nothing behind when the message was only a pipeline marker', () => {
+    // The caller returns early on empty text, so this is what stops a bare
+    // marker reaching the client as a blank assistant message.
+    const out = extractDirectives('<!--mrt:pipeline=demo-->');
+    expect(out.pipeline).toBe('demo');
+    expect(out.text).toBe('');
+  });
+
+  it('ignores a pipeline value that is not a plausible slug', () => {
+    for (const bad of ['../etc/passwd', 'two words', '', '-leading-dash']) {
+      const out = extractDirectives(`x <!--mrt:pipeline=${bad}-->`);
+      expect(out.pipeline).toBeNull();
+      // Still stripped: an unusable value must not be left in the prose.
+      expect(out.text).toBe('x');
+    }
+  });
+
+  it('reads a pipeline alongside a phase', () => {
+    const out = extractDirectives('go <!--mrt:phase=implementing--><!--mrt:pipeline=demo-->');
+    expect(out.phase).toBe('implementing');
+    expect(out.pipeline).toBe('demo');
+    expect(out.text).toBe('go');
   });
 
   it('reads both in one message', () => {

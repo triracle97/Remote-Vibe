@@ -258,7 +258,8 @@ export type ClientMsg =
   | ClientUpdateJobMsg
   | ClientDeleteJobMsg
   | ClientStartJobMsg
-  | ClientGetRateLimitsMsg;
+  | ClientGetRateLimitsMsg
+  | ClientListPipelinesMsg;
 
 /** Running totals for one session. Persisted by the bridge. */
 export interface SessionUsage {
@@ -625,7 +626,89 @@ export type ServerMsg =
   | ServerJobStartedMsg
   | ServerSessionUsageMsg
   | ServerRateLimitsMsg
-  | ServerSessionTurnMsg;
+  | ServerSessionTurnMsg
+  | ServerPipelineListMsg
+  | ServerSessionPipelineMsg;
+
+/**
+ * The agent naming the conductor pipeline it is driving, via
+ * `<!--mrt:pipeline=<slug>-->`. Broadcast, not persisted — it only breaks the
+ * tie when a repo holds several pipelines.
+ */
+export interface ServerSessionPipelineMsg {
+  type: 'session_pipeline';
+  sessionId: string;
+  slug: string;
+}
+
+// Conductor — read-only view of `.pipeline/<slug>/` directories.
+// Mirror of the shapes in `packages/bridge/src/conductor.ts`.
+
+export interface PipelineArtefact {
+  name: string;
+  size: number;
+  /** ms since epoch. */
+  mtime: number;
+}
+
+/** One `tickets/T-xxx.md`, reduced to its header. All fields best-effort. */
+export interface TicketSummary {
+  id: string;
+  title: string;
+  type: string | null;
+  status: string | null;
+  covers: string | null;
+  blockedBy: string | null;
+}
+
+export interface PipelineSummary {
+  slug: string;
+  /** Absolute path to `.pipeline/<slug>`. */
+  dir: string;
+  /**
+   * Every `key: value` line in STATE.md, in file order.
+   *
+   * Deliberately unnarrowed: conductor's state fields changed when it was
+   * restructured around slices and will change again, so the UI renders
+   * whatever is here rather than a fixed list it would have to chase.
+   */
+  state: Record<string, string>;
+  phase: string | null;
+  step: string | null;
+  slice: string | null;
+  slicesDone: number | null;
+  slicesTotal: number | null;
+  blocked: boolean;
+  artefacts: PipelineArtefact[];
+  sliceArtefacts: PipelineArtefact[];
+  tickets: TicketSummary[];
+  /** Absolute path the tickets came from, for opening them. */
+  ticketsDir: string | null;
+  /** Worktree root this pipeline was found under. */
+  worktree: string;
+  /**
+   * True when the pipeline sits inside one of the session's own working dirs.
+   * False means it belongs to a sibling worktree — still shown, because the
+   * skill often runs from the main checkout while state lives in a worktree,
+   * but labelled so it is not mistaken for this session's own work.
+   */
+  inSessionDir: boolean;
+  mtime: number;
+}
+
+export interface ClientListPipelinesMsg {
+  type: 'list_pipelines';
+  sessionId?: string;
+  correlationId?: string;
+}
+
+export interface ServerPipelineListMsg {
+  type: 'pipeline_list';
+  pipelines: PipelineSummary[];
+  /** Directories that could not be scanned, and why. */
+  warnings: string[];
+  correlationId?: string;
+}
 
 // Phase 5 — history viewer + session resume
 

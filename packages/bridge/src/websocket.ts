@@ -16,6 +16,7 @@ import type { HistoryScanner } from './history-scanner.js';
 import type { ProfileStore } from './profile-store.js';
 import type { SlashCommandsScanner } from './slash-commands.js';
 import type { FileSearch } from './file-search.js';
+import type { ConductorScanner } from './conductor.js';
 import type { TerminalManager } from './terminal-manager.js';
 import { PathOutsideAllowlistError } from './path-allowlist.js';
 import { matchClipboardPathsByName, readClipboardFilePaths } from './clipboard.js';
@@ -44,6 +45,8 @@ export interface AttachWsOpts {
   profileStore: ProfileStore;
   slashCommands: SlashCommandsScanner;
   fileSearch: FileSearch;
+  /** Read-only view of conductor pipelines found in a session's dirs. */
+  conductor: ConductorScanner;
   terminalManager: TerminalManager;
   /** Backlog jobs — work written down before an agent runs. */
   jobStore: JobStore;
@@ -169,6 +172,7 @@ export function attachWebSocket(opts: AttachWsOpts): WebSocketServer {
         opts.profileStore,
         opts.slashCommands,
         opts.fileSearch,
+        opts.conductor,
         opts.jobStore,
         broadcastAll,
         opts.capabilities,
@@ -201,6 +205,7 @@ async function handleMessage(
   profileStore: ProfileStore,
   slashCommands: SlashCommandsScanner,
   fileSearch: FileSearch,
+  conductor: ConductorScanner,
   jobStore: JobStore,
   broadcastAll: (m: ServerMsg) => void,
   capabilities: { terminal: boolean },
@@ -668,6 +673,19 @@ async function handleMessage(
         } catch (err) {
           sendFsError(send, err, msg.correlationId);
         }
+        return;
+      }
+      case 'list_pipelines': {
+        // Scanning walks directories and shells out to git, so a slow disk
+        // must not stall the socket — but the reply is a request/response
+        // pair like every other list_*, so the client can simply wait.
+        const result = await conductor.scan(msg.sessionId);
+        send({
+          type: 'pipeline_list',
+          pipelines: result.pipelines,
+          warnings: result.warnings,
+          ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+        });
         return;
       }
       case 'list_history': {

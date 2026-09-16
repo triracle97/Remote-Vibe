@@ -52,6 +52,7 @@ async function withServerCaps<T>(
     profileStore: { list: () => [], add: async () => {}, update: async () => {}, remove: async () => {}, setDefault: async () => {}, get: () => null } as never,
     slashCommands: { listForSession: async () => [] } as never,
     fileSearch: { search: async () => ({ hits: [], truncated: false }) } as never,
+    conductor: { scan: async () => ({ pipelines: [], warnings: [] }) } as never,
     terminalManager: termMgr,
     capabilities,
   });

@@ -8,6 +8,8 @@ import { SpawnedSessionsBadge } from '../board/SpawnedSessionsBadge';
 import { SessionModelSwitch } from '../model-picker/SessionModelSwitch';
 import { RunningWorkBadge } from '../transcript/RunningWorkBadge';
 import type { RunningWork } from '../transcript/runningWork';
+import { ConductorBadge } from '../conductor/ConductorBadge';
+import type { PipelineSummary } from '../../types/protocol';
 import { BottomSheet } from '../../shell/BottomSheet';
 import { useIsDesktop } from '../../shell/useIsDesktop';
 
@@ -38,6 +40,10 @@ export interface SessionHeaderProps {
   drawerOpen?: boolean | undefined;
   onToggleDrawer?: (() => void) | undefined;
   onOpenMobileNav?: ((opener?: HTMLElement) => void) | undefined;
+  /** Pipeline this session is tied to, or null when none was found. */
+  conductorPipeline?: PipelineSummary | null | undefined;
+  /** Navigates to the conductor page. The pipeline is not a drawer. */
+  onOpenConductor?: (() => void) | undefined;
 }
 
 export function SessionHeader({
@@ -50,6 +56,8 @@ export function SessionHeader({
   drawerOpen,
   onToggleDrawer,
   onOpenMobileNav,
+  conductorPipeline,
+  onOpenConductor,
 }: SessionHeaderProps): JSX.Element {
   const isDesktop = useIsDesktop();
   const [renaming, setRenaming] = useState(false);
@@ -88,6 +96,9 @@ export function SessionHeader({
           </>
         )}
         <RunningWorkBadge work={background} />
+        {conductorPipeline && onOpenConductor && (
+          <ConductorBadge pipeline={conductorPipeline} onClick={onOpenConductor} />
+        )}
         <SessionModelSwitch sessionId={session.sessionId} agent={session.agent} />
         <SpawnedSessionsBadge sessionId={session.sessionId} />
         <SessionUsageBadge sessionId={session.sessionId} />
@@ -158,6 +169,13 @@ export function SessionHeader({
         {/* Compact, because "is anything still running" is the one status worth
             a permanent slot — everything else can live one tap away. */}
         <RunningWorkBadge work={background} compact />
+
+        {/* Earns a permanent slot for the same reason running-work does: a
+            pipeline that has stopped for a decision is something you want to
+            see from a phone, not find out about later. */}
+        {conductorPipeline && onOpenConductor && (
+          <ConductorBadge pipeline={conductorPipeline} onClick={onOpenConductor} compact />
+        )}
 
         <button
           type="button"

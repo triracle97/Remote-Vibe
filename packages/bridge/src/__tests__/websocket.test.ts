@@ -187,6 +187,7 @@ async function startServer(opts: {
     profileStore,
     slashCommands,
     fileSearch,
+    conductor: { scan: async () => ({ pipelines: [], warnings: [] }) } as never,
     terminalManager: stubTermMgr,
     jobStore,
     allowedDirs: ['/Users/test'],
@@ -548,6 +549,7 @@ describe('websocket', () => {
       profileStore: makeFakeProfileStore(),
       slashCommands: makeFakeSlashCommands(),
       fileSearch: makeFakeFileSearch(),
+      conductor: { scan: async () => ({ pipelines: [], warnings: [] }) } as never,
       terminalManager: stubTermMgr,
       capabilities: { terminal: true },
     });

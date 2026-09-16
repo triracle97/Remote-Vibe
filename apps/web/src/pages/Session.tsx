@@ -3,6 +3,7 @@ import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { useSessionsStore } from '../store/sessions';
 import { useConnectionStore } from '../store/connection';
 import { useFileExplorerStore } from '../store/file-explorer';
+import { useConductorStore, selectTiedPipeline } from '../store/conductor';
 import type { AppShellOutletContext } from '../shell/AppShell';
 import { Chat } from '../features/chat/Chat';
 import { useNewSession } from '../features/project-picker/useNewSession';
@@ -74,6 +75,16 @@ export function Session(): JSX.Element {
     client.send({ type: 'get_history', sessionId: id, since });
   }, [client, id, connStatus, transcriptOnly]);
 
+  // Tie this session to a conductor pipeline with no user action: ask the
+  // bridge to scan the session's working dirs as soon as it is open. Scoped to
+  // the session rather than every allowed dir, so the answer is about this
+  // session's repo and worktrees.
+  const requestPipelines = useConductorStore((s) => s.requestPipelines);
+  useEffect(() => {
+    if (!id || connStatus !== 'open') return;
+    requestPipelines(client, id);
+  }, [client, id, connStatus, requestPipelines]);
+
   const fallbackStartedRef = useRef<string | null>(null);
   const [fallbackFailed, setFallbackFailed] = useState(false);
   useEffect(() => {
@@ -106,6 +117,11 @@ export function Session(): JSX.Element {
   const sessions = order
     .map((sid) => sessionsMap[sid]!)
     .filter((s): s is NonNullable<typeof s> => s !== undefined);
+
+  const pipelines = useConductorStore((s) => s.pipelines);
+  const pinnedSlug = useConductorStore((s) => s.pinnedSlug);
+  const agentSlug = useConductorStore((s) => (id ? s.agentTie[id] ?? null : null));
+  const tiedPipeline = selectTiedPipeline(pipelines, { pinnedSlug, agentSlug });
 
   const closeMobileNav = (): void => {
     setMobileNavOpen(false);
@@ -160,6 +176,10 @@ export function Session(): JSX.Element {
           }
           onToggleDrawer={() => setDrawerOpen((o) => !o)}
           drawerOpen={drawerOpen}
+          conductorPipeline={tiedPipeline}
+          {...(tiedPipeline
+            ? { onOpenConductor: () => navigate(`/session/${id}/conductor`) }
+            : {})}
           onOpenMobileNav={openMobileNav}
           banner={transcriptOnly ? 'transcript-only view (session no longer live)' : null}
           errorBanner={lastError}

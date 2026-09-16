@@ -27,6 +27,7 @@ import { SessionUsageBadge } from '../usage/SessionUsageBadge';
 import { SpawnedSessionsBadge } from '../board/SpawnedSessionsBadge';
 import { SessionModelSwitch } from '../model-picker/SessionModelSwitch';
 import { useFileExplorerStore } from '../../store/file-explorer';
+import type { PipelineSummary } from '../../types/protocol';
 import { getBridgeClient } from '../../services/bridge-client-singleton';
 import { BottomSheet } from '../../shell/BottomSheet';
 import { useIsDesktop } from '../../shell/useIsDesktop';
@@ -38,6 +39,8 @@ interface ChatProps {
   onOpenMobileNav?(opener?: HTMLElement): void;
   onToggleDrawer?(): void;
   drawerOpen?: boolean;
+  conductorPipeline?: PipelineSummary | null;
+  onOpenConductor?(): void;
   banner?: string | null;
   errorBanner?: string | null;
   inputDisabled?: boolean;
@@ -50,6 +53,8 @@ export function Chat({
   onOpenMobileNav,
   onToggleDrawer,
   drawerOpen,
+  conductorPipeline,
+  onOpenConductor,
   banner,
   errorBanner,
   inputDisabled,
@@ -217,6 +222,8 @@ export function Chat({
         drawerOpen={drawerOpen}
         onToggleDrawer={onToggleDrawer}
         onOpenMobileNav={onOpenMobileNav}
+        conductorPipeline={conductorPipeline}
+        onOpenConductor={onOpenConductor}
       />
 
       {banner && (
