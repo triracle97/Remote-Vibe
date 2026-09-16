@@ -172,6 +172,21 @@ describe('sliceRoster', () => {
   it('stands in nothing when a pre-slices pipeline has no tickets either', () => {
     expect(sliceRoster(pipeline({ slice: null }))).toEqual([]);
   });
+
+  it('survives a bridge that is older than this field', () => {
+    // The tab reloads before the bridge restarts — routine during a deploy,
+    // and the reason index.html is served no-store. A missing `slices` must
+    // read as "none", not take the page down.
+    const old = pipeline({
+      tickets: [
+        { id: 'T-001', title: 'first', type: 'build', status: 'done', covers: null, blockedBy: null },
+      ],
+      ticketsDir: '/repo/.pipeline/demo/tickets',
+    });
+    delete (old as { slices?: unknown }).slices;
+    expect(() => sliceRoster(old)).not.toThrow();
+    expect(sliceRoster(old).map((s) => s.id)).toEqual(['demo']);
+  });
 });
 
 describe('docSections', () => {

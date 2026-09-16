@@ -304,7 +304,10 @@ export function selectTiedPipeline(
  */
 export function pipelineBadgeLabel(p: PipelineSummary): string {
   const bits: string[] = [];
-  const running = p.slices.filter((s) => s.inFlight).length;
+  // `?? []` throughout: a tab can outlive the bridge build it was served by —
+  // reload beats restart during a deploy — and a field the bridge has not
+  // learned yet must read as "none" rather than take the header down.
+  const running = (p.slices ?? []).filter((s) => s.inFlight).length;
   if (p.slice) {
     // With workers running alongside, "+2" is what the badge owes you: the
     // slice in front is no longer the whole of what is happening. The total
@@ -328,8 +331,9 @@ export function pipelineBadgeLabel(p: PipelineSummary): string {
  * one shape everywhere and the old pipelines keep opening.
  */
 export function sliceRoster(p: PipelineSummary): SliceSummary[] {
-  if (p.slices.length > 0) return p.slices;
-  if (p.tickets.length === 0) return [];
+  const slices = p.slices ?? [];
+  if (slices.length > 0) return slices;
+  if ((p.tickets ?? []).length === 0) return [];
   return [
     {
       id: p.slug,
