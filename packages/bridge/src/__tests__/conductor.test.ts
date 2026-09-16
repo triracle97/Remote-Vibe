@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { realpath } from 'node:fs/promises';
-import { ConductorScanner, parseStateFile } from '../conductor.js';
+import { ConductorScanner, parseDispatchTable, parseStateFile } from '../conductor.js';
 
 const STATE = `# STATE — demo
 phase: 1
@@ -61,6 +61,83 @@ describe('parseStateFile', () => {
     // still reach the UI rather than being silently dropped.
     const s = parseStateFile('some_future_field: yes\n');
     expect(s.some_future_field).toBe('yes');
+  });
+});
+
+/** A root STATE.md as parallel dispatch writes it: feature fields plus a table. */
+const PARALLEL_STATE = `# STATE — demo
+concurrency: 3
+slices_done: 1
+slices_total: 9
+branch: conductor/demo
+
+## Dispatch table (parallel slices in flight) — written only by the root controller
+| slice | worktree | branch | phase/step | status | last sync |
+|---|---|---|---|---|---|
+| S-01b | (this worktree, foreground) | conductor/demo-S-01b | 3/ready | active — T-007 parked | 2026-09-16 |
+| S-02 | .claude/worktrees/demo-S-02 | conductor/demo-S-02 | 1/aspects | dispatched | 2026-09-16 |
+| S-03 | .claude/worktrees/demo-S-03 | conductor/demo-S-03 | 1/plan | dispatched | 2026-09-16 |
+
+notes:
+`;
+
+describe('parseDispatchTable', () => {
+  it('reads a row per in-flight slice', () => {
+    const rows = parseDispatchTable(PARALLEL_STATE);
+    expect(rows.map((r) => r.slice)).toEqual(['S-01b', 'S-02', 'S-03']);
+    expect(rows[1]).toMatchObject({
+      worktree: '.claude/worktrees/demo-S-02',
+      branch: 'conductor/demo-S-02',
+      phase: '1',
+      step: 'aspects',
+      status: 'dispatched',
+      lastSync: '2026-09-16',
+      foreground: false,
+    });
+  });
+
+  it('marks the row the root controller drives itself', () => {
+    // "(this worktree, foreground)" is not a path, and the slice it names has
+    // no separate worker — it is the session you are looking at.
+    const rows = parseDispatchTable(PARALLEL_STATE);
+    expect(rows[0]).toMatchObject({ slice: 'S-01b', foreground: true, worktree: null });
+  });
+
+  it('keeps the whole status cell, prose and all', () => {
+    // The controller writes "active — T-007 parked on owner decision" here, and
+    // that trailing clause is the most useful sentence on the page.
+    expect(parseDispatchTable(PARALLEL_STATE)[0]!.status).toBe('active — T-007 parked');
+  });
+
+  it('follows the header rather than the column order', () => {
+    const rows = parseDispatchTable(
+      [
+        '| status | slice | phase/step |',
+        '|---|---|---|',
+        '| blocked | S-04 | 4/review |',
+      ].join('\n'),
+    );
+    expect(rows).toEqual([
+      {
+        slice: 'S-04',
+        status: 'blocked',
+        phase: '4',
+        step: 'review',
+        worktree: null,
+        branch: null,
+        foreground: false,
+        lastSync: null,
+      },
+    ]);
+  });
+
+  it('ignores tables that are not the dispatch table', () => {
+    const rows = parseDispatchTable('| file | size |\n|---|---|\n| SPEC.md | 24K |\n');
+    expect(rows).toEqual([]);
+  });
+
+  it('finds no rows in a pipeline that never went parallel', () => {
+    expect(parseDispatchTable(STATE)).toEqual([]);
   });
 });
 
@@ -170,7 +247,8 @@ describe('ConductorScanner', () => {
 
     const p = res.pipelines[0]!;
     expect(p.blocked).toBe(true);
-    expect(p.sliceArtefacts.map((a) => a.name).sort()).toEqual(['BLOCKED.md', 'SPEC.md']);
+    expect(p.slices[0]).toMatchObject({ id: 'S-01', blocked: true });
+    expect(p.slices[0]!.artefacts.map((a) => a.name).sort()).toEqual(['BLOCKED.md', 'SPEC.md']);
   });
 
   it('reads a pre-slices pipeline without inventing slice fields', async () => {
@@ -183,7 +261,7 @@ describe('ConductorScanner', () => {
     expect(p.phase).toBe('3');
     expect(p.slice).toBeNull();
     expect(p.slicesTotal).toBeNull();
-    expect(p.sliceArtefacts).toEqual([]);
+    expect(p.slices).toEqual([]);
   });
 
   it('parses tickets from the current slice', async () => {
@@ -200,7 +278,7 @@ describe('ConductorScanner', () => {
 
     const res = await scanner({ allowedDirs: [root], dirs: [repo] }).scan('s1');
 
-    const t = res.pipelines[0]!.tickets;
+    const t = res.pipelines[0]!.slices[0]!.tickets;
     // Natural order: T-002 before T-010, and `notes.md` is not a ticket.
     expect(t.map((x) => x.id)).toEqual(['T-002', 'T-010']);
     expect(t[0]).toMatchObject({
@@ -255,7 +333,7 @@ describe('ConductorScanner', () => {
 
     const res = await scanner({ allowedDirs: [root], dirs: [repo] }).scan('s1');
 
-    expect(res.pipelines[0]!.tickets[0]).toMatchObject({
+    expect(res.pipelines[0]!.slices[0]!.tickets[0]).toMatchObject({
       id: 'T-004',
       title: 'add the field',
       type: 'build',
@@ -272,7 +350,7 @@ describe('ConductorScanner', () => {
 
     const res = await scanner({ allowedDirs: [root], dirs: [repo] }).scan('s1');
 
-    expect(res.pipelines[0]!.tickets[0]).toMatchObject({
+    expect(res.pipelines[0]!.slices[0]!.tickets[0]).toMatchObject({
       id: 'T-003',
       title: '',
       type: 'decide',
@@ -384,6 +462,136 @@ describe('ConductorScanner', () => {
     expect(res.warnings.join(' ')).toContain("this session's own directory is outside");
     expect(res.pipelines.map((p) => p.slug)).toEqual(['allowed']);
     expect(res.pipelines[0]!.inSessionDir).toBe(false);
+  });
+
+  describe('parallel slices', () => {
+    async function makeSlice(dir: string, id: string, state?: string): Promise<string> {
+      const sliceDir = join(dir, 'slices', id);
+      await mkdir(sliceDir, { recursive: true });
+      if (state !== undefined) await writeFile(join(sliceDir, 'STATE.md'), state);
+      return sliceDir;
+    }
+
+    it('reports every slice, not only the one in front', async () => {
+      const repo = join(root, 'repo');
+      const dir = await makePipeline(repo, 'demo', PARALLEL_STATE);
+      await makeSlice(dir, 'S-01b', '# STATE — S-01b\nphase: 3\nstep: ready\ntickets_done: 6\ntickets_total: 7\ncurrent_ticket: T-007\nattempt: 1\n');
+      await makeSlice(dir, 'S-02', '# STATE — S-02\nphase: 1\nstep: plan\n');
+      await makeSlice(dir, 'S-03', '# STATE — S-03\nphase: 1\nstep: aspects\n');
+
+      const p = (await scanner({ allowedDirs: [root], dirs: [repo] }).scan('s1')).pipelines[0]!;
+
+      expect(p.slices.map((s) => s.id)).toEqual(['S-01b', 'S-02', 'S-03']);
+      expect(p.slices[0]).toMatchObject({
+        phase: '3',
+        step: 'ready',
+        ticketsDone: 6,
+        ticketsTotal: 7,
+        currentTicket: 'T-007',
+        attempt: 1,
+        inFlight: true,
+        foreground: true,
+        status: 'active — T-007 parked',
+        branch: 'conductor/demo-S-01b',
+      });
+      expect(p.slices[1]).toMatchObject({
+        id: 'S-02',
+        foreground: false,
+        worktree: '.claude/worktrees/demo-S-02',
+        status: 'dispatched',
+      });
+      expect(p.concurrency).toBe(3);
+    });
+
+    it("believes the slice's own STATE.md over the dispatch row", async () => {
+      // The row is written by the root controller and goes stale between syncs;
+      // the slice's own file is written by the worker doing the work.
+      const repo = join(root, 'repo');
+      const dir = await makePipeline(repo, 'demo', PARALLEL_STATE);
+      await makeSlice(dir, 'S-02', '# STATE — S-02\nphase: 2\nstep: fog\n');
+
+      const p = (await scanner({ allowedDirs: [root], dirs: [repo] }).scan('s1')).pipelines[0]!;
+
+      expect(p.slices.find((s) => s.id === 'S-02')).toMatchObject({ phase: '2', step: 'fog' });
+    });
+
+    it('lists a slice that is dispatched but not yet scaffolded', async () => {
+      // Between `git worktree add` and `init_slice.sh` there is no directory —
+      // and that gap is exactly when you want to see the worker exists.
+      const repo = join(root, 'repo');
+      await makePipeline(repo, 'demo', PARALLEL_STATE);
+
+      const p = (await scanner({ allowedDirs: [root], dirs: [repo] }).scan('s1')).pipelines[0]!;
+
+      expect(p.slices.map((s) => s.id)).toEqual(['S-01b', 'S-02', 'S-03']);
+      expect(p.slices[1]).toMatchObject({ id: 'S-02', phase: '1', step: 'aspects', state: {} });
+      expect(p.slices[1]!.artefacts).toEqual([]);
+    });
+
+    it('treats a slice with no dispatch row as no longer in flight', async () => {
+      // The row is removed when the slice merges, but its directory stays as
+      // the record of the work — so a dir without a row reads as finished.
+      const repo = join(root, 'repo');
+      const dir = await makePipeline(repo, 'demo', PARALLEL_STATE);
+      await makeSlice(dir, 'S-01a', '# STATE — S-01a\nphase: 4\nstep: done\n');
+      await makeSlice(dir, 'S-02', '# STATE — S-02\nphase: 1\nstep: plan\n');
+
+      const p = (await scanner({ allowedDirs: [root], dirs: [repo] }).scan('s1')).pipelines[0]!;
+
+      // In flight first, finished after, so the workers are what you see.
+      expect(p.slices.map((s) => s.id)).toEqual(['S-01b', 'S-02', 'S-03', 'S-01a']);
+      expect(p.slices.find((s) => s.id === 'S-01a')).toMatchObject({
+        inFlight: false,
+        status: null,
+      });
+    });
+
+    it('flags the blocked slice by name, and the pipeline with it', async () => {
+      const repo = join(root, 'repo');
+      const dir = await makePipeline(repo, 'demo', PARALLEL_STATE);
+      await makeSlice(dir, 'S-02', '# STATE — S-02\nphase: 1\nstep: plan\n');
+      const blocked = await makeSlice(dir, 'S-03', '# STATE — S-03\nphase: 2\nstep: fog\n');
+      await writeFile(join(blocked, 'BLOCKED.md'), 'route review did not converge');
+
+      const p = (await scanner({ allowedDirs: [root], dirs: [repo] }).scan('s1')).pipelines[0]!;
+
+      expect(p.blocked).toBe(true);
+      expect(p.slices.find((s) => s.id === 'S-03')!.blocked).toBe(true);
+      expect(p.slices.find((s) => s.id === 'S-02')!.blocked).toBe(false);
+    });
+
+    it('keeps each slice with its own tickets and artefacts', async () => {
+      const repo = join(root, 'repo');
+      const dir = await makePipeline(repo, 'demo', PARALLEL_STATE);
+      const one = await makeSlice(dir, 'S-01b', '# STATE — S-01b\nphase: 3\nstep: ready\n');
+      await writeFile(join(one, 'SPEC.md'), 'the spec');
+      await mkdir(join(one, 'tickets'), { recursive: true });
+      await writeFile(join(one, 'tickets', 'T-001.md'), '# T-001 — first\ntype: build\nstatus: done\n');
+      const two = await makeSlice(dir, 'S-02', '# STATE — S-02\nphase: 1\nstep: plan\n');
+      await mkdir(join(two, 'tickets'), { recursive: true });
+      await writeFile(join(two, 'tickets', 'T-009.md'), '# T-009 — other\ntype: build\nstatus: open\n');
+
+      const p = (await scanner({ allowedDirs: [root], dirs: [repo] }).scan('s1')).pipelines[0]!;
+
+      const s1 = p.slices.find((s) => s.id === 'S-01b')!;
+      expect(s1.tickets.map((t) => t.id)).toEqual(['T-001']);
+      expect(s1.ticketsDir).toBe(join(one, 'tickets'));
+      expect(s1.artefacts.map((a) => a.name).sort()).toEqual(['SPEC.md', 'STATE.md']);
+      expect(p.slices.find((s) => s.id === 'S-02')!.tickets.map((t) => t.id)).toEqual(['T-009']);
+    });
+
+    it('names the foreground slice as the pipeline’s current one', async () => {
+      // Root STATE.md no longer carries `slice:` once a pipeline goes parallel,
+      // so the badge's "where is it" has to come from the table.
+      const repo = join(root, 'repo');
+      await makePipeline(repo, 'demo', PARALLEL_STATE);
+
+      const p = (await scanner({ allowedDirs: [root], dirs: [repo] }).scan('s1')).pipelines[0]!;
+
+      expect(p.slice).toBe('S-01b');
+      expect(p.phase).toBe('3');
+      expect(p.step).toBe('ready');
+    });
   });
 
   it('dedupes a pipeline reachable from two roots', async () => {

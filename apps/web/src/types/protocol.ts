@@ -661,6 +661,42 @@ export interface TicketSummary {
   blockedBy: string | null;
 }
 
+/**
+ * One slice: its own worker, its own worktree, its own STATE.md.
+ *
+ * Mirror of `SliceSummary` in the bridge. Since conductor dispatches slices in
+ * parallel, this — not the pipeline — is the unit of "what is happening".
+ */
+export interface SliceSummary {
+  /** Directory name under `slices/`, e.g. `S-01b`. */
+  id: string;
+  /** Absolute path to `slices/<id>`, even when not yet scaffolded. */
+  dir: string;
+  /** Every field of the slice's own STATE.md. Empty when it has none yet. */
+  state: Record<string, string>;
+  phase: string | null;
+  step: string | null;
+  /** Dispatch-table status, or null once the row is gone (i.e. merged). */
+  status: string | null;
+  /** True when the dispatch table still has a row for this slice. */
+  inFlight: boolean;
+  /** True when the root controller drives it, rather than a worker. */
+  foreground: boolean;
+  worktree: string | null;
+  branch: string | null;
+  currentTicket: string | null;
+  attempt: number | null;
+  ticketsDone: number | null;
+  ticketsTotal: number | null;
+  lastVerdict: string | null;
+  blocked: boolean;
+  artefacts: PipelineArtefact[];
+  tickets: TicketSummary[];
+  ticketsDir: string | null;
+  lastSync: string | null;
+  mtime: number;
+}
+
 export interface PipelineSummary {
   slug: string;
   /** Absolute path to `.pipeline/<slug>`. */
@@ -675,12 +711,17 @@ export interface PipelineSummary {
   state: Record<string, string>;
   phase: string | null;
   step: string | null;
+  /** The slice in front: the foreground one, else the table's first row. */
   slice: string | null;
   slicesDone: number | null;
   slicesTotal: number | null;
+  /** How many slices may run at once. Null for a pipeline never run parallel. */
+  concurrency: number | null;
+  /** In-flight slices first, in dispatch-table order, then finished ones. */
+  slices: SliceSummary[];
   blocked: boolean;
   artefacts: PipelineArtefact[];
-  sliceArtefacts: PipelineArtefact[];
+  /** Root-level tickets, which only a pre-slices pipeline has. */
   tickets: TicketSummary[];
   /** Absolute path the tickets came from, for opening them. */
   ticketsDir: string | null;
@@ -707,6 +748,13 @@ export interface ServerPipelineListMsg {
   pipelines: PipelineSummary[];
   /** Directories that could not be scanned, and why. */
   warnings: string[];
+  /**
+   * The session the scan was scoped to, echoed back.
+   *
+   * A scan can outlast the session being looked at; without this the reply
+   * lands on whichever session is open when it arrives.
+   */
+  sessionId?: string;
   correlationId?: string;
 }
 

@@ -3,9 +3,10 @@ import {
   docSections,
   pipelineBadgeLabel,
   selectTiedPipeline,
+  sliceRoster,
   useConductorStore,
 } from './conductor';
-import type { PipelineSummary } from '../types/protocol';
+import type { PipelineSummary, SliceSummary } from '../types/protocol';
 
 function pipeline(over: Partial<PipelineSummary> = {}): PipelineSummary {
   return {
@@ -17,13 +18,41 @@ function pipeline(over: Partial<PipelineSummary> = {}): PipelineSummary {
     slice: null,
     slicesDone: null,
     slicesTotal: null,
+    concurrency: null,
+    slices: [],
     blocked: false,
     artefacts: [],
-    sliceArtefacts: [],
     tickets: [],
     ticketsDir: null,
     worktree: '/repo',
     inSessionDir: true,
+    mtime: 1,
+    ...over,
+  };
+}
+
+function slice(over: Partial<SliceSummary> = {}): SliceSummary {
+  return {
+    id: 'S-01',
+    dir: '/repo/.pipeline/demo/slices/S-01',
+    state: {},
+    phase: '1',
+    step: 'plan',
+    status: 'dispatched',
+    inFlight: true,
+    foreground: false,
+    worktree: null,
+    branch: null,
+    currentTicket: null,
+    attempt: null,
+    ticketsDone: null,
+    ticketsTotal: null,
+    lastVerdict: null,
+    blocked: false,
+    artefacts: [],
+    tickets: [],
+    ticketsDir: null,
+    lastSync: null,
     mtime: 1,
     ...over,
   };
@@ -82,6 +111,67 @@ describe('pipelineBadgeLabel', () => {
   it('falls back to the slug when STATE.md said nothing useful', () => {
     expect(pipelineBadgeLabel(pipeline({ phase: null, step: null }))).toBe('demo');
   });
+
+  it('counts the other slices running alongside this one', () => {
+    // Parallel dispatch means the badge's one line is no longer the whole
+    // story, and "+2" is the shortest way to say there is more to look at.
+    const p = pipeline({
+      slice: 'S-01b',
+      slicesTotal: 12,
+      phase: '3',
+      step: 'ready',
+      slices: [
+        slice({ id: 'S-01b', foreground: true }),
+        slice({ id: 'S-02' }),
+        slice({ id: 'S-03' }),
+      ],
+    });
+    expect(pipelineBadgeLabel(p)).toBe('S-01b +2 · ph3 · ready');
+  });
+
+  it('keeps the slice count out of it when only one slice is running', () => {
+    const p = pipeline({
+      slice: 'S-01b',
+      slicesTotal: 12,
+      phase: '3',
+      step: 'ready',
+      slices: [slice({ id: 'S-01b', foreground: true }), slice({ id: 'S-01a', inFlight: false })],
+    });
+    expect(pipelineBadgeLabel(p)).toBe('S-01b/12 · ph3 · ready');
+  });
+});
+
+describe('sliceRoster', () => {
+  it('hands back the slices the bridge found', () => {
+    const p = pipeline({ slices: [slice({ id: 'S-01b' }), slice({ id: 'S-02' })] });
+    expect(sliceRoster(p).map((s) => s.id)).toEqual(['S-01b', 'S-02']);
+  });
+
+  it('gives a pre-slices pipeline one slice to stand in for it', () => {
+    // So the page has a single way to render work, rather than one path for
+    // pipelines with slices and another for the ones that predate them.
+    const p = pipeline({
+      slice: null,
+      phase: '3',
+      step: 'ticket',
+      tickets: [{ id: 'T-001', title: 'first', type: 'build', status: 'done', covers: null, blockedBy: null }],
+      ticketsDir: '/repo/.pipeline/demo/tickets',
+    });
+    const [only] = sliceRoster(p);
+    expect(sliceRoster(p)).toHaveLength(1);
+    expect(only).toMatchObject({
+      id: 'demo',
+      phase: '3',
+      step: 'ticket',
+      ticketsDir: '/repo/.pipeline/demo/tickets',
+      inFlight: false,
+    });
+    expect(only!.tickets.map((t) => t.id)).toEqual(['T-001']);
+  });
+
+  it('stands in nothing when a pre-slices pipeline has no tickets either', () => {
+    expect(sliceRoster(pipeline({ slice: null }))).toEqual([]);
+  });
 });
 
 describe('docSections', () => {
@@ -137,7 +227,7 @@ describe('useConductorStore', () => {
       warnings: [],
       loading: false,
       loaded: false,
-      pinnedSlug: null,
+      pinnedBySession: {},
       agentTie: {},
       doc: null,
       pendingDocId: null,
@@ -249,10 +339,64 @@ describe('useConductorStore', () => {
   });
 
   it('keeps the pin across a reset — the user already answered "which one"', () => {
-    useConductorStore.getState().pin('chosen');
+    useConductorStore.getState().pin('sess-1', 'chosen');
     useConductorStore.getState().reset();
-    expect(useConductorStore.getState().pinnedSlug).toBe('chosen');
+    expect(useConductorStore.getState().pinnedFor('sess-1')).toBe('chosen');
     expect(useConductorStore.getState().loaded).toBe(false);
+  });
+
+  it('pins per session, so one session’s answer is not imposed on another', () => {
+    useConductorStore.getState().pin('sess-1', 'alpha');
+    expect(useConductorStore.getState().pinnedFor('sess-1')).toBe('alpha');
+    expect(useConductorStore.getState().pinnedFor('sess-2')).toBeNull();
+  });
+
+  it('forgets the previous session’s pipelines the moment another asks', () => {
+    // The bug: open session A, open session B, and B shows A's pipeline until
+    // B's own scan comes back — which on a big repo is seconds of a lie.
+    const client = { send: () => {} };
+    useConductorStore.getState().requestPipelines(client, 'sess-1');
+    useConductorStore.getState().applyPipelineList({
+      type: 'pipeline_list',
+      pipelines: [pipeline({ slug: 'a-pipeline' })],
+      warnings: ['a warning'],
+      sessionId: 'sess-1',
+    });
+    expect(useConductorStore.getState().pipelines).toHaveLength(1);
+
+    useConductorStore.getState().requestPipelines(client, 'sess-2');
+
+    expect(useConductorStore.getState().pipelines).toEqual([]);
+    expect(useConductorStore.getState().warnings).toEqual([]);
+    expect(useConductorStore.getState().loaded).toBe(false);
+  });
+
+  it('drops a scan that answers a session no longer being looked at', () => {
+    // A scan walks worktrees and shells out to git; its reply can easily land
+    // after the user has moved on, and it must not paint over the new session.
+    const client = { send: () => {} };
+    useConductorStore.getState().requestPipelines(client, 'sess-1');
+    useConductorStore.getState().requestPipelines(client, 'sess-2');
+
+    useConductorStore.getState().applyPipelineList({
+      type: 'pipeline_list',
+      pipelines: [pipeline({ slug: 'late-from-sess-1' })],
+      warnings: [],
+      sessionId: 'sess-1',
+    });
+
+    expect(useConductorStore.getState().pipelines).toEqual([]);
+    expect(useConductorStore.getState().loaded).toBe(false);
+  });
+
+  it('accepts an unscoped scan, which is the every-directory one', () => {
+    useConductorStore.getState().requestPipelines({ send: () => {} });
+    useConductorStore.getState().applyPipelineList({
+      type: 'pipeline_list',
+      pipelines: [pipeline({ slug: 'anywhere' })],
+      warnings: [],
+    });
+    expect(useConductorStore.getState().pipelines.map((p) => p.slug)).toEqual(['anywhere']);
   });
 
   it('records an agent claim per session', () => {

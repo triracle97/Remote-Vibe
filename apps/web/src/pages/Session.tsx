@@ -3,7 +3,7 @@ import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { useSessionsStore } from '../store/sessions';
 import { useConnectionStore } from '../store/connection';
 import { useFileExplorerStore } from '../store/file-explorer';
-import { useConductorStore, selectTiedPipeline } from '../store/conductor';
+import { useConductorStore, useSessionPipelines, selectTiedPipeline } from '../store/conductor';
 import type { AppShellOutletContext } from '../shell/AppShell';
 import { Chat } from '../features/chat/Chat';
 import { useNewSession } from '../features/project-picker/useNewSession';
@@ -118,8 +118,9 @@ export function Session(): JSX.Element {
     .map((sid) => sessionsMap[sid]!)
     .filter((s): s is NonNullable<typeof s> => s !== undefined);
 
-  const pipelines = useConductorStore((s) => s.pipelines);
-  const pinnedSlug = useConductorStore((s) => s.pinnedSlug);
+  // Scoped to this session: the badge must never show another session's work.
+  const { pipelines } = useSessionPipelines(id);
+  const pinnedSlug = useConductorStore((s) => (id ? s.pinnedBySession[id] ?? null : null));
   const agentSlug = useConductorStore((s) => (id ? s.agentTie[id] ?? null : null));
   const tiedPipeline = selectTiedPipeline(pipelines, { pinnedSlug, agentSlug });
 

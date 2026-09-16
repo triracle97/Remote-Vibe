@@ -4,7 +4,7 @@ import { MemoryRouter, Routes, Route, Outlet } from 'react-router-dom';
 import { Conductor } from './Conductor';
 import { useConductorStore } from '../store/conductor';
 import { useConnectionStore } from '../store/connection';
-import type { ClientMsg, PipelineSummary } from '../types/protocol';
+import type { ClientMsg, PipelineSummary, SliceSummary } from '../types/protocol';
 
 afterEach(cleanup);
 
@@ -23,6 +23,8 @@ function pipeline(over: Partial<PipelineSummary> = {}): PipelineSummary {
     phase: '2',
     step: 'fog',
     slice: null,
+    concurrency: null,
+    slices: [],
     slicesDone: null,
     slicesTotal: null,
     blocked: false,
@@ -30,7 +32,6 @@ function pipeline(over: Partial<PipelineSummary> = {}): PipelineSummary {
       { name: 'SPEC.md', size: 184_000, mtime: 3 },
       { name: 'PATHS.md', size: 300_000, mtime: 2 },
     ],
-    sliceArtefacts: [],
     tickets: [
       { id: 'T-001', title: 'first ticket', type: 'decide', status: 'resolved', covers: null, blockedBy: null },
     ],
@@ -49,7 +50,8 @@ beforeEach(() => {
     warnings: [],
     loading: false,
     loaded: false,
-    pinnedSlug: null,
+    sessionId: 's1',
+    pinnedBySession: {},
     agentTie: {},
     doc: null,
     pendingDocId: null,
@@ -129,6 +131,163 @@ describe('Conductor page — overview', () => {
     expect((read as { path: string }).path).toBe(
       '/repo/.pipeline/inventory-stock-tracking/SPEC.md',
     );
+  });
+});
+
+function slice(over: Partial<SliceSummary> = {}): SliceSummary {
+  return {
+    id: 'S-02',
+    dir: '/repo/.pipeline/inventory-stock-tracking/slices/S-02',
+    state: {},
+    phase: '1',
+    step: 'plan',
+    status: 'dispatched',
+    inFlight: true,
+    foreground: false,
+    worktree: '/repo/.claude/worktrees/inventory-stock-tracking-S-02',
+    branch: 'conductor/inventory-stock-tracking-S-02',
+    currentTicket: null,
+    attempt: null,
+    ticketsDone: null,
+    ticketsTotal: null,
+    lastVerdict: null,
+    blocked: false,
+    artefacts: [],
+    tickets: [],
+    ticketsDir: null,
+    lastSync: '2026-09-16',
+    mtime: 1,
+    ...over,
+  };
+}
+
+/** A pipeline mid-parallel-dispatch: one slice in front, two workers behind. */
+function parallel(over: Partial<PipelineSummary> = {}): PipelineSummary {
+  return pipeline({
+    slice: 'S-01b',
+    slicesDone: 4,
+    slicesTotal: 12,
+    concurrency: 3,
+    tickets: [],
+    ticketsDir: null,
+    slices: [
+      slice({
+        id: 'S-01b',
+        foreground: true,
+        worktree: null,
+        phase: '3',
+        step: 'ready',
+        status: 'active — T-007 parked',
+        ticketsDone: 6,
+        ticketsTotal: 7,
+        currentTicket: 'T-007',
+        attempt: 1,
+        tickets: [
+          { id: 'T-007', title: 'last ticket', type: 'build', status: 'open', covers: null, blockedBy: null },
+        ],
+        ticketsDir: '/repo/.pipeline/inventory-stock-tracking/slices/S-01b/tickets',
+        artefacts: [{ name: 'ROUTE.md', size: 7_000, mtime: 5 }],
+      }),
+      slice({ id: 'S-02' }),
+      slice({ id: 'S-03', phase: '2', step: 'fog' }),
+    ],
+    ...over,
+  });
+}
+
+describe('Conductor page — parallel slices', () => {
+  it('lists every worker, not only the slice in front', () => {
+    useConductorStore.setState({ loaded: true, pipelines: [parallel()] });
+    renderPage();
+    for (const id of ['S-01b', 'S-02', 'S-03']) {
+      expect(screen.getByText(id)).toBeTruthy();
+    }
+  });
+
+  it('says where each worker is and what it is doing', () => {
+    useConductorStore.setState({ loaded: true, pipelines: [parallel()] });
+    renderPage();
+    const workers = screen.getByRole('list', { name: /workers/i });
+    expect(workers.textContent).toContain('3/ready');
+    expect(workers.textContent).toContain('6/7');
+    expect(workers.textContent).toContain('T-007');
+    // A background worker is in its own worktree; naming it is how you tell
+    // two workers apart when both are mid-phase-1.
+    expect(workers.textContent).toContain('inventory-stock-tracking-S-02');
+    expect(workers.textContent).toContain('foreground');
+  });
+
+  it('counts the parallel work in the state summary', () => {
+    useConductorStore.setState({ loaded: true, pipelines: [parallel()] });
+    renderPage();
+    const summary = screen.getByTestId('conductor-summary');
+    expect(summary.textContent).toContain('3 running');
+    expect(summary.textContent).toContain('4/12 merged');
+    expect(summary.textContent).toContain('3 at once');
+  });
+
+  it('puts a blocked worker at the top, where it cannot be missed', () => {
+    const p = parallel();
+    p.slices[2]!.blocked = true;
+    useConductorStore.setState({ loaded: true, pipelines: [p] });
+    renderPage();
+    const ids = Array.from(
+      screen.getByRole('list', { name: /workers/i }).querySelectorAll('[data-slice]'),
+    ).map((el) => el.getAttribute('data-slice'));
+    expect(ids[0]).toBe('S-03');
+  });
+
+  it('opens one worker’s own tickets and artefacts', () => {
+    useConductorStore.setState({ loaded: true, pipelines: [parallel()] });
+    renderPage();
+    fireEvent.click(screen.getByText('S-01b'));
+    expect(screen.getByText('T-007')).toBeTruthy();
+    expect(screen.getByText('ROUTE.md')).toBeTruthy();
+  });
+
+  it('keeps the open worker in the URL so Back returns to the list', () => {
+    useConductorStore.setState({ loaded: true, pipelines: [parallel()] });
+    renderPage('/session/s1/conductor?slice=S-03');
+    expect(screen.getByTestId('slice-detail').getAttribute('data-slice')).toBe('S-03');
+  });
+
+  it('shows one slice inline rather than making you open it', () => {
+    // A pipeline with a single slice has no list worth tapping through.
+    useConductorStore.setState({
+      loaded: true,
+      pipelines: [
+        parallel({
+          slices: [
+            slice({
+              id: 'S-02',
+              tickets: [
+                { id: 'T-100', title: 'only', type: 'build', status: 'open', covers: null, blockedBy: null },
+              ],
+              ticketsDir: '/repo/.pipeline/inventory-stock-tracking/slices/S-02/tickets',
+            }),
+          ],
+        }),
+      ],
+    });
+    renderPage();
+    expect(screen.getByText('T-100')).toBeTruthy();
+  });
+});
+
+describe('Conductor page — session scoping', () => {
+  it('shows nothing from a scan that belongs to another session', () => {
+    // Open session A, open session B: B must not wear A's pipeline while its
+    // own scan is still running.
+    useConductorStore.setState({ loaded: true, sessionId: 's2', pipelines: [parallel()] });
+    renderPage('/session/s1/conductor');
+    expect(screen.queryByText('S-01b')).toBeNull();
+    expect(screen.getByText(/scanning/i)).toBeTruthy();
+  });
+
+  it('asks for its own session’s scan when the store holds another’s', () => {
+    useConductorStore.setState({ loaded: true, sessionId: 's2', pipelines: [parallel()] });
+    renderPage('/session/s1/conductor');
+    expect(sent.some((m) => m.type === 'list_pipelines' && m.sessionId === 's1')).toBe(true);
   });
 });
 

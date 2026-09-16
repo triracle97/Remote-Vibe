@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type {
   ClientMsg,
   PipelineSummary,
+  SliceSummary,
   ServerFileResultMsg,
   ServerPipelineListMsg,
 } from '../types/protocol';
@@ -89,8 +90,17 @@ interface ConductorStore {
   loading: boolean;
   /** True once a scan has come back, so "none" can be told from "not yet". */
   loaded: boolean;
-  /** Explicit user choice, by slug. Beats both the agent and the guess. */
-  pinnedSlug: string | null;
+  /**
+   * The session the held scan is about, or null for an every-directory scan.
+   *
+   * One store serves every session, and a scan takes as long as walking a
+   * repo's worktrees takes — long enough to open another session first. Without
+   * this, the second session shows the first one's pipelines until its own
+   * answer arrives, which is a lie with a plausible shape.
+   */
+  sessionId: string | null;
+  /** Explicit user choice of pipeline, per session. Beats agent and guess. */
+  pinnedBySession: Record<string, string>;
   /**
    * Per-session slug claimed by the agent via `<!--mrt:pipeline=…-->`.
    *
@@ -106,7 +116,8 @@ interface ConductorStore {
   requestPipelines(client: { send(m: ClientMsg): void }, sessionId?: string): void;
   applyPipelineList(m: ServerPipelineListMsg): void;
   setAgentTie(sessionId: string, slug: string): void;
-  pin(slug: string | null): void;
+  pin(sessionId: string, slug: string | null): void;
+  pinnedFor(sessionId: string | undefined): string | null;
   openDoc(client: { send(m: ClientMsg): void }, path: string, name: string): void;
   /**
    * Claim a `file_result` that belongs to our own in-flight read.
@@ -131,13 +142,22 @@ export const useConductorStore = create<ConductorStore>((set, get) => ({
   warnings: [],
   loading: false,
   loaded: false,
-  pinnedSlug: null,
+  sessionId: null,
+  pinnedBySession: {},
   agentTie: {},
   doc: null,
   pendingDocId: null,
 
   requestPipelines(client, sessionId) {
-    set({ loading: true });
+    const next = sessionId ?? null;
+    // Asking about a different session drops what is on screen immediately.
+    // Showing the previous session's pipelines until the new scan lands is
+    // worse than showing nothing: it is wrong, and it looks right.
+    set((s) =>
+      s.sessionId === next
+        ? { loading: true }
+        : { loading: true, loaded: false, sessionId: next, pipelines: [], warnings: [] },
+    );
     client.send({
       type: 'list_pipelines',
       ...(sessionId ? { sessionId } : {}),
@@ -146,6 +166,9 @@ export const useConductorStore = create<ConductorStore>((set, get) => ({
   },
 
   applyPipelineList(m) {
+    // A reply that names a session we have since navigated away from is a
+    // scan nobody is waiting for any more.
+    if (m.sessionId !== undefined && m.sessionId !== get().sessionId) return;
     set({
       pipelines: m.pipelines.slice(),
       warnings: m.warnings.slice(),
@@ -158,8 +181,17 @@ export const useConductorStore = create<ConductorStore>((set, get) => ({
     set((s) => (s.agentTie[sessionId] === slug ? {} : { agentTie: { ...s.agentTie, [sessionId]: slug } }));
   },
 
-  pin(slug) {
-    set({ pinnedSlug: slug });
+  pin(sessionId, slug) {
+    set((s) => {
+      const next = { ...s.pinnedBySession };
+      if (slug === null) delete next[sessionId];
+      else next[sessionId] = slug;
+      return { pinnedBySession: next };
+    });
+  },
+
+  pinnedFor(sessionId) {
+    return sessionId ? get().pinnedBySession[sessionId] ?? null : null;
   },
 
   openDoc(client, path, name) {
@@ -196,19 +228,46 @@ export const useConductorStore = create<ConductorStore>((set, get) => ({
   },
 
   reset() {
-    // `pinnedSlug` deliberately survives: it is the user's answer to "which
-    // pipeline", and re-entering a session should not make them answer again.
+    // `pinnedBySession` deliberately survives: it is the user's answer to
+    // "which pipeline", and re-entering a session should not ask again.
     set({
       pipelines: [],
       warnings: [],
       loading: false,
       loaded: false,
+      sessionId: null,
       agentTie: {},
       doc: null,
       pendingDocId: null,
     });
   },
 }));
+
+const NO_PIPELINES: PipelineSummary[] = [];
+const NO_WARNINGS: string[] = [];
+
+/**
+ * The scan for one session — or nothing, when the store holds another's.
+ *
+ * Every caller that reads pipelines goes through this. The store is global and
+ * a scan is slow, so "whose data is this?" has to be answered in one place;
+ * asking each screen to remember would mean each screen could forget.
+ */
+export function useSessionPipelines(sessionId: string | undefined): {
+  pipelines: PipelineSummary[];
+  warnings: string[];
+  loaded: boolean;
+} {
+  const mine = useConductorStore((s) => s.sessionId === (sessionId ?? null));
+  const pipelines = useConductorStore((s) => s.pipelines);
+  const warnings = useConductorStore((s) => s.warnings);
+  const loaded = useConductorStore((s) => s.loaded);
+  return {
+    pipelines: mine ? pipelines : NO_PIPELINES,
+    warnings: mine ? warnings : NO_WARNINGS,
+    loaded: mine && loaded,
+  };
+}
 
 /**
  * Which pipeline this session is tied to, in order of authority:
@@ -245,10 +304,55 @@ export function selectTiedPipeline(
  */
 export function pipelineBadgeLabel(p: PipelineSummary): string {
   const bits: string[] = [];
+  const running = p.slices.filter((s) => s.inFlight).length;
   if (p.slice) {
-    bits.push(p.slicesTotal ? `${p.slice}/${p.slicesTotal}` : p.slice);
+    // With workers running alongside, "+2" is what the badge owes you: the
+    // slice in front is no longer the whole of what is happening. The total
+    // steps aside for it — two counts in five characters reads as neither.
+    if (running > 1) bits.push(`${p.slice} +${running - 1}`);
+    else bits.push(p.slicesTotal ? `${p.slice}/${p.slicesTotal}` : p.slice);
+  } else if (running > 1) {
+    bits.push(`${running} slices`);
   }
   if (p.phase) bits.push(`ph${p.phase}`);
   if (p.step) bits.push(p.step);
   return bits.length > 0 ? bits.join(' · ') : p.slug;
+}
+
+/**
+ * The slices to render for a pipeline — its own, or one standing in.
+ *
+ * A pipeline written before slices existed keeps its tickets at the root and
+ * has no `slices/` at all. Rather than the page carrying two layouts, that
+ * pipeline is presented as a single slice named after itself, so "the work" is
+ * one shape everywhere and the old pipelines keep opening.
+ */
+export function sliceRoster(p: PipelineSummary): SliceSummary[] {
+  if (p.slices.length > 0) return p.slices;
+  if (p.tickets.length === 0) return [];
+  return [
+    {
+      id: p.slug,
+      dir: p.dir,
+      state: p.state,
+      phase: p.phase,
+      step: p.step,
+      status: null,
+      inFlight: false,
+      foreground: false,
+      worktree: p.worktree,
+      branch: p.state.branch ?? null,
+      currentTicket: p.state.current_ticket ?? null,
+      attempt: null,
+      ticketsDone: p.tickets.filter((t) => t.status === 'done').length,
+      ticketsTotal: p.tickets.length,
+      lastVerdict: p.state.last_verdict ?? null,
+      blocked: p.blocked,
+      artefacts: [],
+      tickets: p.tickets,
+      ticketsDir: p.ticketsDir,
+      lastSync: null,
+      mtime: p.mtime,
+    },
+  ];
 }

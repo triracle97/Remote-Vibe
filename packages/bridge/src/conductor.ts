@@ -78,6 +78,74 @@ export interface TicketSummary {
   blockedBy: string | null;
 }
 
+/**
+ * One row of root `STATE.md`'s dispatch table — a slice currently in flight.
+ *
+ * The table is the root controller's own bookkeeping, and the only place that
+ * says a slice has a worker on it at all: a slice's directory exists long
+ * after it merges, so the filesystem cannot answer "who is working now".
+ */
+export interface DispatchRow {
+  /** Slice id, e.g. `S-02`. */
+  slice: string;
+  /** Path as written in the table, or null when the cell is not a path. */
+  worktree: string | null;
+  branch: string | null;
+  phase: string | null;
+  step: string | null;
+  /** The whole status cell — `dispatched`, `blocked`, or a sentence. */
+  status: string | null;
+  /** True when the row says the root controller drives this slice itself. */
+  foreground: boolean;
+  lastSync: string | null;
+}
+
+/**
+ * A slice of a pipeline: its own state, its own worker, its own tickets.
+ *
+ * Parallel dispatch moved everything per-slice out of root `STATE.md` and into
+ * `slices/<id>/STATE.md`, so this is where "where has it got to" now lives —
+ * once per slice rather than once per pipeline.
+ */
+export interface SliceSummary {
+  /** Directory name under `slices/`, e.g. `S-01b`. */
+  id: string;
+  /** Absolute path to `slices/<id>`, even when it has not been scaffolded. */
+  dir: string;
+  /** Every field of the slice's own STATE.md. Empty when it has none yet. */
+  state: Record<string, string>;
+  phase: string | null;
+  step: string | null;
+  /**
+   * The dispatch table's status, or null when no row names this slice.
+   *
+   * Null is the ordinary state of a merged slice: the controller removes the
+   * row on merge and leaves the directory as the record of the work.
+   */
+  status: string | null;
+  /** True when the dispatch table has a row for this slice. */
+  inFlight: boolean;
+  /** True when the root controller is driving it, rather than a worker. */
+  foreground: boolean;
+  worktree: string | null;
+  branch: string | null;
+  currentTicket: string | null;
+  attempt: number | null;
+  ticketsDone: number | null;
+  ticketsTotal: number | null;
+  lastVerdict: string | null;
+  /** True when this slice has its own BLOCKED.md. */
+  blocked: boolean;
+  /** The slice's markdown files, newest first. */
+  artefacts: PipelineArtefact[];
+  tickets: TicketSummary[];
+  /** Absolute path the tickets came from, for the UI to open them. */
+  ticketsDir: string | null;
+  lastSync: string | null;
+  /** mtime of the slice's STATE.md, or 0 when it has none. */
+  mtime: number;
+}
+
 export interface PipelineSummary {
   /** Directory name under `.pipeline/`. */
   slug: string;
@@ -94,19 +162,27 @@ export interface PipelineSummary {
   state: Record<string, string>;
   phase: string | null;
   step: string | null;
-  /** Current slice id (`S-01`), or null for a pipeline with no slices. */
+  /**
+   * The slice in front: the one the root controller drives itself, falling
+   * back to the first row of the dispatch table. Null before slices exist.
+   */
   slice: string | null;
   slicesDone: number | null;
   slicesTotal: number | null;
-  /** True when a `BLOCKED.md` exists at feature level or in the current slice. */
+  /** How many slices may run at once, from `concurrency`. Null when unsaid. */
+  concurrency: number | null;
+  /**
+   * Every slice: the ones in flight first, in dispatch-table order, then the
+   * finished ones. A pipeline from before slices existed has none.
+   */
+  slices: SliceSummary[];
+  /** True when a `BLOCKED.md` exists at feature level or in any slice. */
   blocked: boolean;
   /** Feature-level markdown files, newest first. */
   artefacts: PipelineArtefact[];
-  /** The current slice's markdown files, if the pipeline has slices. */
-  sliceArtefacts: PipelineArtefact[];
   /**
-   * Tickets for the current slice, or the pipeline's own `tickets/` for a
-   * pipeline written before slices existed. Empty before phase 2.
+   * The pipeline's own `tickets/`, which only a pipeline written before slices
+   * existed has. Everything else keeps tickets per slice.
    */
   tickets: TicketSummary[];
   /** Absolute path the tickets came from, for the UI to open them. */
@@ -205,6 +281,87 @@ export function parseStateFile(text: string): Record<string, string> {
   return out;
 }
 
+/** A slice id as conductor writes them: `S-01`, `S-01b`, `S-12`. */
+const SLICE_ID_RE = /^S-[A-Za-z0-9._-]+$/;
+
+/** `| a | b |` → `['a', 'b']`. Null when the line is not a table row. */
+function tableCells(line: string): string[] | null {
+  const t = line.trim();
+  if (!t.startsWith('|')) return null;
+  return t
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((c) => c.trim());
+}
+
+/** `3/ready` → `['3', 'ready']`. A cell with no slash is a phase on its own. */
+function splitPhaseStep(cell: string | undefined): [string | null, string | null] {
+  if (!cell) return [null, null];
+  const slash = cell.indexOf('/');
+  if (slash < 0) return [cell, null];
+  return [cell.slice(0, slash).trim() || null, cell.slice(slash + 1).trim() || null];
+}
+
+/**
+ * Read root `STATE.md`'s dispatch table: one row per slice in flight.
+ *
+ * Driven by the header row rather than by column position, because the table
+ * is hand-written markdown and a column will get added to it. A table without
+ * a `slice` column is some other table — a file list, a decision log — and is
+ * skipped rather than guessed at.
+ */
+export function parseDispatchTable(text: string): DispatchRow[] {
+  const rows: DispatchRow[] = [];
+  let cols: Record<string, number> | null = null;
+
+  for (const line of text.split('\n')) {
+    const cells = tableCells(line);
+    if (!cells) {
+      // A blank line or prose ends the table; a new one must re-declare itself.
+      if (line.trim().length === 0) cols = null;
+      continue;
+    }
+    // `|---|---|` — the header's underline, never data.
+    if (cells.every((c) => /^:?-{1,}:?$/.test(c))) continue;
+
+    const header: Record<string, number> = {};
+    cells.forEach((c, i) => {
+      header[c.toLowerCase()] = i;
+    });
+    if (header.slice !== undefined && !SLICE_ID_RE.test(cells[header.slice] ?? '')) {
+      cols = header;
+      continue;
+    }
+    if (!cols || cols.slice === undefined) continue;
+
+    const at = (name: string): string | undefined => {
+      const i = cols?.[name];
+      return i === undefined ? undefined : cells[i];
+    };
+    const id = cells[cols.slice] ?? '';
+    if (!SLICE_ID_RE.test(id)) continue;
+
+    const worktreeCell = at('worktree') ?? '';
+    // "(this worktree, foreground)" names no path — it means the slice the
+    // root controller is driving in the session you are already looking at.
+    const foreground = /foreground/i.test(worktreeCell);
+    const [phase, step] = splitPhaseStep(at('phase/step') ?? at('phase') ?? '');
+
+    rows.push({
+      slice: id,
+      worktree: foreground || worktreeCell.startsWith('(') ? null : worktreeCell || null,
+      branch: at('branch') || null,
+      phase,
+      step,
+      status: at('status') || null,
+      foreground,
+      lastSync: at('last sync') || at('last_sync') || null,
+    });
+  }
+  return rows;
+}
+
 function intOrNull(v: string | undefined): number | null {
   if (v === undefined || v === '') return null;
   const n = Number(v);
@@ -282,6 +439,82 @@ async function listTickets(dir: string): Promise<TicketSummary[]> {
   // Natural order by id, so T-2 sorts before T-10.
   out.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
   return out;
+}
+
+/**
+ * Read one `slices/<id>` directory, with the dispatch row that names it.
+ *
+ * The slice's own STATE.md wins every field it carries. The row is written by
+ * the root controller between other work and goes stale by design — "last
+ * sync" is a column in it — while the slice's file is written by whoever is
+ * doing the work. The row is still the only source of `status`, because that
+ * is a fact about dispatch rather than about the slice.
+ */
+async function readSlice(dir: string, id: string, row: DispatchRow | null): Promise<SliceSummary> {
+  const sliceDir = join(dir, 'slices', id);
+  const statePath = join(sliceDir, 'STATE.md');
+  let state: Record<string, string> = {};
+  let mtime = 0;
+  try {
+    const st = await stat(statePath);
+    mtime = st.mtimeMs;
+    state = parseStateFile(await readFile(statePath, 'utf8'));
+  } catch {
+    /* dispatched but not yet scaffolded, or a slice from before per-slice state */
+  }
+
+  const ticketsDir = (await exists(join(sliceDir, 'tickets'))) ? join(sliceDir, 'tickets') : null;
+  const [artefacts, blocked, tickets] = await Promise.all([
+    listMarkdown(sliceDir),
+    exists(join(sliceDir, 'BLOCKED.md')),
+    ticketsDir ? listTickets(ticketsDir) : Promise.resolve([]),
+  ]);
+
+  return {
+    id,
+    dir: sliceDir,
+    state,
+    phase: nonEmpty(state.phase) ?? row?.phase ?? null,
+    step: nonEmpty(state.step) ?? row?.step ?? null,
+    status: row?.status ?? null,
+    inFlight: row !== null,
+    foreground: row?.foreground ?? false,
+    worktree: nonEmpty(state.worktree) ?? row?.worktree ?? null,
+    branch: nonEmpty(state.branch) ?? row?.branch ?? null,
+    currentTicket: nonEmpty(state.current_ticket),
+    attempt: intOrNull(state.attempt),
+    ticketsDone: intOrNull(state.tickets_done),
+    ticketsTotal: intOrNull(state.tickets_total),
+    lastVerdict: nonEmpty(state.last_verdict),
+    blocked,
+    artefacts,
+    tickets,
+    ticketsDir,
+    lastSync: row?.lastSync ?? null,
+    mtime,
+  };
+}
+
+/**
+ * Every slice of a pipeline: the dispatch table's rows, then whatever else has
+ * a directory.
+ *
+ * Neither source alone is the roster. A slice is dispatched before it is
+ * scaffolded, so a row can have no directory; and the controller removes a row
+ * when the slice merges, so a directory long outlives its row. Rows come
+ * first, in the table's own order, because those are the ones being worked on.
+ */
+async function readSlices(dir: string, rows: DispatchRow[]): Promise<SliceSummary[]> {
+  const ids: string[] = rows.map((r) => r.slice);
+  const entries = await readdir(join(dir, 'slices'), { withFileTypes: true }).catch(() => []);
+  const rest = entries
+    .filter((e) => e.isDirectory() && !ids.includes(e.name))
+    .map((e) => e.name)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  return Promise.all(
+    [...ids, ...rest].map((id) => readSlice(dir, id, rows.find((r) => r.slice === id) ?? null)),
+  );
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -464,26 +697,24 @@ export class ConductorScanner {
     }
 
     const state = parseStateFile(text);
-    const slice = nonEmpty(state.slice);
-    const sliceDir = slice ? join(dir, 'slices', slice) : null;
+    const rows = parseDispatchTable(text);
+    const slices = await readSlices(dir, rows);
 
-    // A sliced pipeline keeps tickets under the slice; one written before
-    // slices existed keeps them at the root. Prefer the slice, fall back.
-    const sliceTicketsDir = sliceDir ? join(sliceDir, 'tickets') : null;
-    const ticketsDir =
-      sliceTicketsDir && (await exists(sliceTicketsDir))
-        ? sliceTicketsDir
-        : (await exists(join(dir, 'tickets')))
-          ? join(dir, 'tickets')
-          : null;
+    // Only a pipeline written before slices existed keeps tickets at the root.
+    const ticketsDir = (await exists(join(dir, 'tickets'))) ? join(dir, 'tickets') : null;
 
-    const [artefacts, sliceArtefacts, blockedRoot, blockedSlice, tickets] = await Promise.all([
+    const [artefacts, blockedRoot, tickets] = await Promise.all([
       listMarkdown(dir),
-      sliceDir ? listMarkdown(sliceDir) : Promise.resolve([]),
       exists(join(dir, 'BLOCKED.md')),
-      sliceDir ? exists(join(sliceDir, 'BLOCKED.md')) : Promise.resolve(false),
       ticketsDir ? listTickets(ticketsDir) : Promise.resolve([]),
     ]);
+
+    // Where is it? Root STATE.md answered that on its own until slices went
+    // parallel; now the pipeline's own headline is the slice the controller is
+    // driving in the foreground, and the table is the only place that says so.
+    const foreground = rows.find((r) => r.foreground) ?? rows[0] ?? null;
+    const slice = nonEmpty(state.slice) ?? foreground?.slice ?? null;
+    const current = slices.find((s) => s.id === slice) ?? null;
 
     // Resolved on both sides: a session dir and a worktree path can reach the
     // same place through different symlinks (`/tmp` vs `/private/tmp`), and a
@@ -500,14 +731,15 @@ export class ConductorScanner {
       worktree,
       inSessionDir,
       state,
-      phase: nonEmpty(state.phase),
-      step: nonEmpty(state.step),
+      phase: nonEmpty(state.phase) ?? current?.phase ?? foreground?.phase ?? null,
+      step: nonEmpty(state.step) ?? current?.step ?? foreground?.step ?? null,
       slice,
       slicesDone: intOrNull(state.slices_done),
       slicesTotal: intOrNull(state.slices_total),
-      blocked: blockedRoot || blockedSlice,
+      concurrency: intOrNull(state.concurrency),
+      slices,
+      blocked: blockedRoot || slices.some((s) => s.blocked),
       artefacts,
-      sliceArtefacts,
       tickets,
       ticketsDir,
       mtime,

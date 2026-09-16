@@ -861,6 +861,31 @@ describe('websocket', () => {
     await close();
   });
 
+  it('names the session a pipeline_list is about', async () => {
+    // Without it the client cannot tell whose answer this is, and a scan
+    // started in one session paints its pipelines over the next one opened.
+    const { port, close } = await startServer({});
+    const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+      cookie: `bridge_session=${TOKEN}`,
+      origin: `http://127.0.0.1:${port}`,
+    });
+    await new Promise<void>((r) => sock.on('open', () => r()));
+    await nextMessage(sock);
+
+    const got = new Promise<Record<string, unknown>>((r) => {
+      sock.on('message', (raw) => {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'pipeline_list') r(m);
+      });
+    });
+    sock.send(JSON.stringify({ type: 'list_pipelines', sessionId: 'sess-7', correlationId: 'p1' }));
+    const m = await got;
+    expect(m.sessionId).toBe('sess-7');
+    expect(m.correlationId).toBe('p1');
+    sock.close();
+    await close();
+  });
+
   // --- Phase 5 T6: list_history + resume_session handlers ----------------
 
   it('list_history replies history_list with both arrays + correlationId', async () => {

@@ -922,7 +922,13 @@ export type ServerMsg =
 // session's working dirs. See `conductor.ts`; the shapes are re-exported here
 // so the protocol stays declared in one place.
 
-export type { PipelineArtefact, PipelineSummary, TicketSummary } from './conductor.js';
+export type {
+  DispatchRow,
+  PipelineArtefact,
+  PipelineSummary,
+  SliceSummary,
+  TicketSummary,
+} from './conductor.js';
 
 /**
  * Find conductor pipelines. Scoped to a session's working dirs when
@@ -945,6 +951,14 @@ export interface ServerPipelineListMsg {
    * unscanned worktree goes missing.
    */
   warnings: string[];
+  /**
+   * The session the scan was scoped to, echoed back.
+   *
+   * A scan walks worktrees and shells out to git, so its reply can arrive
+   * after the user has opened a different session — and an unlabelled list
+   * then shows one session's pipelines under another's name.
+   */
+  sessionId?: string;
   correlationId?: string;
 }
 

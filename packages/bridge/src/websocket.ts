@@ -684,6 +684,10 @@ async function handleMessage(
           type: 'pipeline_list',
           pipelines: result.pipelines,
           warnings: result.warnings,
+          // Echoed so the client can tell whose answer this is. A scan takes
+          // seconds on a big repo, which is long enough to open another
+          // session — and an unlabelled reply lands on whatever is on screen.
+          ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
           ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
         });
         return;
