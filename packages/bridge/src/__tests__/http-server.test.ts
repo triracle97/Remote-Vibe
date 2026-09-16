@@ -89,6 +89,21 @@ describe('http-server', () => {
     await close();
   });
 
+  it('serves index.html no-store and fingerprinted assets immutable', async () => {
+    // index.html carries no ETag or Last-Modified, so without this a browser
+    // heuristically caches it and keeps running an old bundle after a rebuild.
+    const { baseUrl, close } = await setup();
+    const page = await fetch(`${baseUrl}/`, {
+      headers: { cookie: `bridge_session=${TOKEN}` },
+    });
+    expect(page.headers.get('cache-control')).toBe('no-store');
+    const asset = await fetch(`${baseUrl}/assets/app.js`, {
+      headers: { cookie: `bridge_session=${TOKEN}` },
+    });
+    expect(asset.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    await close();
+  });
+
   it('rejects cookie-authed request when Origin does not match Host', async () => {
     const { baseUrl, close } = await setup();
     const res = await fetch(`${baseUrl}/`, {

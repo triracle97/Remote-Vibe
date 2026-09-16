@@ -288,6 +288,18 @@ export function createHttpHandler(opts: HttpHandlerOpts) {
     res.setHeader('Content-Type', ct);
     // Same URL, different bytes depending on Accept-Encoding.
     res.setHeader('Vary', 'Accept-Encoding');
+    // Vite fingerprints everything under /assets, so one of those URLs is the
+    // same bytes forever. `index.html` is the opposite: same URL, new bundle
+    // every build, and served without an ETag or Last-Modified. Left without a
+    // directive the browser heuristically caches it anyway, which pins a tab to
+    // a bundle from an earlier build — a UI missing features the bridge is
+    // already serving, with no way to tell from the page that it is stale.
+    res.setHeader(
+      'Cache-Control',
+      parsed.pathname.startsWith('/assets/')
+        ? 'public, max-age=31536000, immutable'
+        : 'no-store',
+    );
 
     const gzip = shouldGzip(req, ext, st.size);
     if (gzip) {
