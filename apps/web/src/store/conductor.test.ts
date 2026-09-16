@@ -336,6 +336,32 @@ describe('useConductorStore', () => {
     expect(useConductorStore.getState().pipelines).toEqual([]);
   });
 
+  it('fills in whatever an older bridge did not send', () => {
+    // A tab outlives the bridge build that served it: reloading is cheap,
+    // restarting the bridge kills live sessions. So a scan can arrive in any
+    // older shape, and every screen downstream is typed as though it cannot.
+    // Normalising here is what makes that type honest — a header badge must
+    // never be what takes the session page down.
+    useConductorStore.getState().applyPipelineList({
+      type: 'pipeline_list',
+      pipelines: [{ slug: 'ancient', dir: '/repo/.pipeline/ancient' } as never],
+      warnings: [],
+    });
+    const p = useConductorStore.getState().pipelines[0]!;
+    expect(p).toMatchObject({
+      slug: 'ancient',
+      slices: [],
+      artefacts: [],
+      tickets: [],
+      state: {},
+      worktree: '',
+      inSessionDir: false,
+      blocked: false,
+    });
+    expect(pipelineBadgeLabel(p)).toBe('ancient');
+    expect(sliceRoster(p)).toEqual([]);
+  });
+
   it('keeps the scan warnings rather than dropping them', () => {
     useConductorStore.getState().applyPipelineList({
       type: 'pipeline_list',

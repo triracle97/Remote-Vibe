@@ -131,6 +131,64 @@ interface ConductorStore {
   reset(): void;
 }
 
+/**
+ * Make a scan match the shape the rest of the app is typed against.
+ *
+ * The bridge and the browser are deployed separately and restart on different
+ * schedules — a reload costs nothing, a bridge restart kills every live
+ * session — so the UI routinely meets a bridge older than itself. Its replies
+ * are missing whatever it had not learned yet, and every screen downstream is
+ * written as though a `PipelineSummary` is complete, because that is what the
+ * type promises. This is where the promise is kept: one place that fills the
+ * gaps, rather than a `??` at every point of use and a crashed page wherever
+ * one was forgotten.
+ */
+function normalizePipeline(p: PipelineSummary): PipelineSummary {
+  return {
+    ...p,
+    state: p.state ?? {},
+    phase: p.phase ?? null,
+    step: p.step ?? null,
+    slice: p.slice ?? null,
+    slicesDone: p.slicesDone ?? null,
+    slicesTotal: p.slicesTotal ?? null,
+    concurrency: p.concurrency ?? null,
+    slices: (p.slices ?? []).map(normalizeSlice),
+    blocked: p.blocked ?? false,
+    artefacts: p.artefacts ?? [],
+    tickets: p.tickets ?? [],
+    ticketsDir: p.ticketsDir ?? null,
+    worktree: p.worktree ?? '',
+    inSessionDir: p.inSessionDir ?? false,
+    mtime: p.mtime ?? 0,
+  };
+}
+
+function normalizeSlice(s: SliceSummary): SliceSummary {
+  return {
+    ...s,
+    state: s.state ?? {},
+    phase: s.phase ?? null,
+    step: s.step ?? null,
+    status: s.status ?? null,
+    inFlight: s.inFlight ?? false,
+    foreground: s.foreground ?? false,
+    worktree: s.worktree ?? null,
+    branch: s.branch ?? null,
+    currentTicket: s.currentTicket ?? null,
+    attempt: s.attempt ?? null,
+    ticketsDone: s.ticketsDone ?? null,
+    ticketsTotal: s.ticketsTotal ?? null,
+    lastVerdict: s.lastVerdict ?? null,
+    blocked: s.blocked ?? false,
+    artefacts: s.artefacts ?? [],
+    tickets: s.tickets ?? [],
+    ticketsDir: s.ticketsDir ?? null,
+    lastSync: s.lastSync ?? null,
+    mtime: s.mtime ?? 0,
+  };
+}
+
 function newCorrelationId(): string {
   const buf = new Uint8Array(8);
   crypto.getRandomValues(buf);
@@ -170,7 +228,7 @@ export const useConductorStore = create<ConductorStore>((set, get) => ({
     // scan nobody is waiting for any more.
     if (m.sessionId !== undefined && m.sessionId !== get().sessionId) return;
     set({
-      pipelines: m.pipelines.slice(),
+      pipelines: m.pipelines.map(normalizePipeline),
       warnings: m.warnings.slice(),
       loading: false,
       loaded: true,
