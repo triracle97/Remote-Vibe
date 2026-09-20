@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { allTags, groupByPhase, matchesFilter, useBoardStore, type BoardFilter } from './boardStore';
+import { groupByPhase, matchesFilter, useBoardStore, type BoardFilter } from './boardStore';
 import { cardVisualState, projectLabel, timeAgo } from './cardState';
 import type { BoardSession, ClientMsg } from '../../types/protocol';
 
@@ -113,17 +113,6 @@ describe('groupByPhase', () => {
   it('omits filtered-out cards entirely', () => {
     const cards = { a: card({ archived: true }) };
     expect(groupByPhase(cards, FILTER).size).toBe(0);
-  });
-});
-
-describe('allTags', () => {
-  it('orders by usage then alphabetically', () => {
-    const cards = {
-      a: card({ sessionId: 'a', tags: ['api', 'bug'] }),
-      b: card({ sessionId: 'b', tags: ['api'] }),
-      c: card({ sessionId: 'c', tags: ['zeta', 'bug'] }),
-    };
-    expect(allTags(cards)).toEqual(['api', 'bug', 'zeta']);
   });
 });
 
@@ -255,13 +244,6 @@ describe('board store optimistic mutations', () => {
   it('does not re-fetch for a plain search change', () => {
     useBoardStore.getState().setFilter({ search: 'abc' });
     expect(sent).toHaveLength(0);
-  });
-
-  it('toggles a tag on and off', () => {
-    useBoardStore.getState().toggleTag('api');
-    expect(useBoardStore.getState().filter.tags).toEqual(['api']);
-    useBoardStore.getState().toggleTag('api');
-    expect(useBoardStore.getState().filter.tags).toEqual([]);
   });
 });
 

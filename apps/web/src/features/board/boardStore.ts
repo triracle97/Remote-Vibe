@@ -39,7 +39,6 @@ interface BoardState {
   applyServerMsg: (m: ServerMsg) => void;
   refresh: () => void;
   setFilter: (patch: Partial<BoardFilter>) => void;
-  toggleTag: (tag: string) => void;
   setPhase: (sessionId: string, phase: SessionPhase) => void;
   setTags: (sessionId: string, tags: string[]) => void;
   setArchived: (sessionId: string, archived: boolean) => void;
@@ -206,16 +205,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     }
   },
 
-  toggleTag: (tag) => {
-    const { tags } = get().filter;
-    set({
-      filter: {
-        ...get().filter,
-        tags: tags.includes(tag) ? tags.filter((t) => t !== tag) : [...tags, tag],
-      },
-    });
-  },
-
   setPhase: (sessionId, phase) => {
     const card = get().cards[sessionId];
     if (!card || card.phase === phase) return;
@@ -362,15 +351,4 @@ export function groupByPhase(
     });
   }
   return out;
-}
-
-/** All tags in use, most-used first, for the filter bar. */
-export function allTags(cards: Record<string, BoardSession>): string[] {
-  const counts = new Map<string, number>();
-  for (const card of Object.values(cards)) {
-    for (const t of card.tags) counts.set(t, (counts.get(t) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([t]) => t);
 }

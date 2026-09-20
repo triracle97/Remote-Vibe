@@ -1,14 +1,10 @@
-import { useMemo, type JSX } from 'react';
-import { allTags, useBoardStore } from './boardStore';
+import { type JSX } from 'react';
+import { useBoardStore } from './boardStore';
 
-/** Search box plus tag chips. Selected tags AND together. */
-export function TagFilterBar(): JSX.Element {
-  const cards = useBoardStore((s) => s.cards);
+/** Search box plus the Done and Archived toggles. */
+export function FilterBar(): JSX.Element {
   const filter = useBoardStore((s) => s.filter);
   const setFilter = useBoardStore((s) => s.setFilter);
-  const toggleTag = useBoardStore((s) => s.toggleTag);
-
-  const tags = useMemo(() => allTags(cards), [cards]);
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -36,30 +32,6 @@ export function TagFilterBar(): JSX.Element {
         on={filter.showArchived}
         onChange={(v) => setFilter({ showArchived: v })}
       />
-
-      {tags.length > 0 && (
-        <div className="flex items-center gap-1 flex-wrap w-full md:w-auto">
-          {tags.map((t) => {
-            const on = filter.tags.includes(t);
-            return (
-              <button
-                key={t}
-                type="button"
-                aria-pressed={on}
-                onClick={() => toggleTag(t)}
-                className={[
-                  'text-[11px] px-2 py-0.5 rounded-full border transition-colors',
-                  on
-                    ? 'border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_20%,transparent)] text-[var(--color-text)]'
-                    : 'border-[var(--color-border)] text-[var(--color-text-mute)] hover:text-[var(--color-text)]',
-                ].join(' ')}
-              >
-                {t}
-              </button>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }

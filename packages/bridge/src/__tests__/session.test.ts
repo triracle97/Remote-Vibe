@@ -556,7 +556,7 @@ describe('SessionManager', () => {
       expect(spawned[0]!.claudeConfigDir).toBeUndefined();
     });
 
-    it('brings a finished session back out of the Done column on resume', async () => {
+    it('leaves a resumed session in the column it was already in', async () => {
       const { mgr, registry } = makeMgrWithRegistry();
       mkdirSync(join(tmp, 'proj'), { recursive: true });
       await registry.load();
@@ -581,12 +581,12 @@ describe('SessionManager', () => {
       const entry = registry.get('web-done')!;
       expect(entry.status).toBe('live');
       expect(entry.endedAt).toBeNull();
-      // Phase inference only ever moves a card forward, and `done` is the top
-      // rank — so without this reset the card is stuck in Done for good.
-      expect(entry.phase).toBe('planning');
+      // Resume revives the row, nothing more. Where the card sits is the
+      // user's business, and a card is never moved out from under them.
+      expect(entry.phase).toBe('done');
     });
 
-    it('broadcasts the phase rewind so an open board updates', async () => {
+    it('broadcasts no phase change on resume, so no open board moves a card', async () => {
       const { mgr, registry } = makeMgrWithRegistry();
       mkdirSync(join(tmp, 'proj'), { recursive: true });
       await registry.load();
@@ -610,7 +610,7 @@ describe('SessionManager', () => {
       await mgr.resume('web-done-2');
 
       const moved = sink.find((m) => m.type === 'session_phase_changed');
-      expect(moved).toMatchObject({ sessionId: 'web-done-2', phase: 'planning', phasePinned: false });
+      expect(moved).toBeUndefined();
     });
 
     it('leaves a pinned card where the user put it', async () => {

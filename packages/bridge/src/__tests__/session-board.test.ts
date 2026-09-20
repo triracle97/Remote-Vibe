@@ -559,14 +559,15 @@ describe('SessionManager board surface', () => {
     expect(registry.get(info.sessionId)!.phase).toBe('backlog');
   });
 
-  it('marks the session ended and done when the driver exits', async () => {
+  it('marks the session ended but leaves the card in its column', async () => {
     const info = await mgr.spawnSession({ agent: 'claude', dirs: [dir] });
+    const before = registry.get(info.sessionId)!.phase;
     drivers[0]!.emit('exit', 0);
     await waitFor(() => registry.get(info.sessionId)!.status === 'ended');
     const e = registry.get(info.sessionId)!;
     expect(e.status).toBe('ended');
     expect(e.endedAt).not.toBeNull();
-    expect(e.phase).toBe('done');
+    expect(e.phase).toBe(before);
   });
 
   it('respects a pinned phase even at end of life', async () => {

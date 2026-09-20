@@ -1067,36 +1067,26 @@ export class SessionManager extends EventEmitter {
    * Undo `markEnded` for a session that has come back to life.
    *
    * Resume reuses the original registry row, and without this the row keeps the
-   * `status: 'ended'` / `phase: 'done'` that ending wrote — so a session you are
-   * actively talking to sits in the Done column. Phase inference cannot dig it
-   * out either: it only ever moves a card *forward*
-   * (`phaseRank(inferred) > phaseRank(current)`), and `done` is the highest
-   * rank, so the card is stuck there for good short of a manual drag.
+   * `status: 'ended'` that ending wrote — so a session you are actively talking
+   * to still reads as dead.
    *
-   * Rewinds only from the terminal state. A session resumed mid-flight keeps
-   * whatever phase it had reached, and a pinned card is left alone entirely —
-   * pinning means the column is the user's to own.
+   * The phase is left exactly as it was. Ending no longer moves a card, so
+   * whatever column it sits in was put there by the agent or by hand, and
+   * resuming is no reason to take it away from them.
    */
   private async markResumed(webSessionId: string): Promise<void> {
     if (!this.registry) return;
     const entry = this.registry.get(webSessionId);
     if (!entry) return;
-
-    const patch: Partial<RegistryEntry> = {
-      status: 'live',
-      endedAt: null,
-      lastActiveAt: Date.now(),
-    };
-    const rewind = !entry.phasePinned && entry.phase === 'done';
-    if (rewind) patch.phase = DEFAULT_SESSION_PHASE;
-
-    try {
-      await this.registry.update(webSessionId, patch);
-    } catch (err) {
-      console.warn('[session-registry] resume update failed:', err);
-      return;
-    }
-    if (rewind) this.broadcastPhase(webSessionId, DEFAULT_SESSION_PHASE, false);
+    await this.registry
+      .update(webSessionId, {
+        status: 'live',
+        endedAt: null,
+        lastActiveAt: Date.now(),
+      })
+      .catch((err: unknown) => {
+        console.warn('[session-registry] resume update failed:', err);
+      });
   }
 
   private async defaultAdditionalDirsFor(primaryRealPath: string): Promise<string[]> {
@@ -2059,31 +2049,32 @@ export class SessionManager extends EventEmitter {
     // A session that died before its first turn ended will never be titled.
     this.titleContexts.delete(s.sessionId);
     this.titledSessions.delete(s.sessionId);
-    // Phase 8: the registry outlives the process, so record the ending. A
-    // finished session also advances to `done` unless the user pinned a phase.
+    // Phase 8: the registry outlives the process, so record the ending. The
+    // card does not move — ending is not a verdict on where the work stands.
     void this.markEnded(s.sessionId);
   }
 
-  /** Persist end-of-life state. Best-effort; never blocks the exit path. */
+  /**
+   * Persist end-of-life state. Best-effort; never blocks the exit path.
+   *
+   * Records that the session died and nothing else: the card keeps its column.
+   * A finished run is not the same thing as finished work, and moving the card
+   * out from under the user loses where they had put it.
+   */
   private async markEnded(webSessionId: string): Promise<void> {
     if (!this.registry) return;
     const entry = this.registry.get(webSessionId);
     if (!entry) return;
     const endedAt = Date.now();
-    const patch: Partial<RegistryEntry> = {
-      status: 'ended',
-      endedAt,
-      lastActiveAt: endedAt,
-    };
-    const advance = !entry.phasePinned && phaseRank('done') > phaseRank(entry.phase);
-    if (advance) patch.phase = 'done';
     try {
-      await this.registry.update(webSessionId, patch);
+      await this.registry.update(webSessionId, {
+        status: 'ended',
+        endedAt,
+        lastActiveAt: endedAt,
+      });
     } catch (err) {
       console.warn('[session-registry] end-of-life update failed:', err);
-      return;
     }
-    if (advance) this.broadcastPhase(webSessionId, 'done', false);
   }
 
   private appendAndBroadcast(s: InternalSession, msg: ServerLifecycleMsg | ServerStreamMsg): void {

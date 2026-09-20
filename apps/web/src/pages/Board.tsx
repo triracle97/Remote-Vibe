@@ -3,7 +3,7 @@ import { useNavigate, useOutletContext } from 'react-router-dom';
 import { Board as BoardGrid } from '../features/board/Board';
 import { CardDetailSheet } from '../features/board/CardDetailSheet';
 import { JobEditor } from '../features/board/JobEditor';
-import { TagFilterBar } from '../features/board/TagFilterBar';
+import { FilterBar } from '../features/board/FilterBar';
 import { useBoardStore } from '../features/board/boardStore';
 import { useJobsStore } from '../features/board/jobsStore';
 import { useDefaultWorkspacesStore } from '../features/project-picker/defaultWorkspacesStore';
@@ -96,7 +96,7 @@ export function BoardPage(): JSX.Element {
       </header>
 
       <div className="shrink-0">
-        <TagFilterBar />
+        <FilterBar />
       </div>
 
       {(error ?? jobError) !== null && (
