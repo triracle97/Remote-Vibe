@@ -2,17 +2,22 @@ import { promises as fsp } from 'node:fs';
 import { dirname } from 'node:path';
 import type { EffortLevel } from './models.js';
 import type { WorkflowSize } from './claude-settings.js';
-import type { SessionPhase, SessionLifecycleStatus, SessionUsage } from './types.js';
+import type { AgentKind, SessionPhase, SessionLifecycleStatus, SessionUsage } from './types.js';
 import { DEFAULT_SESSION_PHASE, EMPTY_SESSION_USAGE } from './types.js';
 
 export interface RegistryEntry {
   webSessionId: string;
-  agent: 'claude' | 'codex';
+  agent: AgentKind;
   projectPath: string;
   transcriptPath: string;
   /** CLI's own session uuid; populated when first observed. */
   claudeSessionId: string | null;
   codexSessionId: string | null;
+  /**
+   * Grok CLI session uuid. Optional on disk: rows written before Grok existed
+   * omit it, and `load()` fills null.
+   */
+  grokSessionId?: string | null;
   /** ms since epoch */
   createdAt: number;
   /** Codex profile name, if any. */
@@ -109,6 +114,7 @@ export class SessionRegistry {
             transcriptPath: entry.transcriptPath!,
             claudeSessionId: entry.claudeSessionId ?? null,
             codexSessionId: entry.codexSessionId ?? null,
+            grokSessionId: entry.grokSessionId ?? null,
             createdAt,
             account: entry.account ?? null,
             name: entry.name ?? null,

@@ -222,7 +222,7 @@ function Body({
 
       <Field label="Agent">
         <div className="flex gap-1.5">
-          {(['claude', 'codex'] as const).map((a) => (
+          {(['claude', 'codex', 'grok'] as const).map((a) => (
             <button
               key={a}
               type="button"

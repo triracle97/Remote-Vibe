@@ -211,6 +211,20 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
             />
             {' '}Codex
           </label>
+          <label>
+            <input
+              type="radio"
+              name="agent"
+              value="grok"
+              checked={agent === 'grok'}
+              onChange={() => {
+                setAgent('grok');
+                setAutoLoaded(false);
+                setDirs([]);
+              }}
+            />
+            {' '}Grok
+          </label>
           {terminalCapable && (
             <label>
               <input
@@ -268,7 +282,7 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
             </label>
           </div>
         )}
-        {agent !== 'terminal' && (
+        {agent !== 'terminal' && agent !== 'grok' && (
           <div className="picker-profile mb-3">
             <ProfilePicker
               agent={agent}
@@ -339,7 +353,7 @@ export function ProjectPicker({ onPick, onCancel }: ProjectPickerProps): JSX.Ele
       <ProfileEditor
         open={editorOpen}
         onClose={() => setEditorOpen(false)}
-        {...(agent !== 'terminal' ? { initialAgent: agent } : {})}
+        {...(agent === 'claude' || agent === 'codex' ? { initialAgent: agent } : {})}
       />
     </Modal>
   );

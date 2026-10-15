@@ -25,6 +25,13 @@ describe('ImageStore.validate', () => {
     expect(store.validate(images, 'claude')).toEqual({ ok: true });
   });
 
+  it('accepts images on a grok session', () => {
+    // Written to disk and named in the prompt; Grok has no image flag.
+    const store = new ImageStore({ dataDir });
+    const images = [{ mime: 'image/png', base64: tinyPngBase64() }];
+    expect(store.validate(images, 'grok')).toEqual({ ok: true });
+  });
+
   it('accepts images on a codex session', () => {
     // `codex exec -i <FILE>` takes images; the old rejection here predated it.
     const store = new ImageStore({ dataDir });

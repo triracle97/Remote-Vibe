@@ -88,7 +88,7 @@ describe('JobStore', () => {
 
   it('rejects a missing project path or bad agent', async () => {
     await expect(store.create({ ...BASE, projectPath: '' })).rejects.toThrow(/projectPath/);
-    await expect(store.create({ ...BASE, agent: 'gpt' as never })).rejects.toThrow(/claude or codex/);
+    await expect(store.create({ ...BASE, agent: 'gpt' as never })).rejects.toThrow(/claude, codex, or grok/);
   });
 
   it('lists unstarted, unarchived jobs newest first', async () => {

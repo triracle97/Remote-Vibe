@@ -136,6 +136,8 @@ export interface DriverFactoryArgs {
   resumeArgs?: string[];
   /** Phase 5 — Codex CLI session uuid to seed driver state. */
   codexResumeSeed?: string;
+  /** Grok CLI session uuid. The next turn resumes it instead of minting one. */
+  grokResumeSeed?: string;
   /** Phase 6 — additional working dirs (Claude: --add-dir; Codex: ignored with warning). */
   additionalDirs?: string[];
   /** Absolute path to this session's `--mcp-config` file (Claude only). */
@@ -479,7 +481,11 @@ export class SessionManager extends EventEmitter {
     workflowSize: WorkflowSize | null;
     workflowKeywordTrigger: boolean | null;
   } {
-    const model = resolveSetting(parseModelId(opts.model), this.defaultModel);
+    // BRIDGE_DEFAULT_MODEL is a Claude id (`opus[1m]` on this machine). Grok
+    // rejects it, so a Grok session left on "Model: default" omits `--model`
+    // and keeps the CLI's own default. An explicit pick still wins.
+    const appDefaultModel = opts.agent === 'grok' ? null : this.defaultModel;
+    const model = resolveSetting(parseModelId(opts.model), appDefaultModel);
     let effort = resolveSetting(parseEffortLevel(opts.effort), this.defaultEffort);
     const workflowSize = resolveSetting(
       parseWorkflowSize(opts.workflowSize),
@@ -737,9 +743,8 @@ export class SessionManager extends EventEmitter {
    *
    * Per-agent semantics:
    *   - Claude: dirs[1..] are passed as `--add-dir <dir>` via the driver.
-   *   - Codex: dirs[1..] are stored in the registry for diagnostics; the
-   *     CodexProcess constructor logs a one-time warning that they are
-   *     ignored (Codex CLI lacks a `--add-dir` equivalent).
+   *   - Codex and Grok: dirs[1..] are stored in the registry for diagnostics.
+   *     Neither CLI has `--add-dir`; the driver logs a one-time warning.
    *
    * Returns the same SessionInfo shape as `create()` so existing callers
    * (e.g. websocket handlers) can forward without translation.
@@ -1017,7 +1022,7 @@ export class SessionManager extends EventEmitter {
     if (!entry) {
       throw resumeError('history_session_not_found', `Unknown webSessionId ${webSessionId}`);
     }
-    const cliId = entry.agent === 'claude' ? entry.claudeSessionId : entry.codexSessionId;
+    const cliId = this.cliSessionIdOf(entry);
     if (cliId === null) {
       throw resumeError(
         'cli_session_id_unknown',
@@ -1055,8 +1060,10 @@ export class SessionManager extends EventEmitter {
     // Per-agent dispatch.
     if (entry.agent === 'claude') {
       await this.spawnClaudeWithResume(entry, cliId);
-    } else {
+    } else if (entry.agent === 'codex') {
       await this.instantiateCodexWithResumeSeed(entry, cliId);
+    } else {
+      await this.instantiateGrokWithResumeSeed(entry, cliId);
     }
     // Only after the spawn succeeds — a failed resume must leave the entry
     // looking ended, not falsely alive.
@@ -1157,6 +1164,7 @@ export class SessionManager extends EventEmitter {
       transcriptPath: this.transcriptPathFor(webSessionId),
       claudeSessionId: entry.agent === 'claude' ? entry.sessionId : null,
       codexSessionId: entry.agent === 'codex' ? entry.sessionId : null,
+      grokSessionId: entry.agent === 'grok' ? entry.sessionId : null,
       createdAt,
       account: accountName,
       // Seed the name from the CLI history's first prompt so a resumed session
@@ -1379,6 +1387,36 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Grok is spawn-per-turn, same as Codex. The driver is seeded with the CLI
+   * session id and does not spawn until the next prompt; a rejected resume
+   * surfaces as `result.error = 'grok_resume_rejected'` on that turn.
+   */
+  private async instantiateGrokWithResumeSeed(
+    entry: RegistryEntry,
+    grokSessionId: string,
+  ): Promise<void> {
+    const additionalDirs = entry.additionalDirs ?? [];
+    const driver = this.driverFactory({
+      agent: 'grok',
+      projectPath: entry.projectPath,
+      ...(additionalDirs.length > 0 ? { additionalDirs } : {}),
+      ...(entry.model !== null ? { model: entry.model } : {}),
+      // Ultracode is dropped for non-Claude at spawn. Mapping here keeps a
+      // hand-edited row from putting the word `ultracode` on `--effort`.
+      ...(entry.effort !== null ? { effort: cliEffortLevel(entry.effort) } : {}),
+      grokResumeSeed: grokSessionId,
+    });
+    this.attachSession(entry.webSessionId, driver, entry);
+  }
+
+  /** The CLI session id this entry can be resumed with, or null if never captured. */
+  private cliSessionIdOf(entry: RegistryEntry): string | null {
+    if (entry.agent === 'claude') return entry.claudeSessionId;
+    if (entry.agent === 'codex') return entry.codexSessionId;
+    return entry.grokSessionId ?? null;
+  }
+
+  /**
    * Wire a freshly-created or freshly-resumed driver into the in-memory
    * session map, attach event handlers, then synthesize the lifecycle
    * `session_created` event so the web learns about the new webSessionId.
@@ -1488,7 +1526,9 @@ export class SessionManager extends EventEmitter {
     if (!this.registry) return;
     const patch = s.agent === 'claude'
       ? { claudeSessionId: id }
-      : { codexSessionId: id };
+      : s.agent === 'codex'
+        ? { codexSessionId: id }
+        : { grokSessionId: id };
     try {
       await this.registry.update(s.sessionId, patch);
     } catch (err) {
@@ -1707,7 +1747,8 @@ export class SessionManager extends EventEmitter {
   private rateLimitAccountOf(s: InternalSession): RateLimitAccount {
     if (s.agent !== 'claude') {
       const label = s.account ?? 'default';
-      return { key: `codex:${label}`, label, agent: s.agent, configDir: null };
+      // Keyed by agent so a Grok session does not inherit a Codex window.
+      return { key: `${s.agent}:${label}`, label, agent: s.agent, configDir: null };
     }
     const label = this.claudeProfileLabel(s.claudeConfigDir);
     return {
@@ -1848,6 +1889,9 @@ export class SessionManager extends EventEmitter {
 
   /** Poll one session's account, broadcasting only if a figure moved. */
   private async refreshQuotaFor(s: InternalSession): Promise<void> {
+    // Grok does not report a plan window this bridge knows how to read.
+    // Falling through would poll the Codex usage endpoint under a Grok key.
+    if (s.agent === 'grok') return;
     const quota = this.quota;
     if (!quota) return;
     const src = this.quotaSourceOf(s);
@@ -2149,10 +2193,7 @@ export class SessionManager extends EventEmitter {
         parentName: entry.parentSessionId
           ? (this.registry.get(entry.parentSessionId)?.name ?? null)
           : null,
-        resumable:
-          entry.agent === 'claude'
-            ? entry.claudeSessionId !== null
-            : entry.codexSessionId !== null,
+        resumable: this.cliSessionIdOf(entry) !== null,
       });
     }
     // Most recently active first — matches how the board reads.

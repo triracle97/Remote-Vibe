@@ -54,6 +54,7 @@ A Claude session can spawn a second agent through the `spawn_session` MCP tool, 
 - A working install of at least one supported agent CLI on `PATH`:
   - [`claude`](https://docs.claude.com/claude-code) — Anthropic Claude Code
   - [`codex`](https://github.com/openai/codex) — OpenAI Codex CLI
+  - [`grok`](https://x.ai/grok) — xAI Grok CLI, on `PATH` and already logged in (or `XAI_API_KEY` set)
 - [Tailscale](https://tailscale.com/) installed on the host **and** on every device you plan to connect from. Without Tailscale you have no safe network boundary; see security note above.
 - Optional: a Telegram bot if you want push notifications for long turns. See `docs/setup/telegram-bot.md`.
 
@@ -396,6 +397,7 @@ docs/superpowers/ Internal design specs and plan docs.
 - **Transcript pruning is best-effort.** Retention runs once at startup, not on a schedule.
 - **No Windows support.** PTY handling and shell defaults assume POSIX.
 - **Codex images are written to disk before each turn.** `codex exec` takes images as `-i <FILE>`, not inline, so pasted images land in `<BRIDGE_DATA_DIR>/images/<sessionId>/` (mode `0600`) and are passed by path. That directory is the audit trail and the input at once; it is cleared when the session is deleted.
+- **Grok is one process per turn.** Each prompt runs `grok -p --output-format streaming-json --always-approve` and the next prompt resumes that CLI session. Tool calls are auto-approved because a phone cannot answer an interactive permission prompt. Pasted images are written to the same audit directory and named in the prompt; Grok has no image flag. Extra working directories are kept on the session but not passed to the CLI.
 - **The Monaco chunk is big.** The editor is lazy-loaded, so the initial page is unaffected, but opening the first file pulls ~3.8 MB (990 KB gzipped) and opening a `.ts`/`.js` file pulls the TypeScript worker on top of that. The bridge gzips static assets, and the browser caches them after the first open, but the first file you open on a cold phone is slow. Monaco's touch handling is also unproven here — nimbalyst, where this editor came from, only ever shipped it on desktop Electron.
 - **The editor cannot create or delete files.** It edits files that already exist. Use the agent for anything else.
 - **Pasting a file's path reads the bridge host's clipboard.** The browser strips every path component off a pasted `File`, so when a paste carries no `file://` URI the composer asks the bridge to read the Mac's own pasteboard (`osascript`, no entitlement needed). The reply is restricted to paths whose basename the browser also saw, so a browser on a different machine — a phone over Tailscale — gets nothing rather than an unrelated path, and falls back to the session's file index as before.

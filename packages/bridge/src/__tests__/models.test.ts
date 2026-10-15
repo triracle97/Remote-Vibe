@@ -70,6 +70,10 @@ describe('model ids', () => {
     expect(modelsFor('claude').map((m) => m.value)).toEqual(['opus', 'sonnet', 'haiku', 'fable']);
   });
 
+  it('offers the Grok ids the CLI documents', () => {
+    expect(modelsFor('grok').map((m) => m.value)).toEqual(['grok-4.7', 'grok-4.6', 'grok-4.5']);
+  });
+
   it('accepts aliases, full ids and the extended-context spelling', () => {
     for (const ok of ['opus', 'sonnet', 'claude-opus-5', 'gpt-5-codex', 'opus[1m]']) {
       expect(isValidModelId(ok)).toBe(true);

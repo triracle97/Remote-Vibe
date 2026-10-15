@@ -1,6 +1,6 @@
 import { promises as fsp } from 'node:fs';
 import { join } from 'node:path';
-import type { SlashCommand } from './types.js';
+import type { AgentKind, SlashCommand } from './types.js';
 
 const SCAN_CAP = 200;
 const CACHE_TTL_MS = 60_000;
@@ -29,6 +29,11 @@ const CODEX_BUILTINS: SlashCommand[] = [
   { name: '/exit', description: 'end session', source: 'builtin', agent: 'codex' },
 ];
 
+// Headless `grok -p` does not interpret slash commands — the text is the
+// prompt. Offering a menu that inserts `/compact` would send that string to
+// the model as a user message, so Grok sessions get none.
+const GROK_BUILTINS: SlashCommand[] = [];
+
 interface ScannerOpts {
   homeDir: string;
   /**
@@ -46,16 +51,20 @@ export class SlashCommandsScanner {
 
   async listForSession(session: {
     sessionId: string;
-    agent: 'claude' | 'codex';
+    agent: AgentKind;
     primaryCwd: string;
   }): Promise<SlashCommand[]> {
     const cacheKey = `${session.sessionId}:${session.agent}:${session.primaryCwd}`;
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) return cached.value;
 
-    const builtins = session.agent === 'claude' ? CLAUDE_BUILTINS : CODEX_BUILTINS;
+    const builtins = session.agent === 'claude'
+      ? CLAUDE_BUILTINS
+      : session.agent === 'codex'
+        ? CODEX_BUILTINS
+        : GROK_BUILTINS;
 
-    if (session.agent === 'codex') {
+    if (session.agent !== 'claude') {
       this.cache.set(cacheKey, { value: builtins, expiresAt: Date.now() + CACHE_TTL_MS });
       return builtins;
     }

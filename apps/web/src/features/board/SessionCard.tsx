@@ -156,9 +156,17 @@ export function SessionCard({
 
 function AgentBadge({ card }: { card: BoardSession }): JSX.Element {
   const text =
-    card.agent === 'codex' ? `codex${card.account ? `:${card.account}` : ''}` : 'claude';
+    card.agent === 'codex'
+      ? `codex${card.account ? `:${card.account}` : ''}`
+      : card.agent === 'grok'
+        ? 'grok'
+        : 'claude';
   const classes =
-    card.agent === 'codex' ? 'bg-[#2a1c44] text-[#ffaaee]' : 'bg-[#1c2a44] text-[#aaeeff]';
+    card.agent === 'codex'
+      ? 'bg-[#2a1c44] text-[#ffaaee]'
+      : card.agent === 'grok'
+        ? 'bg-[#2a2414] text-[#ffcc88]'
+        : 'bg-[#1c2a44] text-[#aaeeff]';
   return (
     <span className={`${classes} text-[10px] font-medium px-1.5 py-0.5 rounded`}>{text}</span>
   );

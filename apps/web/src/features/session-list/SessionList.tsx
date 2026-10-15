@@ -45,11 +45,15 @@ export function SessionRow({
   const badgeText =
     session.agent === 'codex'
       ? `codex${session.account ? `:${session.account}` : ''}`
-      : 'claude';
+      : session.agent === 'grok'
+        ? 'grok'
+        : 'claude';
   const badgeClasses =
     session.agent === 'codex'
       ? 'bg-[#2a1c44] text-[#fae]'
-      : 'bg-[#1c2a44] text-[#aef]';
+      : session.agent === 'grok'
+        ? 'bg-[#2a2414] text-[#ffcc88]'
+        : 'bg-[#1c2a44] text-[#aef]';
 
   return (
     <li

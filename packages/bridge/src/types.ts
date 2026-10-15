@@ -3,7 +3,7 @@ import type { WorkflowSize } from './claude-settings.js';
 
 export type { EffortLevel, WorkflowSize };
 
-export type AgentKind = 'claude' | 'codex';
+export type AgentKind = 'claude' | 'codex' | 'grok';
 
 /**
  * Where a session sits in the work it is doing. Columns on the board, in order.

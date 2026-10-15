@@ -221,8 +221,8 @@ export class JobStore {
     if (typeof input.projectPath !== 'string' || input.projectPath.length === 0) {
       throw new InvalidJobError('projectPath is required');
     }
-    if (input.agent !== 'claude' && input.agent !== 'codex') {
-      throw new InvalidJobError('agent must be claude or codex');
+    if (input.agent !== 'claude' && input.agent !== 'codex' && input.agent !== 'grok') {
+      throw new InvalidJobError('agent must be claude, codex, or grok');
     }
     const now = Date.now();
     const job: Job = {
@@ -278,8 +278,8 @@ export class JobStore {
     if (patch.projectPath !== undefined) next.projectPath = patch.projectPath;
     if (patch.additionalDirs !== undefined) next.additionalDirs = patch.additionalDirs;
     if (patch.agent !== undefined) {
-      if (patch.agent !== 'claude' && patch.agent !== 'codex') {
-        throw new InvalidJobError('agent must be claude or codex');
+      if (patch.agent !== 'claude' && patch.agent !== 'codex' && patch.agent !== 'grok') {
+        throw new InvalidJobError('agent must be claude, codex, or grok');
       }
       next.agent = patch.agent;
     }

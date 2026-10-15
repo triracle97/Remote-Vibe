@@ -73,7 +73,11 @@ export function JobCard({
         )}
         <span
           className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-            job.agent === 'codex' ? 'bg-[#2a1c44] text-[#ffaaee]' : 'bg-[#1c2a44] text-[#aaeeff]'
+            job.agent === 'codex'
+              ? 'bg-[#2a1c44] text-[#ffaaee]'
+              : job.agent === 'grok'
+                ? 'bg-[#2a2414] text-[#ffcc88]'
+                : 'bg-[#1c2a44] text-[#aaeeff]'
           }`}
         >
           {job.agent}

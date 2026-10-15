@@ -272,13 +272,14 @@ async function handleMessage(
             sendError(send, v.error, errorMessageFor(v.error), msg.correlationId, msg.sessionId);
             return;
           }
-          // Codex reads images off disk (`-i <FILE>`), so they have to exist
-          // before the turn spawns. Written here, where we can await, rather
-          // than inside the driver — `sendUserText` is synchronous, and making
-          // it await would let two rapid turns both pass the concurrent-turn
-          // guard and spawn. Claude keeps the fire-and-forget write inside
-          // `sendInput`, since it gets the bytes inline on stdin.
-          if (agent === 'codex') {
+          // Codex reads images off disk (`-i <FILE>`), and Grok is told the
+          // same paths in the prompt. They have to exist before the turn
+          // spawns. Written here, where we can await, rather than inside the
+          // driver — `sendUserText` is synchronous, and making it await would
+          // let two rapid turns both pass the concurrent-turn guard and spawn.
+          // Claude keeps the fire-and-forget write inside `sendInput`, since
+          // it gets the bytes inline on stdin.
+          if (agent === 'codex' || agent === 'grok') {
             imagePaths = await imageStore.writeAuditCopy(msg.sessionId, msg.images.slice());
           }
         }

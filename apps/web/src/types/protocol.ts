@@ -1,4 +1,4 @@
-export type AgentKind = 'claude' | 'codex';
+export type AgentKind = 'claude' | 'codex' | 'grok';
 
 /**
  * Reasoning effort. Mirror of `packages/bridge/src/models.ts`.
@@ -68,8 +68,17 @@ export const CODEX_MODELS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'gpt-5', label: 'GPT-5' },
 ] as const;
 
+/** Ids the Grok CLI documents. Empty selection leaves the CLI's own default. */
+export const GROK_MODELS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'grok-4.7', label: 'Grok 4.7' },
+  { value: 'grok-4.6', label: 'Grok 4.6' },
+  { value: 'grok-4.5', label: 'Grok 4.5' },
+] as const;
+
 export function modelsFor(agent: AgentKind): ReadonlyArray<{ value: string; label: string }> {
-  return agent === 'claude' ? CLAUDE_MODELS : CODEX_MODELS;
+  if (agent === 'claude') return CLAUDE_MODELS;
+  if (agent === 'codex') return CODEX_MODELS;
+  return GROK_MODELS;
 }
 
 /** Human label for a model id, falling back to the id itself. */

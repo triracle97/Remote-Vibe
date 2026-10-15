@@ -7,6 +7,7 @@ import { realpath as fsRealpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { ClaudeProcess } from './claude-process.js';
 import { CodexProcess } from './codex-process.js';
+import { GrokProcess } from './grok-process.js';
 import { loadClaudeConfigProfiles, loadCodexAccounts } from './accounts.js';
 import { HeadroomProxy } from './headroom.js';
 import { SessionTitler } from './titler.js';
@@ -161,6 +162,15 @@ async function main(): Promise<void> {
         ...(args.headroom ? { headroom: args.headroom } : {}),
         ...(args.model ? { model: args.model } : {}),
         ...(args.effort ? { effort: args.effort } : {}),
+      }) as unknown as AgentDriver;
+    }
+    if (args.agent === 'grok') {
+      return new GrokProcess({
+        projectPath: args.projectPath,
+        ...(args.additionalDirs ? { additionalDirs: args.additionalDirs } : {}),
+        ...(args.model ? { model: args.model } : {}),
+        ...(args.effort ? { effort: args.effort } : {}),
+        ...(args.grokResumeSeed ? { grokResumeSeed: args.grokResumeSeed } : {}),
       }) as unknown as AgentDriver;
     }
     throw new Error(`unsupported agent: ${args.agent}`);

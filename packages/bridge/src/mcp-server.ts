@@ -153,7 +153,7 @@ const SPAWN_DESCRIPTION = [
  */
 const SPAWN_INPUT_SCHEMA: ZodRawShape = {
   agent: z
-    .enum(['codex', 'claude'])
+    .enum(['codex', 'claude', 'grok'])
     .describe('Which CLI to launch. Prefer codex for well-specified mechanical work.'),
   prompt: z.string().describe('The opening prompt. Self-contained: it cannot ask you for context.'),
   projectPath: z

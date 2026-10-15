@@ -39,10 +39,10 @@ export class ImageStore {
 
   validate(images: RawImage[] | undefined, agent: AgentKind): ValidateResult {
     if (!images || images.length === 0) return { ok: true };
-    // Both CLIs take images: Claude as content blocks on stdin, Codex as
-    // `codex exec -i <FILE>`. The per-agent rejection that used to live here
-    // predated `--image` and was simply out of date.
-    if (agent !== 'claude' && agent !== 'codex') {
+    // Claude takes images as content blocks on stdin, Codex as `-i <FILE>`.
+    // Grok headless has no image flag; the bridge writes the files and names
+    // them in the prompt so the model can read them. Anything else is refused.
+    if (agent !== 'claude' && agent !== 'codex' && agent !== 'grok') {
       return { ok: false, error: 'images_not_supported_for_agent' };
     }
     if (images.length > MAX_IMAGES) return { ok: false, error: 'too_many_images' };

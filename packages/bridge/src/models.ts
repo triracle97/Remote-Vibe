@@ -7,6 +7,8 @@
  *   claude --effort <level>          low | medium | high | xhigh | max
  *   codex  --model <id>
  *   codex  -c model_reasoning_effort=<level>
+ *   grok   --model <id>              e.g. grok-4.7, grok-4.6, grok-4.5
+ *   grok   --effort <level>          low | medium | high | xhigh | max
  *
  * Shape follows nimbalyst's `packages/runtime/src/ai/server/effortLevels.ts`.
  * Only aliases are offered for Claude: an alias always resolves to the latest
@@ -96,11 +98,23 @@ export const CODEX_MODELS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'gpt-5', label: 'GPT-5' },
 ] as const;
 
-export function modelsFor(agent: 'claude' | 'codex'): ReadonlyArray<{
+/**
+ * Ids the Grok CLI documents. Omitting the flag leaves whatever the user set
+ * as `[models].default` (the CLI's own default is grok-4.7).
+ */
+export const GROK_MODELS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'grok-4.7', label: 'Grok 4.7' },
+  { value: 'grok-4.6', label: 'Grok 4.6' },
+  { value: 'grok-4.5', label: 'Grok 4.5' },
+] as const;
+
+export function modelsFor(agent: 'claude' | 'codex' | 'grok'): ReadonlyArray<{
   value: string;
   label: string;
 }> {
-  return agent === 'claude' ? CLAUDE_MODELS : CODEX_MODELS;
+  if (agent === 'claude') return CLAUDE_MODELS;
+  if (agent === 'codex') return CODEX_MODELS;
+  return GROK_MODELS;
 }
 
 /**
@@ -141,6 +155,6 @@ export function resolveSetting<T>(sessionValue: T | null | undefined, appDefault
 }
 
 /** Human label for a model id, falling back to the id itself. */
-export function modelLabel(agent: 'claude' | 'codex', value: string): string {
+export function modelLabel(agent: 'claude' | 'codex' | 'grok', value: string): string {
   return modelsFor(agent).find((m) => m.value === value)?.label ?? value;
 }

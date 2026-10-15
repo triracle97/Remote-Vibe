@@ -9,6 +9,10 @@ export async function loadReplayEvents(
   agent: AgentKind,
   filePath: string,
 ): Promise<ReplayEvent[]> {
+  // Grok sessions live in SQLite under ~/.grok, not a JSONL this scanner
+  // knows how to replay. Resume of a bridge-owned Grok session does not come
+  // through here.
+  if (agent === 'grok') return [];
   const events = agent === 'claude'
     ? await parseClaudeReplay(filePath)
     : await parseCodexReplay(filePath);

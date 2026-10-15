@@ -1,10 +1,10 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react';
 import { useSlashCommandStore } from './slashCommandStore';
-import type { SlashCommand } from '../../types/protocol';
+import type { AgentKind, SlashCommand } from '../../types/protocol';
 
 interface SlashAutocompleteProps {
   sessionId: string;
-  agent: 'claude' | 'codex';
+  agent: AgentKind;
   /** Current text in the textarea — drives filtering. */
   text: string;
   /** Cursor position in the text. */

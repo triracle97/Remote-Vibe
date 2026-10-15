@@ -1034,6 +1034,7 @@ describe('SessionManager', () => {
       projectPath: string;
       account?: string;
       additionalDirs?: string[];
+      model?: string;
     }
 
     class TrackedDriver extends EventEmitter implements AgentDriver {
@@ -1058,6 +1059,7 @@ describe('SessionManager', () => {
 
     async function makeMgrP6(opts: {
       allowedDirs?: string[];
+      defaultModel?: string | null;
       registry?: SessionRegistry;
       stat?: (p: string) => Promise<{ isDirectory(): boolean }>;
       notifier?: {
@@ -1076,6 +1078,7 @@ describe('SessionManager', () => {
           projectPath: args.projectPath,
           ...(args.account ? { account: args.account.name } : {}),
           ...(args.additionalDirs ? { additionalDirs: args.additionalDirs } : {}),
+          ...(args.model ? { model: args.model } : {}),
         };
         spawned.push(arg);
         const d = new TrackedDriver(arg);
@@ -1093,6 +1096,7 @@ describe('SessionManager', () => {
         registry,
         ...(opts.stat ? { stat: opts.stat } : {}),
         accounts: accounts as unknown as Map<string, import('../accounts.js').CodexAccount>,
+        ...(opts.defaultModel !== undefined ? { defaultModel: opts.defaultModel } : {}),
         ...(opts.notifier
           ? { notifier: opts.notifier as unknown as import('../notifier.js').Notifier }
           : {}),
@@ -1143,6 +1147,18 @@ describe('SessionManager', () => {
       // Here we assert SessionManager wires the value through.
       expect(spawned[0]!.agent).toBe('codex');
       expect(spawned[0]!.additionalDirs).toEqual([b]);
+    });
+
+    it('does not hand the Claude default model to a Grok session', async () => {
+      const a = join(tmp, 'grok-proj');
+      mkdirSync(a, { recursive: true });
+      const { mgr, spawned } = await makeMgrP6({ defaultModel: 'opus[1m]' });
+      await mgr.spawnSession({ agent: 'grok', dirs: [a] });
+      await mgr.spawnSession({ agent: 'grok', dirs: [a], model: 'grok-4.7' });
+      await mgr.spawnSession({ agent: 'claude', dirs: [a] });
+      expect(spawned[0]!.model).toBeUndefined();
+      expect(spawned[1]!.model).toBe('grok-4.7');
+      expect(spawned[2]!.model).toBe('opus[1m]');
     });
 
     it('resumeFromHistoryEntry persists default workspace dirs as additionalDirs', async () => {
