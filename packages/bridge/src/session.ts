@@ -20,6 +20,7 @@ import type {
   ServerLifecycleMsg,
   ServerSessionArchivedMsg,
   ServerSessionDeletedMsg,
+  ServerSessionHighlightedMsg,
   ServerSessionPhaseChangedMsg,
   ServerSessionRenamedMsg,
   ServerSessionModelChangedMsg,
@@ -422,6 +423,7 @@ export class SessionManager extends EventEmitter {
     | 'lastActiveAt'
     | 'endedAt'
     | 'archived'
+    | 'highlighted'
     | 'claudeConfigDir'
     | 'headroom'
     | 'usage'
@@ -445,6 +447,7 @@ export class SessionManager extends EventEmitter {
       lastActiveAt: opts.createdAt,
       endedAt: null,
       archived: false,
+      highlighted: false,
       claudeConfigDir: opts.claudeConfigDir ?? null,
       headroom: opts.headroom ?? false,
       usage: { ...EMPTY_SESSION_USAGE },
@@ -509,6 +512,14 @@ export class SessionManager extends EventEmitter {
         console.warn(`[session] model '${model}' cannot run ultracode; falling back to xhigh`);
         effort = 'xhigh';
       }
+    }
+
+    if (effort === 'ultra' && opts.agent !== 'codex') {
+      // `ultra` is a Codex catalog reasoning level. Claude's `--effort` and
+      // Grok's `--effort` do not take it; leaving it on the card would claim
+      // a level the CLI never got.
+      console.warn(`[session] ultra is a Codex reasoning level; ignoring it for a ${opts.agent} session`);
+      effort = null;
     }
 
     return {
@@ -1782,18 +1793,17 @@ export class SessionManager extends EventEmitter {
     if (this.recordWindow(this.rateLimitAccountOf(s), { ...window, source: 'event' })) {
       this.broadcastRateLimits();
     }
-    // A `rate_limit_event` is the CLI saying the numbers just moved, which
-    // makes it the cheapest moment to go and read the real ones. The poller's
-    // own TTL keeps a chatty session from meaning a chatty bridge.
-    void this.refreshQuotaFor(s);
+    // The event is the update. Fetching usage here as well turned a long turn
+    // — which emits this many times — into a poll per TTL against an endpoint
+    // that answers 429. The turn-end poll is the one shared by both agents.
   }
 
   /**
    * Store one window, keeping whatever the previous one knew that this does not.
    *
    * Returns true only when something a client would render actually changed:
-   * polling a healthy account every minute otherwise means a broadcast every
-   * minute saying nothing.
+   * a poll that finds the same percentages otherwise means a broadcast saying
+   * nothing.
    *
    * The merge exists because the two sources are not equals. A poll always
    * names a percentage; a `rate_limit_event` names one only once the window
@@ -2182,6 +2192,7 @@ export class SessionManager extends EventEmitter {
         workflowKeywordTrigger: entry.workflowKeywordTrigger,
         tags: entry.tags,
         archived: entry.archived,
+        highlighted: entry.highlighted === true,
         account: entry.account,
         claudeConfigDir: entry.claudeConfigDir,
         headroom: entry.headroom,
@@ -2265,6 +2276,9 @@ export class SessionManager extends EventEmitter {
           'Ultracode is chosen when a session starts, not switched into one that is already running',
         );
       }
+      if (parsed === 'ultra' && entry.agent !== 'codex') {
+        throw new InvalidModelError('ultra is a Codex reasoning level');
+      }
       patch.effort = parsed;
     }
     if (Object.keys(patch).length === 0) return;
@@ -2329,6 +2343,21 @@ export class SessionManager extends EventEmitter {
       sessionId: webSessionId,
       archived,
     } satisfies ServerSessionArchivedMsg);
+  }
+
+  /**
+   * Mark or clear "what I'm working on". A glance at the board should find
+   * these cards first; the column they sit in is a separate question.
+   */
+  async setSessionHighlighted(webSessionId: string, highlighted: boolean): Promise<void> {
+    this.requireEntry(webSessionId);
+    const on = highlighted === true;
+    await this.registry!.update(webSessionId, { highlighted: on });
+    this.emit('broadcast', {
+      type: 'session_highlighted',
+      sessionId: webSessionId,
+      highlighted: on,
+    } satisfies ServerSessionHighlightedMsg);
   }
 
   /**

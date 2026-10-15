@@ -270,7 +270,10 @@ export class ClaudeProcess extends EventEmitter {
     // anyway: it is the one value that would otherwise spawn cleanly, cost
     // xhigh money, and turn none of the mode on — the quietest possible way
     // to not ship the feature. Types do not reach callers coming over the wire.
-    if (effort !== undefined && (!isEffortLevel(effort) || (effort as string) === 'ultracode')) {
+    if (
+      effort !== undefined &&
+      (!isEffortLevel(effort) || (effort as string) === 'ultracode' || effort === 'ultra')
+    ) {
       throw new Error(`unknown effort level: ${effort}`);
     }
     const modelFlag = model !== undefined ? `--model ${shellQuote(model)} ` : '';

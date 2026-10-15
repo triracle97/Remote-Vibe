@@ -75,7 +75,7 @@ export function buildGrokArgs(opts: {
     opts.projectPath,
     '--verbatim',
     ...(opts.model !== null ? ['--model', opts.model] : []),
-    ...(opts.effort !== null ? ['--effort', opts.effort] : []),
+    ...(opts.effort !== null && opts.effort !== 'ultra' ? ['--effort', opts.effort] : []),
     '-p',
     opts.prompt,
   ];
@@ -130,7 +130,9 @@ export class GrokProcess extends EventEmitter {
     super();
     this.projectPath = opts.projectPath;
     this.model = opts.model ?? null;
-    this.effort = opts.effort ?? null;
+    // `ultra` is a Codex catalog level. A hand-edited row must not put it on
+    // `grok --effort`.
+    this.effort = opts.effort === 'ultra' ? null : (opts.effort ?? null);
     this.spawnFn = opts.spawn ?? (nodeSpawn as unknown as SpawnFn);
     if (opts.grokResumeSeed) {
       assertGrokSessionId(opts.grokResumeSeed);
@@ -159,8 +161,8 @@ export class GrokProcess extends EventEmitter {
       if (!isEffortLevel(next.effort)) throw new Error(`unknown effort level: ${next.effort}`);
       // `ultracode` is a Claude mode. Callers strip it before it gets here;
       // refusing it is the backstop so it never lands on `--effort`.
-      if (next.effort === 'ultracode') {
-        throw new Error('ultracode is not a grok effort level');
+      if (next.effort === 'ultracode' || next.effort === 'ultra') {
+        throw new Error(`${next.effort} is not a grok effort level`);
       }
       this.effort = next.effort;
     }

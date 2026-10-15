@@ -1,15 +1,27 @@
 import type { DragEvent, JSX } from 'react';
+import { Star } from 'lucide-react';
 import { modelLabel } from '../../types/protocol';
+import { codexCatalogLabel, useCodexCatalogStore } from '../../store/codex-models';
 import type { BoardSession } from '../../types/protocol';
-import { cardTint, cardVisualState, projectLabel, timeAgo } from './cardState';
+import { cardChrome, cardVisualState, projectLabel, timeAgo } from './cardState';
 
 interface Props {
   card: BoardSession;
   onOpen: (card: BoardSession) => void;
   onDetails: (card: BoardSession) => void;
+  onToggleHighlight: (card: BoardSession) => void;
   onDragStart: (card: BoardSession, e: DragEvent<HTMLElement>) => void;
   onDragEnd: () => void;
   dragging: boolean;
+}
+
+function modelChipLabel(
+  agent: BoardSession['agent'],
+  model: string,
+  catalog: ReturnType<typeof useCodexCatalogStore.getState>['models'],
+): string {
+  if (agent === 'codex') return codexCatalogLabel(catalog, model) ?? modelLabel(agent, model);
+  return modelLabel(agent, model);
 }
 
 /**
@@ -22,20 +34,24 @@ export function SessionCard({
   card,
   onOpen,
   onDetails,
+  onToggleHighlight,
   onDragStart,
   onDragEnd,
   dragging,
 }: Props): JSX.Element {
+  const catalog = useCodexCatalogStore((s) => s.models);
   // `alive` is not "busy" — a session sits alive and idle for most of its life,
   // which is exactly the state worth spotting on a board: the agent has
   // finished and is waiting on you.
   const state = cardVisualState(card, { processing: card.turnRunning === true });
   const title = card.name ?? projectLabel(card.projectPath);
+  const highlighted = card.highlighted === true;
 
   return (
     <article
       data-testid="board-card"
       data-session-id={card.sessionId}
+      data-highlighted={highlighted ? 'true' : 'false'}
       draggable
       onDragStart={(e) => onDragStart(card, e)}
       onDragEnd={onDragEnd}
@@ -46,14 +62,31 @@ export function SessionCard({
         dragging ? 'opacity-40' : '',
         !card.alive ? 'opacity-75' : '',
       ].join(' ')}
-      style={cardTint(state)}
+      style={cardChrome(state, highlighted)}
     >
-      <button
-        type="button"
-        onClick={() => onOpen(card)}
-        className="w-full text-left"
-        title={card.projectPath}
-      >
+      <div className="flex items-start gap-1.5">
+        <button
+          type="button"
+          draggable={false}
+          aria-pressed={highlighted}
+          aria-label={highlighted ? `Stop working on ${title}` : `Mark ${title} as working on`}
+          title={highlighted ? 'Working on' : 'Mark as working on'}
+          onClick={() => onToggleHighlight(card)}
+          className={[
+            'shrink-0 mt-0.5 p-0.5 rounded leading-none',
+            highlighted
+              ? 'text-[var(--color-warn)]'
+              : 'text-[var(--color-text-dim)] hover:text-[var(--color-warn)]',
+          ].join(' ')}
+        >
+          <Star size={14} aria-hidden fill={highlighted ? 'currentColor' : 'none'} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onOpen(card)}
+          className="flex-1 min-w-0 text-left"
+          title={card.projectPath}
+        >
         <div className="flex items-start gap-2">
           <span className="flex-1 min-w-0 font-semibold text-[var(--color-text)] text-sm leading-snug line-clamp-2">
             {title}
@@ -96,9 +129,15 @@ export function SessionCard({
             </span>
           </div>
         )}
-      </button>
+        </button>
+      </div>
 
       <div className="mt-2 flex items-center gap-1 flex-wrap">
+        {highlighted && (
+          <Chip title="Marked as what you're working on" tone="var(--color-warn)">
+            working
+          </Chip>
+        )}
         <AgentBadge card={card} />
         {card.headroom && (
           <Chip title="Routed through the Headroom proxy" tone="var(--color-success)">
@@ -112,7 +151,7 @@ export function SessionCard({
         )}
         {card.model !== null && (
           <Chip title={`Model: ${card.model}`} tone="var(--color-phase-planning)">
-            {modelLabel(card.agent, card.model)}
+            {modelChipLabel(card.agent, card.model, catalog)}
           </Chip>
         )}
         {card.effort !== null &&

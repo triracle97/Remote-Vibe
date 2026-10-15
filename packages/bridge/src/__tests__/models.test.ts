@@ -20,14 +20,16 @@ import { CodexProcess } from '../codex-process.js';
 describe('effort levels', () => {
   it('matches the levels the CLI documents, plus the mode it offers alongside them', () => {
     // `claude --help`: "--effort <level>  Effort level ... (low, medium, high, xhigh, max)".
-    // `ultracode` is not one of them — it is a mode Claude Code's own /config
-    // puts in the same row, and this list is that row.
+    // `ultra` is a Codex catalog level, not one of those flags. `ultracode` is
+    // a mode Claude Code's own /config puts in the same row, and this list is
+    // that row.
     expect(EFFORT_LEVELS.map((e) => e.value)).toEqual([
       'low',
       'medium',
       'high',
       'xhigh',
       'max',
+      'ultra',
       'ultracode',
     ]);
   });

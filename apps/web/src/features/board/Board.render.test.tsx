@@ -77,7 +77,13 @@ function session(over: Partial<BoardSession> = {}): BoardSession {
   };
 }
 
-const DEFAULT_FILTER = { search: '', tags: [], showDone: true, showArchived: false };
+const DEFAULT_FILTER = {
+  search: '',
+  tags: [],
+  showDone: true,
+  showArchived: false,
+  onlyHighlighted: false,
+};
 
 beforeEach(() => {
   sent.length = 0;
@@ -188,6 +194,40 @@ describe('Board renders', () => {
     useJobsStore.setState({ jobs: { j1: job() }, starting: { j1: true } });
     renderBoard();
     expect(screen.getByText('Starting…')).toBeTruthy();
+  });
+
+  it('marks a card as working on from the star and draws the rail', () => {
+    useBoardStore.setState({
+      cards: { s1: session({ phase: 'implementing', name: 'the one' }) },
+    });
+    renderBoard();
+    fireEvent.click(screen.getByRole('button', { name: 'Mark the one as working on' }));
+    expect(sent[0]).toMatchObject({
+      type: 'set_session_highlighted',
+      sessionId: 's1',
+      highlighted: true,
+    });
+    const card = screen.getByTestId('board-card');
+    expect(card.getAttribute('data-highlighted')).toBe('true');
+    expect(card.getAttribute('style')).toContain('--color-warn');
+    expect(screen.getByText('working')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop working on the one' })).toBeTruthy();
+  });
+
+  it('hides unmarked cards and jobs when the working-on filter is on', () => {
+    useJobsStore.setState({ jobs: { j1: job() } });
+    useBoardStore.setState({
+      cards: {
+        s1: session({ name: 'keep me', highlighted: true, phase: 'implementing' }),
+        s2: session({ sessionId: 's2', name: 'not this', phase: 'implementing' }),
+      },
+      filter: { ...DEFAULT_FILTER, onlyHighlighted: true },
+    });
+    renderBoard();
+    expect(screen.getByText('keep me')).toBeTruthy();
+    expect(screen.queryByText('not this')).toBeNull();
+    expect(screen.queryByText('fix auth expiry')).toBeNull();
+    expect(screen.queryByText('+ Add a job')).toBeNull();
   });
 
   it('counts jobs and sessions together in the Backlog header', () => {

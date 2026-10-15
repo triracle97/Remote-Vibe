@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
 import { ModelEffortPicker } from './ModelEffortPicker';
 import { SessionModelSwitch } from './SessionModelSwitch';
 import { useBoardStore } from '../board/boardStore';
+import { useCodexCatalogStore } from '../../store/codex-models';
 import type { BoardSession, ClientMsg } from '../../types/protocol';
 
 // vitest runs with `globals: false`, so RTL auto-cleanup never registers.
@@ -16,6 +17,7 @@ vi.mock('../../services/bridge-client-singleton', () => ({
 beforeEach(() => {
   sent.length = 0;
   useBoardStore.setState({ cards: {} });
+  useCodexCatalogStore.setState({ models: [], source: null });
 });
 
 describe('ModelEffortPicker', () => {
@@ -45,6 +47,64 @@ describe('ModelEffortPicker', () => {
     render_({ agent: 'codex' });
     const select = screen.getByLabelText('Model') as HTMLSelectElement;
     expect([...select.options].map((o) => o.value)).toEqual(['', 'gpt-5-codex', 'gpt-5']);
+  });
+
+  it('uses the live Codex catalog, including per-model efforts', () => {
+    useCodexCatalogStore.setState({
+      source: 'cli',
+      models: [
+        {
+          value: 'gpt-6-astra',
+          label: 'GPT-6-Astra',
+          efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+          defaultEffort: 'medium',
+        },
+        {
+          value: 'gpt-5.6-luna',
+          label: 'GPT-5.6-Luna',
+          efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+          defaultEffort: 'medium',
+        },
+      ],
+    });
+    render_({ agent: 'codex', model: 'gpt-6-astra' });
+    expect([...(screen.getByLabelText('Model') as HTMLSelectElement).options].map((o) => o.value)).toEqual([
+      '',
+      'gpt-6-astra',
+      'gpt-5.6-luna',
+    ]);
+    expect([...(screen.getByLabelText('Effort') as HTMLSelectElement).options].map((o) => o.value)).toContain(
+      'ultra',
+    );
+    cleanup();
+
+    render_({ agent: 'codex', model: 'gpt-5.6-luna' });
+    expect(
+      [...(screen.getByLabelText('Effort') as HTMLSelectElement).options].map((o) => o.value),
+    ).not.toContain('ultra');
+  });
+
+  it('drops an effort the newly picked Codex model does not support', () => {
+    useCodexCatalogStore.setState({
+      source: 'cli',
+      models: [
+        {
+          value: 'gpt-6-astra',
+          label: 'GPT-6-Astra',
+          efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+          defaultEffort: 'medium',
+        },
+        {
+          value: 'gpt-5.6-luna',
+          label: 'GPT-5.6-Luna',
+          efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+          defaultEffort: 'medium',
+        },
+      ],
+    });
+    const { onEffortChange } = render_({ agent: 'codex', model: 'gpt-6-astra', effort: 'ultra' });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-5.6-luna' } });
+    expect(onEffortChange).toHaveBeenCalledWith('medium');
   });
 
   it('offers the effort levels the CLI documents, with ultracode after them', () => {

@@ -15,7 +15,7 @@
  * model on its line, so the list never goes stale as new versions ship.
  */
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | 'ultracode';
 
 /** What may actually go on `claude --effort` / `codex -c model_reasoning_effort`. */
 export type CliEffortLevel = Exclude<EffortLevel, 'ultracode'>;
@@ -25,12 +25,19 @@ export const EFFORT_LEVELS: ReadonlyArray<{
   label: string;
   /** Claude only, and only on a model that can do xhigh. */
   claudeOnly?: boolean;
+  /**
+   * Codex catalog only. `ultra` is a reasoning level `codex debug models`
+   * reports for some models; it is not a Claude `--effort` value and it is
+   * not the ultracode mode.
+   */
+  codexOnly?: boolean;
 }> = [
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
   { value: 'xhigh', label: 'xHigh' },
   { value: 'max', label: 'Max' },
+  { value: 'ultra', label: 'Ultra', codexOnly: true },
   { value: 'ultracode', label: 'Ultracode', claudeOnly: true },
 ] as const;
 
@@ -93,6 +100,11 @@ export const CLAUDE_MODELS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'fable', label: 'Fable' },
 ] as const;
 
+/**
+ * Last resort when `codex debug models` cannot be read. The picker uses the
+ * live catalog (`codex-catalog.ts`); this list is what shows if the CLI is
+ * missing or its JSON is unusable.
+ */
 export const CODEX_MODELS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
   { value: 'gpt-5', label: 'GPT-5' },

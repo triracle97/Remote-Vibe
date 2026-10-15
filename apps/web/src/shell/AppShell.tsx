@@ -5,6 +5,7 @@ import { setBridgeClient } from '../services/bridge-client-singleton';
 import { useConnectionStore } from '../store/connection';
 import { useSessionsStore } from '../store/sessions';
 import { useAccountsStore } from '../store/accounts';
+import { useCodexCatalogStore } from '../store/codex-models';
 import { usePromptHistoryStore } from '../store/prompt-history';
 import { useFileExplorerStore } from '../store/file-explorer';
 import { useConductorStore } from '../store/conductor';
@@ -46,6 +47,7 @@ export function AppShell(): JSX.Element {
       setStatus('open');
       client.send({ type: 'list_sessions' });
       client.send({ type: 'list_accounts' });
+      client.send({ type: 'list_models' });
       client.send({ type: 'list_prompts', limit: 200 });
       client.send({ type: 'get_rate_limits' });
       // Board cards track turn state from broadcasts, and a disconnected client
@@ -73,6 +75,10 @@ export function AppShell(): JSX.Element {
       }
       if (m.type === 'account_list') {
         applyAccountList(m.accounts);
+        return;
+      }
+      if (m.type === 'model_list') {
+        useCodexCatalogStore.getState().applyModelList(m.models, m.source);
         return;
       }
       if (m.type === 'prompts_result') {

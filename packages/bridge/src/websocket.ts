@@ -21,6 +21,7 @@ import type { TerminalManager } from './terminal-manager.js';
 import { PathOutsideAllowlistError } from './path-allowlist.js';
 import { matchClipboardPathsByName, readClipboardFilePaths } from './clipboard.js';
 import { JobNotFoundError, jobLaunchPrompt, type JobStore } from './job-store.js';
+import { listCodexModels } from './codex-catalog.js';
 import type {
   ClientMsg,
   ServerErrorMsg,
@@ -376,6 +377,17 @@ async function handleMessage(
         });
         return;
       }
+      case 'list_models': {
+        const catalog = await listCodexModels();
+        send({
+          type: 'model_list',
+          agent: 'codex',
+          models: catalog.models,
+          source: catalog.source,
+          ...(msg.correlationId ? { correlationId: msg.correlationId } : {}),
+        });
+        return;
+      }
       case 'save_claude_config':
       case 'delete_claude_config': {
         if (!claudeConfigStore) {
@@ -451,6 +463,12 @@ async function handleMessage(
       case 'archive_session': {
         await runBoardMutation(send, msg.correlationId, 'session_not_found', () =>
           sessionManager.setSessionArchived(msg.sessionId, msg.archived === true),
+        );
+        return;
+      }
+      case 'set_session_highlighted': {
+        await runBoardMutation(send, msg.correlationId, 'session_not_found', () =>
+          sessionManager.setSessionHighlighted(msg.sessionId, msg.highlighted === true),
         );
         return;
       }

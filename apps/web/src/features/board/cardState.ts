@@ -51,6 +51,21 @@ export function cardTint(info: CardStateInfo): React.CSSProperties {
 }
 
 /**
+ * Live-state tint, plus an amber rail when the card is marked as what you're
+ * working on. The rail sits on top of the tint so a marked card stays findable
+ * in any column, whether it is running, waiting, or idle.
+ */
+export function cardChrome(info: CardStateInfo, highlighted: boolean): React.CSSProperties {
+  const tint = cardTint(info);
+  if (!highlighted) return tint;
+  return {
+    ...tint,
+    borderColor: 'color-mix(in srgb, var(--color-warn) 65%, transparent)',
+    boxShadow: 'inset 3px 0 0 var(--color-warn)',
+  };
+}
+
+/**
  * Compact relative time. Board cards are scanned, not read, so `3m` beats
  * `3 minutes ago` — and the unit alone carries the urgency.
  */

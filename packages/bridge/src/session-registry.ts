@@ -44,6 +44,12 @@ export interface RegistryEntry {
   /** True once a human drags the card; disables automatic phase inference. */
   phasePinned: boolean;
   tags: string[];
+  /**
+   * True when the user marked this card as what they're working on.
+   * Optional on disk: rows written before the mark existed omit it, and
+   * `load()` fills false.
+   */
+  highlighted?: boolean;
   /** ms since epoch; bumped on input and on each agent event. */
   lastActiveAt: number;
   endedAt: number | null;
@@ -128,6 +134,7 @@ export class SessionRegistry {
             phase: entry.phase ?? (entry.status === undefined ? 'backlog' : DEFAULT_SESSION_PHASE),
             phasePinned: entry.phasePinned ?? false,
             tags: entry.tags ?? [],
+            highlighted: entry.highlighted === true,
             lastActiveAt,
             endedAt: entry.endedAt ?? (status === 'ended' ? lastActiveAt : null),
             archived: entry.archived ?? false,

@@ -307,6 +307,85 @@ describe('QuotaPoller', () => {
     warn.mockRestore();
   });
 
+  it('keeps the last reading and waits out a 429', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let calls = 0;
+    let now = 0;
+    let status = 200;
+    const poller = new QuotaPoller({
+      readKeychain: async () => JSON.stringify({ claudeAiOauth: { accessToken: 'tok' } }),
+      fetch: (async () => {
+        calls += 1;
+        if (status === 429) {
+          return {
+            ok: false,
+            status: 429,
+            headers: { get: () => '120' },
+          } as unknown as Response;
+        }
+        return okResponse(CLAUDE_PAYLOAD);
+      }) as unknown as typeof globalThis.fetch,
+      now: () => now,
+      ttlMs: 1000,
+    });
+
+    const first = await poller.windows(claudeSrc(null));
+    expect(first.map((w) => w.limitType)).toEqual(['five_hour', 'seven_day']);
+
+    // The cache has expired, so this ask actually hits the endpoint.
+    now = 1000;
+    status = 429;
+    const during = await poller.windows(claudeSrc(null));
+    expect(during).toEqual(first);
+    expect(calls).toBe(2);
+
+    // Retry-After was two minutes. The floor is fifteen, so a reload in
+    // between must not produce another request.
+    now = 1000 + 14 * 60_000;
+    await poller.windows(claudeSrc(null), { force: true });
+    expect(calls).toBe(2);
+
+    now = 1000 + 15 * 60_000;
+    status = 200;
+    await poller.windows(claudeSrc(null));
+    expect(calls).toBe(3);
+    warn.mockRestore();
+  });
+
+  it('honours a Retry-After that is longer than the floor', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let calls = 0;
+    let now = 0;
+    const poller = new QuotaPoller({
+      readKeychain: async () => JSON.stringify({ claudeAiOauth: { accessToken: 'tok' } }),
+      fetch: (async () => {
+        calls += 1;
+        if (calls === 1) return okResponse(CLAUDE_PAYLOAD);
+        return {
+          ok: false,
+          status: 429,
+          headers: { get: () => '1800' },
+        } as unknown as Response;
+      }) as unknown as typeof globalThis.fetch,
+      now: () => now,
+      ttlMs: 1000,
+    });
+
+    await poller.windows(claudeSrc(null));
+    now = 1000;
+    await poller.windows(claudeSrc(null));
+    expect(calls).toBe(2);
+
+    now = 1000 + 15 * 60_000;
+    await poller.windows(claudeSrc(null));
+    expect(calls).toBe(2);
+
+    now = 1000 + 30 * 60_000;
+    await poller.windows(claudeSrc(null));
+    expect(calls).toBe(3);
+    warn.mockRestore();
+  });
+
   it('sends the Codex account header', async () => {
     let headers: Record<string, string> = {};
     const poller = new QuotaPoller({

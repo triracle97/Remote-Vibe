@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import {
   EFFORT_LEVELS,
+  modelLabel,
   modelsFor,
   supportsUltracode,
   WORKFLOW_SIZES,
@@ -8,6 +9,25 @@ import {
   type EffortLevel,
   type WorkflowSize,
 } from '../../types/protocol';
+import { useCodexCatalogStore } from '../../store/codex-models';
+import type { CodexCatalogModel } from '../../types/protocol';
+
+/**
+ * Efforts the effort row may offer for this Codex selection.
+ *
+ * A chosen model uses its own list. "Model: default" uses the levels every
+ * visible model shares, so picking Ultra against an unnamed default cannot
+ * land on a model that rejects it.
+ */
+function effortsFor(catalog: readonly CodexCatalogModel[], model: string | null): EffortLevel[] | null {
+  if (catalog.length === 0) return null;
+  if (model === null) {
+    return catalog[0]!.efforts.filter((level) => catalog.every((m) => m.efforts.includes(level)));
+  }
+  // An id the catalog does not list keeps the static effort row. Filtering
+  // against nothing would hide every level.
+  return catalog.find((m) => m.value === model)?.efforts ?? null;
+}
 
 /**
  * Model and reasoning-effort selects, shared by the project picker, the job
@@ -67,6 +87,8 @@ export function ModelEffortPicker({
   onWorkflowKeywordTriggerChange,
   allowUltracode = true,
 }: Props): JSX.Element {
+  const catalogModels = useCodexCatalogStore((s) => s.models);
+  const catalog = agent === 'codex' && catalogModels.length > 0 ? catalogModels : null;
   const selectClass = compact
     ? 'bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded px-1.5 py-0.5 text-xs focus:outline-none focus:border-[var(--color-accent)] disabled:opacity-50'
     : 'w-full bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)] rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-[var(--color-accent)] disabled:opacity-50';
@@ -75,7 +97,24 @@ export function ModelEffortPicker({
   // as "this is what it is running" rather than blanking the field.
   const ultracodeAvailable =
     (allowUltracode || effort === 'ultracode') && agent === 'claude' && supportsUltracode(model);
-  const levels = EFFORT_LEVELS.filter((l) => !l.claudeOnly || ultracodeAvailable);
+  const allowed = catalog ? effortsFor(catalog, model) : null;
+  const levels = EFFORT_LEVELS.filter((l) => {
+    if (l.claudeOnly && !ultracodeAvailable) return false;
+    // `ultra` stays hidden until the selected Codex model lists it. A session
+    // already running it still shows the value, so the switcher does not go blank.
+    if (l.codexOnly) return effort === l.value || (allowed?.includes(l.value) ?? false);
+    if (allowed && !allowed.includes(l.value) && effort !== l.value) return false;
+    return true;
+  });
+  const listed = catalog
+    ? catalog.map((m) => ({ value: m.value, label: m.label }))
+    : modelsFor(agent);
+  // A session can be on an id the current catalog no longer lists. Keep it as
+  // an option so the select still shows what is running.
+  const models =
+    model !== null && !listed.some((m) => m.value === model)
+      ? [...listed, { value: model, label: modelLabel(agent, model) }]
+      : listed;
   const showWorkflowRow = effort === 'ultracode' && onWorkflowSizeChange !== undefined;
 
   return (
@@ -99,11 +138,25 @@ export function ModelEffortPicker({
               // Switching to a model that cannot reach xhigh has to take the
               // mode with it, or the picker would show a choice the spawn is
               // about to overrule.
-              if (effort === 'ultracode' && !supportsUltracode(next)) onEffortChange('xhigh');
+              if (effort === 'ultracode' && !supportsUltracode(next)) {
+                onEffortChange('xhigh');
+                return;
+              }
+              if (agent !== 'codex' || effort === null || !catalog) return;
+              const nextAllowed = effortsFor(catalog, next);
+              if (!nextAllowed || nextAllowed.includes(effort)) return;
+              const picked = next === null ? null : catalog.find((m) => m.value === next);
+              const fallback =
+                picked?.defaultEffort && nextAllowed.includes(picked.defaultEffort)
+                  ? picked.defaultEffort
+                  : nextAllowed.includes('high')
+                    ? 'high'
+                    : (nextAllowed[0] ?? null);
+              onEffortChange(fallback);
             }}
           >
             <option value="">Model: default</option>
-            {modelsFor(agent).map((m) => (
+            {models.map((m) => (
               <option key={m.value} value={m.value}>
                 {m.label}
               </option>

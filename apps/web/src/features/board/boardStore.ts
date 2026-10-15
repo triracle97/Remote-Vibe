@@ -20,6 +20,8 @@ export interface BoardFilter {
   tags: string[];
   showDone: boolean;
   showArchived: boolean;
+  /** Only cards marked as what you're working on. */
+  onlyHighlighted: boolean;
 }
 
 const DEFAULT_FILTER: BoardFilter = {
@@ -27,6 +29,7 @@ const DEFAULT_FILTER: BoardFilter = {
   tags: [],
   showDone: true,
   showArchived: false,
+  onlyHighlighted: false,
 };
 
 interface BoardState {
@@ -42,6 +45,8 @@ interface BoardState {
   setPhase: (sessionId: string, phase: SessionPhase) => void;
   setTags: (sessionId: string, tags: string[]) => void;
   setArchived: (sessionId: string, archived: boolean) => void;
+  /** Mark or clear a card as what you're working on. */
+  setHighlighted: (sessionId: string, highlighted: boolean) => void;
   /**
    * Archive every visible card sitting in `phase`, and report how many.
    *
@@ -108,6 +113,11 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       case 'session_archived': {
         if (m.correlationId) pending.delete(m.correlationId);
         patch(set, get, m.sessionId, (c) => ({ ...c, archived: m.archived }));
+        return;
+      }
+      case 'session_highlighted': {
+        if (m.correlationId) pending.delete(m.correlationId);
+        patch(set, get, m.sessionId, (c) => ({ ...c, highlighted: m.highlighted }));
         return;
       }
       case 'session_deleted': {
@@ -238,6 +248,24 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     getBridgeClient().send({ type: 'archive_session', sessionId, archived, correlationId });
   },
 
+  setHighlighted: (sessionId, highlighted) => {
+    const card = get().cards[sessionId];
+    if (!card || (card.highlighted === true) === highlighted) return;
+    const before = card.highlighted === true;
+    const correlationId = nextCorrelationId('highlight');
+    pending.set(correlationId, {
+      sessionId,
+      undo: (c) => ({ ...(c ?? card), highlighted: before }),
+    });
+    patch(set, get, sessionId, (c) => ({ ...c, highlighted }));
+    getBridgeClient().send({
+      type: 'set_session_highlighted',
+      sessionId,
+      highlighted,
+      correlationId,
+    });
+  },
+
   archivePhase: (phase) => {
     const { cards, filter } = get();
     // Only what the user can currently see. Archiving a card hidden behind a
@@ -319,6 +347,7 @@ function patch(
 export function matchesFilter(card: BoardSession, filter: BoardFilter): boolean {
   if (!filter.showArchived && card.archived) return false;
   if (!filter.showDone && card.phase === 'done') return false;
+  if (filter.onlyHighlighted && card.highlighted !== true) return false;
   if (filter.tags.length > 0 && !filter.tags.every((t) => card.tags.includes(t))) return false;
   const q = filter.search.trim().toLowerCase();
   if (q.length === 0) return true;
@@ -330,8 +359,10 @@ export function matchesFilter(card: BoardSession, filter: BoardFilter): boolean 
 }
 
 /**
- * Group filtered cards by phase. Live sessions sort above dead ones within a
- * column — a running session is what you want to click — then by recency.
+ * Group filtered cards by phase.
+ *
+ * Within a column, cards you marked as what you're working on come first —
+ * that is the point of the mark — then live sessions, then the most recent.
  */
 export function groupByPhase(
   cards: Record<string, BoardSession>,
@@ -346,6 +377,9 @@ export function groupByPhase(
   }
   for (const list of out.values()) {
     list.sort((a, b) => {
+      const ah = a.highlighted === true;
+      const bh = b.highlighted === true;
+      if (ah !== bh) return ah ? -1 : 1;
       if (a.alive !== b.alive) return a.alive ? -1 : 1;
       return b.lastActiveAt - a.lastActiveAt;
     });

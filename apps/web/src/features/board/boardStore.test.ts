@@ -47,7 +47,13 @@ function card(over: Partial<BoardSession> = {}): BoardSession {
   };
 }
 
-const FILTER: BoardFilter = { search: '', tags: [], showDone: true, showArchived: false };
+const FILTER: BoardFilter = {
+  search: '',
+  tags: [],
+  showDone: true,
+  showArchived: false,
+  onlyHighlighted: false,
+};
 
 beforeEach(() => {
   sent.length = 0;
@@ -84,6 +90,13 @@ describe('matchesFilter', () => {
   it('does not crash on an unnamed card', () => {
     expect(matchesFilter(card({ name: null }), { ...FILTER, search: 'x' })).toBe(false);
   });
+
+  it('keeps only marked cards when the working-on filter is on', () => {
+    const marked = card({ highlighted: true });
+    const other = card();
+    expect(matchesFilter(marked, { ...FILTER, onlyHighlighted: true })).toBe(true);
+    expect(matchesFilter(other, { ...FILTER, onlyHighlighted: true })).toBe(false);
+  });
 });
 
 describe('groupByPhase', () => {
@@ -113,6 +126,17 @@ describe('groupByPhase', () => {
   it('omits filtered-out cards entirely', () => {
     const cards = { a: card({ archived: true }) };
     expect(groupByPhase(cards, FILTER).size).toBe(0);
+  });
+
+  it('puts marked cards above live ones in the same column', () => {
+    const cards = {
+      live: card({ sessionId: 'live', alive: true, lastActiveAt: 50 }),
+      marked: card({ sessionId: 'marked', alive: false, highlighted: true, lastActiveAt: 1 }),
+    };
+    expect(groupByPhase(cards, FILTER).get('planning')!.map((s) => s.sessionId)).toEqual([
+      'marked',
+      'live',
+    ]);
   });
 });
 
@@ -244,6 +268,36 @@ describe('board store optimistic mutations', () => {
   it('does not re-fetch for a plain search change', () => {
     useBoardStore.getState().setFilter({ search: 'abc' });
     expect(sent).toHaveLength(0);
+  });
+
+  it('marks a card immediately and rolls it back when the bridge rejects it', () => {
+    useBoardStore.setState({ cards: { x: card({ sessionId: 'x' }) } });
+    useBoardStore.getState().setHighlighted('x', true);
+    expect(useBoardStore.getState().cards.x!.highlighted).toBe(true);
+    expect(sent[0]).toMatchObject({
+      type: 'set_session_highlighted',
+      sessionId: 'x',
+      highlighted: true,
+    });
+    const correlationId = (sent[0] as { correlationId: string }).correlationId;
+    useBoardStore.getState().applyServerMsg({
+      type: 'error',
+      code: 'session_not_found',
+      message: 'gone',
+      correlationId,
+    });
+    expect(useBoardStore.getState().cards.x!.highlighted).toBe(false);
+    expect(useBoardStore.getState().error).toBe('gone');
+  });
+
+  it('applies a working-on mark from another client', () => {
+    useBoardStore.setState({ cards: { x: card({ sessionId: 'x' }) } });
+    useBoardStore.getState().applyServerMsg({
+      type: 'session_highlighted',
+      sessionId: 'x',
+      highlighted: true,
+    });
+    expect(useBoardStore.getState().cards.x!.highlighted).toBe(true);
   });
 });
 

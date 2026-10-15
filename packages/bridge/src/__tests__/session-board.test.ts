@@ -168,6 +168,7 @@ describe('SessionRegistry migration', () => {
     expect(e.phase).toBe('backlog');
     expect(e.phasePinned).toBe(false);
     expect(e.tags).toEqual([]);
+    expect(e.highlighted).toBe(false);
     expect(e.lastActiveAt).toBe(1000);
     expect(e.endedAt).toBe(1000);
     expect(e.archived).toBe(false);
@@ -219,10 +220,11 @@ describe('SessionRegistry migration', () => {
     const reg = new SessionRegistry(path);
     await reg.load();
     await reg.add(makeEntry({ webSessionId: 'x', tags: ['api', 'bug'], headroom: true }));
-    await reg.update('x', { phase: 'verifying', phasePinned: true });
+    await reg.update('x', { phase: 'verifying', phasePinned: true, highlighted: true });
     const raw = JSON.parse(await readFile(path, 'utf8')) as { sessions: Record<string, RegistryEntry> };
     expect(raw.sessions.x!.phase).toBe('verifying');
     expect(raw.sessions.x!.phasePinned).toBe(true);
+    expect(raw.sessions.x!.highlighted).toBe(true);
     expect(raw.sessions.x!.tags).toEqual(['api', 'bug']);
     expect(raw.sessions.x!.headroom).toBe(true);
   });
@@ -337,6 +339,7 @@ describe('SessionManager board surface', () => {
     const card = mgr.listBoardSessions().find((s) => s.sessionId === info.sessionId)!;
     expect(card.alive).toBe(true);
     expect(card.status).toBe('live');
+    expect(card.highlighted).toBe(false);
   });
 
   it('reports turnRunning only while a turn is open', async () => {
@@ -492,7 +495,23 @@ describe('SessionManager board surface', () => {
     await expect(mgr.setSessionModel('nope', { model: 'opus' })).rejects.toThrow(/session_not_found/);
     await expect(mgr.setSessionPhase('nope', 'done')).rejects.toThrow(/session_not_found/);
     await expect(mgr.setSessionTags('nope', [])).rejects.toThrow(/session_not_found/);
+    await expect(mgr.setSessionHighlighted('nope', true)).rejects.toThrow(/session_not_found/);
     await expect(mgr.deleteSession('nope')).rejects.toThrow(/session_not_found/);
+  });
+
+  it('persists a working-on mark and tells every client', async () => {
+    await registry.add(makeEntry({ webSessionId: 's' }));
+    expect(mgr.listBoardSessions()[0]!.highlighted).toBe(false);
+    await mgr.setSessionHighlighted('s', true);
+    expect(registry.get('s')!.highlighted).toBe(true);
+    expect(mgr.listBoardSessions()[0]!.highlighted).toBe(true);
+    expect(broadcasts).toContainEqual({
+      type: 'session_highlighted',
+      sessionId: 's',
+      highlighted: true,
+    });
+    await mgr.setSessionHighlighted('s', false);
+    expect(registry.get('s')!.highlighted).toBe(false);
   });
 
   it('normalizes tags: trims, dedupes case-insensitively, drops blanks', async () => {

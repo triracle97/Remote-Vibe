@@ -41,8 +41,20 @@ const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const CLAUDE_OAUTH_BETA = 'oauth-2025-04-20';
 
 const FETCH_TIMEOUT_MS = 8000;
-/** One poll per account per minute is plenty: windows move in percent-points. */
-const DEFAULT_TTL_MS = 60_000;
+/**
+ * How long a successful read stays fresh.
+ *
+ * Windows move in percent-points, and both usage endpoints 429 when they are
+ * asked as often as a turn. Five minutes is still soon enough for the ring
+ * and slow enough to share the endpoint with the CLIs, which poll it too.
+ */
+const DEFAULT_TTL_MS = 5 * 60_000;
+/**
+ * Floor for a 429. Retrying at the normal TTL is how one limit becomes a
+ * flood: the next turn, the next reconnect, and the next account all try
+ * again a minute later. `Retry-After` can only make this longer.
+ */
+const RATE_LIMIT_BACKOFF_MS = 15 * 60_000;
 
 /** Where one account's credential lives, alongside the identity the UI shows. */
 export interface QuotaSource {
@@ -280,14 +292,40 @@ export function parseCodexUsage(raw: unknown, observedAt: number): RateLimitWind
 interface CacheEntry {
   at: number;
   windows: RateLimitWindow[];
+  /** How long this entry stays fresh. A 429 lasts longer than a success. */
+  freshFor: number;
+  /** Set when the endpoint said 429. A forced reload still has to wait this out. */
+  limited: boolean;
+}
+
+/** Thrown for a non-2xx usage response so the cache can tell a 429 from a 401. */
+class UsageHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly retryAfterMs: number | null,
+  ) {
+    super(`usage endpoint returned HTTP ${status}`);
+  }
+}
+
+/** `Retry-After` as delta-seconds or an HTTP-date, relative to `now`. */
+function retryAfterMs(header: string | null, now: number): number | null {
+  if (header === null || header.length === 0) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(header);
+  if (Number.isNaN(at)) return null;
+  return Math.max(0, at - now);
 }
 
 /**
  * Per-account quota, fetched on demand and cached briefly.
  *
- * Callers poll freely — on a spawn, at the end of a turn, whenever a client
- * asks — and the TTL is what keeps that from turning into an HTTP request per
- * event. Concurrent calls for the same account share one request.
+ * Callers poll freely — at the end of a turn, whenever a client asks — and the
+ * TTL is what keeps that from turning into an HTTP request per event. A 429
+ * is remembered for much longer than a success, and the last good reading is
+ * what gets served in the meantime. Concurrent calls for the same account
+ * share one request.
  */
 export class QuotaPoller {
   private readonly cache = new Map<string, CacheEntry>();
@@ -314,21 +352,35 @@ export class QuotaPoller {
   async windows(src: QuotaSource, opts: { force?: boolean } = {}): Promise<RateLimitWindow[]> {
     const key = src.account.key;
     const cached = this.cache.get(key);
-    if (!opts.force && cached && this.now() - cached.at < this.ttlMs) return cached.windows;
+    if (
+      cached &&
+      this.now() - cached.at < cached.freshFor &&
+      // A 429 is not optional. Reloading through it is another 429.
+      (cached.limited || !opts.force)
+    ) {
+      return cached.windows;
+    }
 
     const existing = this.inFlight.get(key);
     if (existing) return existing;
 
     const run = this.fetchFor(src)
       .then((windows) => {
-        this.cache.set(key, { at: this.now(), windows });
+        this.cache.set(key, { at: this.now(), windows, freshFor: this.ttlMs, limited: false });
         return windows;
       })
       .catch((err: unknown) => {
         this.warn(key, `[quota] ${key}: ${(err as Error).message}`);
-        // Cache the failure too, so an offline bridge does not retry per event.
-        this.cache.set(key, { at: this.now(), windows: [] });
-        return [];
+        const prev = this.cache.get(key);
+        const limited = err instanceof UsageHttpError && err.status === 429;
+        const freshFor = limited
+          ? Math.max(RATE_LIMIT_BACKOFF_MS, err.retryAfterMs ?? 0)
+          : this.ttlMs;
+        // Keep the last good reading. Replacing it with [] made the following
+        // minute a guaranteed retry against an endpoint that had just said no.
+        const windows = prev && prev.windows.length > 0 ? prev.windows : [];
+        this.cache.set(key, { at: this.now(), windows, freshFor, limited });
+        return windows;
       })
       .finally(() => {
         this.inFlight.delete(key);
@@ -360,7 +412,7 @@ export class QuotaPoller {
         },
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
-      if (!res.ok) throw new Error(`usage endpoint returned HTTP ${res.status}`);
+      if (!res.ok) throw this.httpError(res, observedAt);
       return parseClaudeUsage(await res.json(), observedAt);
     }
 
@@ -374,7 +426,12 @@ export class QuotaPoller {
       },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`usage endpoint returned HTTP ${res.status}`);
+    if (!res.ok) throw this.httpError(res, observedAt);
     return parseCodexUsage(await res.json(), observedAt);
+  }
+
+  private httpError(res: Response, now: number): UsageHttpError {
+    const header = typeof res.headers?.get === 'function' ? res.headers.get('retry-after') : null;
+    return new UsageHttpError(res.status, retryAfterMs(header, now));
   }
 }

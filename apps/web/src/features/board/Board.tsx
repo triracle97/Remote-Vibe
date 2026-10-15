@@ -33,6 +33,7 @@ export function Board({ onDetails, onNewJob, onEditJob }: Props): JSX.Element {
   const [confirmClear, setConfirmClear] = useState(false);
   const filter = useBoardStore((s) => s.filter);
   const setPhase = useBoardStore((s) => s.setPhase);
+  const setHighlighted = useBoardStore((s) => s.setHighlighted);
   const jobs = useJobsStore((s) => s.jobs);
   const starting = useJobsStore((s) => s.starting);
   const startJob = useJobsStore((s) => s.startJob);
@@ -192,13 +193,14 @@ export function Board({ onDetails, onNewJob, onEditJob }: Props): JSX.Element {
                   dragging={draggingId === card.sessionId}
                   onOpen={(c) => navigate(`/session/${c.sessionId}`)}
                   onDetails={onDetails}
+                  onToggleHighlight={(c) => setHighlighted(c.sessionId, c.highlighted !== true)}
                   onDragStart={handleDragStart}
                   onDragEnd={handleDragEnd}
                 />
               ))}
 
               {count === 0 &&
-                (isBacklog ? (
+                (isBacklog && !filter.onlyHighlighted ? (
                   <button
                     type="button"
                     onClick={onNewJob}

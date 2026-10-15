@@ -1,4 +1,4 @@
-import type { EffortLevel } from './models.js';
+import type { CliEffortLevel, EffortLevel } from './models.js';
 import type { WorkflowSize } from './claude-settings.js';
 
 export type { EffortLevel, WorkflowSize };
@@ -117,6 +117,12 @@ export interface ClientListAccountsMsg {
   correlationId?: string;
 }
 
+/** Ask for the live Codex model catalog (`codex debug models`). */
+export interface ClientListModelsMsg {
+  type: 'list_models';
+  correlationId?: string;
+}
+
 /** Add or repoint a named CLAUDE_CONFIG_DIR profile. */
 export interface ClientSaveClaudeConfigMsg {
   type: 'save_claude_config';
@@ -172,6 +178,7 @@ export type ClientMsg =
   | ClientListSessionsMsg
   | ClientGetHistoryMsg
   | ClientListAccountsMsg
+  | ClientListModelsMsg
   | ClientSaveClaudeConfigMsg
   | ClientDeleteClaudeConfigMsg
   | ClientListPromptsMsg
@@ -197,6 +204,7 @@ export type ClientMsg =
   | ClientSetSessionPhaseMsg
   | ClientSetSessionTagsMsg
   | ClientArchiveSessionMsg
+  | ClientSetSessionHighlightedMsg
   | ClientDeleteSessionMsg
   | ClientListJobsMsg
   | ClientCreateJobMsg
@@ -459,6 +467,11 @@ export interface BoardSession {
   phasePinned: boolean;
   tags: string[];
   archived: boolean;
+  /**
+   * True when the user marked this card as what they're working on.
+   * Older bridges omit it; absence means false.
+   */
+  highlighted?: boolean;
   account: string | null;
   claudeConfigDir: string | null;
   headroom: boolean;
@@ -552,6 +565,20 @@ export interface ServerSessionArchivedMsg {
   type: 'session_archived';
   sessionId: string;
   archived: boolean;
+  correlationId?: string;
+}
+
+export interface ClientSetSessionHighlightedMsg {
+  type: 'set_session_highlighted';
+  sessionId: string;
+  highlighted: boolean;
+  correlationId?: string;
+}
+
+export interface ServerSessionHighlightedMsg {
+  type: 'session_highlighted';
+  sessionId: string;
+  highlighted: boolean;
   correlationId?: string;
 }
 
@@ -751,6 +778,21 @@ export interface ServerHistoryMsg {
   correlationId?: string;
 }
 
+export interface ServerModelListMsg {
+  type: 'model_list';
+  agent: 'codex';
+  models: Array<{
+    value: string;
+    label: string;
+    /** Reasoning levels this model accepts. Never includes `ultracode`. */
+    efforts: CliEffortLevel[];
+    defaultEffort: CliEffortLevel | null;
+  }>;
+  /** `cli` is `codex debug models`. `fallback` is the built-in list. */
+  source: 'cli' | 'fallback';
+  correlationId?: string;
+}
+
 export interface ServerAccountListMsg {
   type: 'account_list';
   /**
@@ -884,6 +926,7 @@ export type ServerMsg =
   | ServerSessionListMsg
   | ServerHistoryMsg
   | ServerAccountListMsg
+  | ServerModelListMsg
   | ServerPromptsResultMsg
   | ServerDirsResultMsg
   | ServerFileResultMsg
@@ -907,6 +950,7 @@ export type ServerMsg =
   | ServerSessionPhaseChangedMsg
   | ServerSessionTagsChangedMsg
   | ServerSessionArchivedMsg
+  | ServerSessionHighlightedMsg
   | ServerSessionDeletedMsg
   | ServerJobListMsg
   | ServerJobUpsertedMsg

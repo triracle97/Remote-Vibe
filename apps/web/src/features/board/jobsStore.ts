@@ -200,8 +200,10 @@ export function sortedJobs(jobs: Record<string, JobSummary>): JobSummary[] {
 /** Same filter semantics as session cards, so the filter bar governs both. */
 export function jobMatchesFilter(
   job: JobSummary,
-  filter: { search: string; tags: string[] },
+  filter: { search: string; tags: string[]; onlyHighlighted?: boolean },
 ): boolean {
+  // Jobs cannot be marked, so "working on" is a session-only view.
+  if (filter.onlyHighlighted) return false;
   if (filter.tags.length > 0 && !filter.tags.every((t) => job.tags.includes(t))) return false;
   const q = filter.search.trim().toLowerCase();
   if (q.length === 0) return true;

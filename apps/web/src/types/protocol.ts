@@ -3,25 +3,33 @@ export type AgentKind = 'claude' | 'codex' | 'grok';
 /**
  * Reasoning effort. Mirror of `packages/bridge/src/models.ts`.
  *
- * The first five are exactly what `claude --effort` documents. `ultracode` is
- * not one of them — it is a mode (xhigh plus standing multi-agent
- * orchestration) that Claude Code's own `/config` offers in this same row, and
- * this list is that row. The bridge resolves it into a flag and a settings
- * file; nothing here ever reaches `--effort` as written.
+ * The first five are exactly what `claude --effort` documents. `ultra` is a
+ * Codex reasoning level from `codex debug models`, offered only for a Codex
+ * model that lists it. `ultracode` is not an effort either — it is a mode
+ * (xhigh plus standing multi-agent orchestration) that Claude Code's own
+ * `/config` offers in this same row, and this list is that row. The bridge
+ * resolves it into a flag and a settings file; nothing here ever reaches
+ * `--effort` as written.
  */
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | 'ultracode';
 
 export const EFFORT_LEVELS: ReadonlyArray<{
   value: EffortLevel;
   label: string;
   /** Claude only, and only on a model that can reach xhigh. */
   claudeOnly?: boolean;
+  /**
+   * Codex catalog only. Shown when the selected model's `codex debug models`
+   * entry lists it. Not a Claude flag, and not the ultracode mode.
+   */
+  codexOnly?: boolean;
 }> = [
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
   { value: 'xhigh', label: 'xHigh' },
   { value: 'max', label: 'Max' },
+  { value: 'ultra', label: 'Ultra', codexOnly: true },
   { value: 'ultracode', label: 'Ultracode', claudeOnly: true },
 ] as const;
 
@@ -63,6 +71,10 @@ export const CLAUDE_MODELS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'fable', label: 'Fable' },
 ] as const;
 
+/**
+ * Shown only until `list_models` returns, and when `codex debug models` fails.
+ * The live catalog replaces this.
+ */
 export const CODEX_MODELS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
   { value: 'gpt-5', label: 'GPT-5' },
@@ -181,6 +193,12 @@ export interface ClientListAccountsMsg {
   correlationId?: string;
 }
 
+/** Ask for the live Codex model catalog (`codex debug models`). */
+export interface ClientListModelsMsg {
+  type: 'list_models';
+  correlationId?: string;
+}
+
 /** Add or repoint a named CLAUDE_CONFIG_DIR profile. */
 export interface ClientSaveClaudeConfigMsg {
   type: 'save_claude_config';
@@ -236,6 +254,7 @@ export type ClientMsg =
   | ClientListSessionsMsg
   | ClientGetHistoryMsg
   | ClientListAccountsMsg
+  | ClientListModelsMsg
   | ClientSaveClaudeConfigMsg
   | ClientDeleteClaudeConfigMsg
   | ClientListPromptsMsg
@@ -261,6 +280,7 @@ export type ClientMsg =
   | ClientSetSessionPhaseMsg
   | ClientSetSessionTagsMsg
   | ClientArchiveSessionMsg
+  | ClientSetSessionHighlightedMsg
   | ClientDeleteSessionMsg
   | ClientListJobsMsg
   | ClientCreateJobMsg
@@ -474,6 +494,24 @@ export interface ServerHistoryMsg {
   correlationId?: string;
 }
 
+/** One Codex model from `codex debug models`, or from the built-in fallback list. */
+export interface CodexCatalogModel {
+  value: string;
+  label: string;
+  /** Reasoning levels this model accepts. Never includes `ultracode`. */
+  efforts: Array<Exclude<EffortLevel, 'ultracode'>>;
+  defaultEffort: Exclude<EffortLevel, 'ultracode'> | null;
+}
+
+export interface ServerModelListMsg {
+  type: 'model_list';
+  agent: 'codex';
+  models: CodexCatalogModel[];
+  /** `cli` is `codex debug models`. `fallback` is the built-in list. */
+  source: 'cli' | 'fallback';
+  correlationId?: string;
+}
+
 export interface ServerAccountListMsg {
   type: 'account_list';
   /**
@@ -605,6 +643,7 @@ export type ServerMsg =
   | ServerSessionListMsg
   | ServerHistoryMsg
   | ServerAccountListMsg
+  | ServerModelListMsg
   | ServerPromptsResultMsg
   | ServerDirsResultMsg
   | ServerFileResultMsg
@@ -628,6 +667,7 @@ export type ServerMsg =
   | ServerSessionPhaseChangedMsg
   | ServerSessionTagsChangedMsg
   | ServerSessionArchivedMsg
+  | ServerSessionHighlightedMsg
   | ServerSessionDeletedMsg
   | ServerJobListMsg
   | ServerJobUpsertedMsg
@@ -999,6 +1039,11 @@ export interface BoardSession {
   phasePinned: boolean;
   tags: string[];
   archived: boolean;
+  /**
+   * True when you marked this card as what you're working on.
+   * Older bridges omit it; treat absence as false.
+   */
+  highlighted?: boolean;
   account: string | null;
   claudeConfigDir: string | null;
   headroom: boolean;
@@ -1085,6 +1130,20 @@ export interface ServerSessionArchivedMsg {
   type: 'session_archived';
   sessionId: string;
   archived: boolean;
+  correlationId?: string;
+}
+
+export interface ClientSetSessionHighlightedMsg {
+  type: 'set_session_highlighted';
+  sessionId: string;
+  highlighted: boolean;
+  correlationId?: string;
+}
+
+export interface ServerSessionHighlightedMsg {
+  type: 'session_highlighted';
+  sessionId: string;
+  highlighted: boolean;
   correlationId?: string;
 }
 

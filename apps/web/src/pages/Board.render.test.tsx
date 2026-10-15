@@ -21,7 +21,7 @@ beforeEach(() => {
   useBoardStore.setState({
     cards: {},
     loaded: true,
-    filter: { search: '', tags: [], showDone: true, showArchived: false },
+    filter: { search: '', tags: [], showDone: true, showArchived: false, onlyHighlighted: false },
     error: null,
   });
   useJobsStore.setState({ jobs: {}, loaded: true, starting: {}, error: null, lastStarted: null });

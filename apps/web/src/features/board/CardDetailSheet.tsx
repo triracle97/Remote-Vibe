@@ -1,5 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Star } from 'lucide-react';
 import { BottomSheet } from '../../shell/BottomSheet';
 import { Modal } from '../../shell/Modal';
 import { SESSION_PHASE_COLUMNS, type BoardSession } from '../../types/protocol';
@@ -42,6 +43,7 @@ function Body({ card, onClose }: { card: BoardSession; onClose: () => void }): J
   const setPhase = useBoardStore((s) => s.setPhase);
   const setTags = useBoardStore((s) => s.setTags);
   const setArchived = useBoardStore((s) => s.setArchived);
+  const setHighlighted = useBoardStore((s) => s.setHighlighted);
   const remove = useBoardStore((s) => s.remove);
   const resume = useSessionsStore((s) => s.resume);
 
@@ -105,6 +107,26 @@ function Body({ card, onClose }: { card: BoardSession; onClose: () => void }): J
           </ul>
         )}
       </header>
+
+      <button
+        type="button"
+        aria-pressed={card.highlighted === true}
+        onClick={() => setHighlighted(card.sessionId, card.highlighted !== true)}
+        className={[
+          'self-start flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors',
+          card.highlighted === true
+            ? 'border-[var(--color-warn)] text-[var(--color-text)]'
+            : 'border-[var(--color-border)] text-[var(--color-text-mute)] hover:text-[var(--color-text)]',
+        ].join(' ')}
+      >
+        <Star
+          size={14}
+          aria-hidden
+          className={card.highlighted === true ? 'text-[var(--color-warn)]' : undefined}
+          fill={card.highlighted === true ? 'currentColor' : 'none'}
+        />
+        {card.highlighted === true ? 'Working on' : 'Mark as working on'}
+      </button>
 
       <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
         <Row label="Agent" value={card.agent + (card.account ? `:${card.account}` : '')} />

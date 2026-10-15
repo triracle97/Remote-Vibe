@@ -99,6 +99,10 @@ describe('jobMatchesFilter', () => {
   it('matches everything on an empty query', () => {
     expect(jobMatchesFilter(job(), base)).toBe(true);
   });
+
+  it('hides jobs when the board is filtered to working-on cards', () => {
+    expect(jobMatchesFilter(job(), { ...base, onlyHighlighted: true })).toBe(false);
+  });
 });
 
 describe('jobs store server messages', () => {

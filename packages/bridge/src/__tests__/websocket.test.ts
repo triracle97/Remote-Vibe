@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { WebSocket } from 'ws';
 import { attachWebSocket } from '../websocket.js';
+import { setCodexCatalogExecForTests } from '../codex-catalog.js';
 import { SessionManager } from '../session.js';
 import { TerminalManager } from '../terminal-manager.js';
 import { EventEmitter } from 'node:events';
@@ -423,6 +424,60 @@ describe('websocket', () => {
     expect(msg.correlationId).toBe('c');
     sock.close();
     await close();
+  });
+
+  it('list_models replies with the visible Codex catalog', async () => {
+    setCodexCatalogExecForTests(async () => ({
+      stdout: JSON.stringify({
+        models: [
+          {
+            slug: 'gpt-6-astra',
+            display_name: 'GPT-6-Astra',
+            visibility: 'list',
+            priority: 2,
+            default_reasoning_level: 'medium',
+            supported_reasoning_levels: [{ effort: 'low' }, { effort: 'ultra' }],
+          },
+          {
+            slug: 'gpt-reserve',
+            display_name: 'GPT-Reserve',
+            visibility: 'hide',
+            priority: 1,
+            supported_reasoning_levels: [{ effort: 'low' }],
+          },
+        ],
+      }),
+    }));
+    try {
+      const { port, close } = await startServer();
+      const sock = ws(`ws://127.0.0.1:${port}/ws`, {
+        cookie: `bridge_session=${TOKEN}`,
+        origin: `http://127.0.0.1:${port}`,
+      });
+      await new Promise<void>((r) => sock.on('open', () => r()));
+      await nextMessage(sock);
+      const got = new Promise<{
+        type: string;
+        source: string;
+        models: Array<{ value: string; label: string; efforts: string[] }>;
+        correlationId?: string;
+      }>((r) => {
+        sock.on('message', (raw) => {
+          const m = JSON.parse(raw.toString());
+          if (m.type === 'model_list') r(m);
+        });
+      });
+      sock.send(JSON.stringify({ type: 'list_models', correlationId: 'm' }));
+      const msg = await got;
+      expect(msg.source).toBe('cli');
+      expect(msg.models.map((m) => m.value)).toEqual(['gpt-6-astra']);
+      expect(msg.models[0]?.efforts).toEqual(['low', 'ultra']);
+      expect(msg.correlationId).toBe('m');
+      sock.close();
+      await close();
+    } finally {
+      setCodexCatalogExecForTests(null);
+    }
   });
 
   it('start { agent: "codex", account: "<bogus>" } returns unknown_account', async () => {
